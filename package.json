@@ -1,7 +1,7 @@
 {
   "name": "whatsapp-bot",
-  "version": "2.0.0",
-  "description": "Lean WhatsApp bot for Render free tier — QR connect and simple auto-replies",
+  "version": "3.0.0",
+  "description": "In-memory WhatsApp bot: form link → confirm → company relay until close (Render free tier)",
   "main": "server.js",
   "scripts": {
     "build:css": "tailwindcss -i ./src/styles/input.css -o ./public/css/tailwind.css --minify",
@@ -9,13 +9,12 @@
     "build": "npm run build:css",
     "postinstall": "node scripts/shim-puppeteer-core.js && npm run build:css",
     "prestart": "node scripts/ensure-css.js",
-    "start": "node --experimental-sqlite server.js",
-    "dev": "node --experimental-sqlite --watch server.js",
-    "seed": "node --experimental-sqlite src/utils/seed.js",
+    "start": "node server.js",
+    "dev": "node --watch server.js",
     "reset:wa": "node scripts/reset-wa-session.js"
   },
   "engines": {
-    "node": ">=22.5"
+    "node": ">=20"
   },
   "keywords": [
     "whatsapp",
@@ -25,7 +24,6 @@
   "license": "MIT",
   "dependencies": {
     "@sparticuz/chromium": "^149.0.0",
-    "bcryptjs": "^2.4.3",
     "dotenv": "^16.4.7",
     "ejs": "^3.1.10",
     "express": "^4.21.2",

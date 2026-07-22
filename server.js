@@ -7,11 +7,9 @@ const express = require('express');
 const session = require('express-session');
 const { Server } = require('socket.io');
 
-const { seed } = require('./src/utils/seed');
+const { config } = require('./src/config/runtime');
 const routes = require('./src/routes');
 const whatsapp = require('./src/services/whatsapp');
-
-seed();
 
 const app = express();
 const server = http.createServer(app);
@@ -27,9 +25,8 @@ app.set('views', path.join(__dirname, 'views'));
 app.set('trust proxy', 1);
 
 app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
+app.use(express.json({ limit: '32kb' }));
 
-// Serve /public at site root so /css/*.css and /js/*.js resolve in production
 if (!fs.existsSync(PUBLIC_DIR)) {
   console.error('[Static] Missing public directory:', PUBLIC_DIR);
 } else {
@@ -56,7 +53,6 @@ app.use(
   })
 );
 
-// Explicit CSS mount (belt-and-suspenders for Render reverse proxies)
 app.use(
   '/css',
   express.static(CSS_DIR, {
@@ -69,9 +65,10 @@ app.use(
   })
 );
 
+// Memory-only session store (default) — no session DB
 app.use(
   session({
-    name: 'insurance.sid',
+    name: 'wa.sid',
     secret: process.env.SESSION_SECRET || 'dev-secret-change-me',
     resave: false,
     saveUninitialized: false,
@@ -85,18 +82,10 @@ app.use(
 );
 
 app.use((req, res, next) => {
-  try {
-    res.locals.businessName = require('./src/models').Settings.get(
-      'business_name',
-      'Insurance Bot'
-    );
-  } catch (_) {
-    res.locals.businessName = 'Insurance Bot';
-  }
+  res.locals.businessName = config.businessName;
   next();
 });
 
-// Liveness — Render / proxies can hit this without loading WhatsApp
 app.get('/healthz', (_req, res) => {
   res.status(200).type('text').send('ok');
 });
@@ -122,8 +111,7 @@ function sendErrorPage(res, status, title, message) {
 }
 
 app.use((req, res) => {
-  // Avoid EJS render failures cascading into 502 for missing assets
-  if (req.path.startsWith('/css/') || req.path.startsWith('/js/') || req.path.startsWith('/vendor/')) {
+  if (req.path.startsWith('/css/') || req.path.startsWith('/js/')) {
     return res.status(404).type('text').send(`Not found: ${req.path}`);
   }
   try {
@@ -134,7 +122,7 @@ app.use((req, res) => {
       admin: req.session?.adminUsername || null,
       flash: null,
     });
-  } catch (err) {
+  } catch (_) {
     return sendErrorPage(res, 404, 'Not Found', 'Page not found.');
   }
 });
@@ -158,17 +146,18 @@ app.use((err, req, res, _next) => {
 
 whatsapp.attachSocket(io);
 
+if (!config.companyPhone) {
+  console.warn('[Config] Set COMPANY_PHONE in .env (digits with country code, e.g. 9198…)');
+}
+console.log(`[Config] BASE_URL=${config.baseUrl}`);
+console.log(`[Config] COMPANY_PHONE=${config.companyPhone || '(missing)'}`);
+
 server.listen(PORT, HOST, () => {
   console.log(`Server running at http://${HOST}:${PORT}`);
-  console.log(`Admin panel: http://${HOST}:${PORT}/admin/login`);
-  console.log(`[Static] CSS URLs: /css/tailwind.css  /css/app.css`);
+  console.log(`Admin: http://${HOST}:${PORT}/admin/login`);
 
-  // On Render free tier: let the HTTP service become healthy first, then start Chromium.
-  // Inflating @sparticuz/chromium + WhatsApp Web can take 1–3 minutes and must not block boot.
   const delayMs = Number(process.env.WA_INIT_DELAY_MS) || (process.env.RENDER ? 3000 : 0);
-  console.log(
-    `[WhatsApp] Scheduling client init in ${delayMs}ms (puppeteer-core + @sparticuz/chromium)`
-  );
+  console.log(`[WhatsApp] Scheduling client init in ${delayMs}ms`);
   setTimeout(() => {
     whatsapp.init().catch((err) => {
       console.error('Failed to start WhatsApp client:', err);
@@ -176,7 +165,7 @@ server.listen(PORT, HOST, () => {
   }, delayMs);
 });
 
-process.on('SIGINT', async () => {
+process.on('SIGINT', () => {
   console.log('\nShutting down...');
   process.exit(0);
 });

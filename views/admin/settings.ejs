@@ -8,31 +8,19 @@
 </head>
 <body class="font-sans text-ink bg-sand min-h-screen antialiased">
   <%- include('../partials/nav') %>
-  <% if (flash) { %>
-    <div class="max-w-4xl mx-auto px-4 pt-4">
-      <div class="rounded-lg px-4 py-3 text-sm <%= flash.type === 'error' ? 'bg-red-50 text-red-800 border border-red-200' : 'bg-emerald-50 text-emerald-800 border border-emerald-200' %>"><%= flash.message %></div>
-    </div>
-  <% } %>
 
   <main class="max-w-4xl mx-auto px-4 py-8 animate-in">
-    <h1 class="font-display text-3xl font-semibold mb-2">Auto-reply messages</h1>
-    <p class="text-ink/60 mb-8">Simple replies for greetings and other inbound messages. No forms or workflows.</p>
+    <h1 class="font-display text-3xl font-semibold mb-2">Runtime config</h1>
+    <p class="text-ink/60 mb-8">All values come from environment variables (no database). Edit <code class="text-sea">.env</code> / Render env and restart.</p>
 
-    <form method="POST" action="/admin/settings" class="panel p-6 space-y-5">
-      <div>
-        <label class="label" for="business_name">Business name</label>
-        <input class="field" id="business_name" name="business_name" value="<%= settings.business_name || '' %>" />
-      </div>
-      <div>
-        <label class="label" for="welcome_message">Greeting reply (Hi / Hello / Hey)</label>
-        <textarea class="field" id="welcome_message" name="welcome_message" rows="4"><%= settings.welcome_message || '' %></textarea>
-      </div>
-      <div>
-        <label class="label" for="default_reply">Default reply (any other message)</label>
-        <textarea class="field" id="default_reply" name="default_reply" rows="4"><%= settings.default_reply || '' %></textarea>
-      </div>
-      <button type="submit" class="btn btn-primary">Save settings</button>
-    </form>
+    <div class="panel p-6 space-y-4 text-sm">
+      <div><span class="text-ink/45">BUSINESS_NAME</span><div class="font-medium mt-1"><%= settings.business_name %></div></div>
+      <div><span class="text-ink/45">COMPANY_PHONE</span><div class="font-medium mt-1"><%= settings.company_phone || '(missing)' %></div></div>
+      <div><span class="text-ink/45">BASE_URL</span><div class="font-medium mt-1 break-all"><%= settings.base_url %></div></div>
+      <div><span class="text-ink/45">TRIGGER_KEYWORDS</span><div class="font-medium mt-1"><%= settings.triggers %></div></div>
+      <div><span class="text-ink/45">FORM_INTRO</span><pre class="mt-1 whitespace-pre-wrap text-ink/80"><%= settings.form_intro %></pre></div>
+      <div><span class="text-ink/45">LINK_MESSAGE</span><pre class="mt-1 whitespace-pre-wrap font-mono text-xs text-ink/80"><%= settings.link_message %></pre></div>
+    </div>
   </main>
 </body>
 </html>

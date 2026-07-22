@@ -18,15 +18,15 @@
     <div class="flex flex-wrap items-end justify-between gap-4">
       <div>
         <h1 class="font-display text-3xl font-semibold">Dashboard</h1>
-        <p class="text-ink/60">Welcome, <%= admin %></p>
+        <p class="text-ink/60">In-memory only — cleared on restart</p>
       </div>
       <div class="flex flex-wrap gap-2">
         <a href="/" class="btn btn-ghost">QR Page</a>
         <form method="POST" action="/admin/whatsapp/logout">
           <button class="btn btn-ghost text-coral" type="submit">Relink WhatsApp</button>
         </form>
-        <form method="POST" action="/admin/whatsapp/reset-session" onsubmit="return confirm('Wipe LocalAuth session files and restart WhatsApp client?');">
-          <button class="btn btn-ghost text-coral" type="submit">Reset session files</button>
+        <form method="POST" action="/admin/whatsapp/reset-session" onsubmit="return confirm('Wipe WhatsApp auth files and restart?');">
+          <button class="btn btn-ghost text-coral" type="submit">Reset WA auth</button>
         </form>
       </div>
     </div>
@@ -45,28 +45,38 @@
           </div>
         </div>
       </div>
-      <div class="text-right">
-        <div class="text-xs uppercase tracking-wide text-ink/45 font-semibold">Messages logged</div>
-        <div class="font-display text-2xl font-semibold"><%= messageCount %></div>
+      <div class="text-sm text-ink/60 text-right">
+        <div>Company: <%= companyPhone ? '+' + companyPhone : 'not set' %></div>
+        <div>Pending forms: <%= memory.pendingForms %> · Live chats: <%= memory.activeBridges %></div>
       </div>
     </div>
 
     <section class="panel p-5">
-      <h2 class="font-display text-xl font-semibold mb-4">Recent messages</h2>
-      <div class="space-y-3 max-h-96 overflow-y-auto">
-        <% if (!messages.length) { %>
-          <p class="text-sm text-ink/45">No messages logged yet.</p>
-        <% } %>
-        <% messages.forEach(function (m) { %>
-          <div class="text-sm border-b border-ink/5 pb-3">
-            <div class="flex justify-between gap-2 text-xs text-ink/45 mb-1">
-              <span><%= m.direction === 'in' ? '← In' : '→ Out' %> · +<%= m.phone %></span>
-              <span><%= m.created_at %></span>
-            </div>
-            <div class="whitespace-pre-wrap text-ink/80"><%= m.body %></div>
-          </div>
-        <% }) %>
-      </div>
+      <h2 class="font-display text-xl font-semibold mb-4">Active bridges (RAM)</h2>
+      <% if (!bridges.length) { %>
+        <p class="text-sm text-ink/45">No live chats right now.</p>
+      <% } else { %>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr>
+                <th>Code</th>
+                <th>Customer</th>
+                <th>Opened</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% bridges.forEach(function (b) { %>
+                <tr>
+                  <td><%= b.code %></td>
+                  <td>+<%= b.customerPhone %></td>
+                  <td class="text-xs text-ink/45"><%= new Date(b.openedAt).toISOString() %></td>
+                </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      <% } %>
     </section>
   </main>
 </body>

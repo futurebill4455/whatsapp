@@ -1,12 +1,22 @@
 /**
- * Lean WhatsApp service for Render free tier.
- * Core only: QR link, receive messages, simple auto-replies. No workflows/forms/bridge.
+ * Lean in-memory WhatsApp bot for Render free tier.
+ * Flow: trigger → form link → Yes → forward to company → relay until "close".
+ * No DB / message log / lead storage. WhatsApp LocalAuth only (device link).
  */
 const fs = require('fs');
 const path = require('path');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
-const { Settings, MessageLog } = require('../models');
+const {
+  config,
+  digits,
+  renderTemplate,
+  isTrigger,
+  isClose,
+  isYes,
+  isNo,
+} = require('../config/runtime');
+const store = require('../store/memory');
 const { buildPuppeteerLaunchOptions, isRenderLike } = require('./chromiumLaunch');
 
 const AUTH_PATH = path.join(process.cwd(), '.wwebjs_auth');
@@ -14,22 +24,8 @@ const CACHE_PATH = path.join(process.cwd(), '.wwebjs_cache');
 const CLIENT_ID = 'insurance-bot';
 const WHATSAPP_WEB_URL = 'https://web.whatsapp.com/';
 
-const GREETINGS = ['hi', 'hello', 'hey', 'start', 'ഹായ്'];
-
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
-}
-
-function normalizeMsg(text) {
-  return String(text || '')
-    .replace(/[\u200B-\u200D\uFEFF]/g, '')
-    .trim()
-    .toLowerCase();
-}
-
-function isGreeting(text) {
-  const n = normalizeMsg(text);
-  return GREETINGS.some((g) => n === g || n.startsWith(`${g} `));
 }
 
 function isTransientBrowserError(err) {
@@ -212,6 +208,7 @@ class WhatsAppService {
       loadingPercent: this.loadingPercent,
       loadingMessage: this.loadingMessage,
       connectionPhase: this._connectionPhase,
+      memory: store.stats(),
     };
   }
 
@@ -327,6 +324,10 @@ class WhatsAppService {
       this.ready = false;
       this.clearQr('reinit');
       this.setConnectionPhase('initializing', `attempt ${this._initAttempt}`);
+
+      if (!config.companyPhone) {
+        console.warn('[WhatsApp] COMPANY_PHONE is not set — forwards will fail until configured');
+      }
 
       const launchOpts = await buildPuppeteerLaunchOptions();
       console.log(
@@ -490,11 +491,10 @@ class WhatsAppService {
     };
     client.on('message', this._boundMessageHandler);
     client.on('message_create', this._boundMessageCreateHandler);
-    console.log('[WhatsApp] Lean message listeners bound');
   }
 
   enqueueIncomingMessage(message) {
-    const maxDepth = Number(process.env.WA_MSG_QUEUE_MAX) || 30;
+    const maxDepth = Number(process.env.WA_MSG_QUEUE_MAX) || 25;
     if (this._msgQueueDepth >= maxDepth) {
       console.warn('[WhatsApp] Queue full — dropping message');
       return;
@@ -530,11 +530,11 @@ class WhatsAppService {
   }
 
   _pruneSeenIds() {
-    const now = Date.now();
+    const t = Date.now();
     const ttl = Number(process.env.WA_SEEN_TTL_MS) || 60000;
-    const max = Number(process.env.WA_SEEN_MAX) || 150;
+    const max = Number(process.env.WA_SEEN_MAX) || 120;
     for (const [k, ts] of this._seenMsgIds) {
-      if (now - ts > ttl) this._seenMsgIds.delete(k);
+      if (t - ts > ttl) this._seenMsgIds.delete(k);
     }
     if (this._seenMsgIds.size > max) {
       const entries = [...this._seenMsgIds.entries()].sort((a, b) => a[1] - b[1]);
@@ -547,12 +547,8 @@ class WhatsAppService {
     if (!id) return false;
     if (this._seenMsgIds.has(id)) return true;
     this._seenMsgIds.set(id, Date.now());
-    if (this._seenMsgIds.size > 200) this._pruneSeenIds();
+    if (this._seenMsgIds.size > 160) this._pruneSeenIds();
     return false;
-  }
-
-  formatPhone(phone) {
-    return String(phone || '').replace(/\D/g, '');
   }
 
   async sendMessage(to, body, options = {}) {
@@ -563,26 +559,36 @@ class WhatsAppService {
     const run = async () => {
       if (options.replyTo && typeof options.replyTo.reply === 'function') {
         try {
-          const result = await options.replyTo.reply(text);
-          MessageLog.add({ direction: 'out', phone: this.formatPhone(to), body: text });
-          return result;
+          return await options.replyTo.reply(text);
         } catch (_) {}
       }
       const chatId =
         options.chatId ||
-        (String(to).includes('@') ? String(to) : `${this.formatPhone(to)}@c.us`);
-      const result = await this.client.sendMessage(chatId, text);
-      MessageLog.add({
-        direction: 'out',
-        phone: this.formatPhone(to) || String(chatId).replace(/@.+$/, ''),
-        body: text,
-      });
-      return result;
+        (String(to).includes('@') ? String(to) : `${digits(to)}@c.us`);
+      return this.client.sendMessage(chatId, text);
     };
 
     const next = this._sendQueue.then(run, run);
     this._sendQueue = next.catch(() => {});
     return next;
+  }
+
+  async _quotedWaId(message) {
+    try {
+      if (message?.hasQuotedMsg && typeof message.getQuotedMessage === 'function') {
+        const q = await message.getQuotedMessage();
+        const id = q?.id?._serialized || q?.id?.$1 || q?.id?.id;
+        if (id) return String(id);
+      }
+    } catch (_) {}
+    try {
+      const raw =
+        message?._data?.quotedMsgId ||
+        message?._data?.quotedStanzaID ||
+        message?.quotedMsgId;
+      if (raw) return String(raw);
+    } catch (_) {}
+    return null;
   }
 
   async handleIncomingMessage(message) {
@@ -591,35 +597,215 @@ class WhatsAppService {
     if (message.from?.endsWith('@g.us')) return;
 
     const chatId = message.from;
-    const phone = String(chatId || '').replace(/@.+$/, '');
+    const phone = digits(String(chatId || '').replace(/@.+$/, ''));
     const body = String(message.body || '')
       .replace(/[\u200B-\u200D\uFEFF]/g, '')
       .trim();
 
+    const isCompanyPhone = config.companyPhone && phone === config.companyPhone;
+    const isCompanyChat = !isCompanyPhone && store.isCompanyChatId(chatId);
+
+    if (isCompanyPhone || isCompanyChat) {
+      await this._handleCompanyMessage(message, phone, chatId, body);
+      return;
+    }
+
     if (!body) return;
 
-    console.log(`[WhatsApp] IN ${phone}: ${body.slice(0, 80)}`);
-    try {
-      MessageLog.add({ direction: 'in', phone, body });
-    } catch (_) {}
+    // Active customer bridge
+    const bridge = store.getBridgeByCustomer(phone);
+    if (bridge) {
+      if (isClose(body)) {
+        await this._closeBridge(bridge, { notifyCompany: true, replyTo: message });
+        return;
+      }
+      store.bindCustomerChatId(bridge.id, chatId);
+      store.touchBridge(bridge.id, 'customer');
+      const relay = `[#${bridge.code}] ${body}`;
+      try {
+        const companyChat = bridge.companyChatId || `${bridge.companyPhone}@c.us`;
+        const sent = await this.sendMessage(bridge.companyPhone, relay, { chatId: companyChat });
+        const waId = sent?.id?._serialized || sent?.id?.id;
+        store.trackWaMessage(bridge.id, waId);
+      } catch (err) {
+        console.error('[WhatsApp] Relay to company failed:', err.message);
+        await this.sendMessage(phone, 'Could not reach the company right now. Try again shortly.', {
+          chatId,
+          replyTo: message,
+        });
+      }
+      return;
+    }
 
-    // Minimal auto-reply — no forms, workflows, or desk bridge
-    let reply;
-    if (isGreeting(body)) {
-      reply =
-        Settings.get('welcome_message') ||
-        'Hello! 👋 Thanks for messaging us. How can we help you today?';
+    // Pending confirmation
+    const pending = store.getPendingByPhone(phone);
+    if (pending?.status === 'awaiting_confirmation') {
+      if (isYes(body)) {
+        await this._confirmAndOpenBridge(pending, { chatId, replyTo: message });
+        return;
+      }
+      if (isNo(body)) {
+        store.clearPending(pending.token);
+        await this.sendMessage(phone, config.cancelMessage, { chatId, replyTo: message });
+        return;
+      }
+      await this.sendMessage(
+        phone,
+        'Please reply *Yes* to confirm or *No* to cancel.',
+        { chatId, replyTo: message }
+      );
+      return;
+    }
+
+    if (pending?.status === 'awaiting_form') {
+      if (isNo(body) || isClose(body)) {
+        store.clearPending(pending.token);
+        await this.sendMessage(phone, config.cancelMessage, { chatId, replyTo: message });
+        return;
+      }
+      if (isTrigger(body)) {
+        const link = `${config.baseUrl}/form/${pending.token}`;
+        const text = renderTemplate(config.linkMessage, {
+          business_name: config.businessName,
+          form_link: link,
+        });
+        await this.sendMessage(phone, text, { chatId, replyTo: message });
+        return;
+      }
+      await this.sendMessage(phone, config.pendingFormMessage, { chatId, replyTo: message });
+      return;
+    }
+
+    // New trigger → form link
+    if (isTrigger(body)) {
+      if (!config.companyPhone) {
+        await this.sendMessage(
+          phone,
+          'Bot is not configured yet (missing COMPANY_PHONE).',
+          { chatId, replyTo: message }
+        );
+        return;
+      }
+      const row = store.createPending({ customerPhone: phone, customerChatId: chatId });
+      const link = `${config.baseUrl}/form/${row.token}`;
+      const text = renderTemplate(config.linkMessage, {
+        business_name: config.businessName,
+        form_link: link,
+      });
+      await this.sendMessage(phone, text, { chatId, replyTo: message });
+      return;
+    }
+
+    // Ignore non-trigger noise when idle (saves outbound spam / RAM)
+  }
+
+  async _handleCompanyMessage(message, phone, chatId, body) {
+    const { bridge, method } = store.resolveCompanyInbound(config.companyPhone || phone, {
+      quotedWaId: await this._quotedWaId(message),
+      body,
+      chatId,
+    });
+
+    if (!bridge) {
+      if (body) console.log('[WhatsApp] Company message with no active bridge — ignored');
+      return;
+    }
+
+    store.bindCompanyChatId(bridge.id, chatId);
+    store.touchBridge(bridge.id, 'company');
+
+    let text = body;
+    if (!text) {
+      text = '[Media / non-text message — please describe in text]';
     } else {
-      reply =
-        Settings.get('default_reply') ||
-        'Thanks for your message. Our team will get back to you shortly.';
+      text = text.replace(/\[#[A-Z0-9]{3,6}\]\s*/gi, '').trim() || text;
     }
 
+    const customerChat = bridge.customerChatId || `${bridge.customerPhone}@c.us`;
     try {
-      await this.sendMessage(phone, reply, { chatId, replyTo: message });
+      const sent = await this.sendMessage(bridge.customerPhone, text, { chatId: customerChat });
+      const waId = sent?.id?._serialized || sent?.id?.id;
+      store.trackWaMessage(bridge.id, waId);
+      if (method === 'last_customer') {
+        console.log(`[WhatsApp] Company→customer via last-active [#${bridge.code}]`);
+      }
     } catch (err) {
-      console.error('[WhatsApp] Reply failed:', err.message);
+      console.error('[WhatsApp] Relay to customer failed:', err.message);
     }
+  }
+
+  async _confirmAndOpenBridge(pending, { chatId, replyTo } = {}) {
+    if (!config.companyPhone) {
+      await this.sendMessage(pending.customerPhone, 'Company number is not configured.', {
+        chatId,
+        replyTo,
+      });
+      return;
+    }
+
+    const summary = store.formatSummary(pending.data);
+    const bridge = store.openBridge({
+      customerPhone: pending.customerPhone,
+      customerChatId: chatId || pending.customerChatId,
+      companyPhone: config.companyPhone,
+      data: pending.data,
+    });
+    store.clearPending(pending.token);
+
+    const companyMsg = renderTemplate(config.companyNotifyTemplate, {
+      code: bridge.code,
+      summary,
+      business_name: config.businessName,
+    });
+
+    try {
+      const sent = await this.sendMessage(config.companyPhone, companyMsg);
+      const waId = sent?.id?._serialized || sent?.id?.id;
+      store.trackWaMessage(bridge.id, waId);
+      if (sent?.to) store.bindCompanyChatId(bridge.id, String(sent.to));
+    } catch (err) {
+      console.error('[WhatsApp] Forward to company failed:', err.message);
+      store.closeBridge(bridge.id);
+      await this.sendMessage(
+        pending.customerPhone,
+        'Could not reach the company. Please try again later with Hi.',
+        { chatId, replyTo }
+      );
+      return;
+    }
+
+    await this.sendMessage(pending.customerPhone, config.successMessage, { chatId, replyTo });
+  }
+
+  async _closeBridge(bridge, { notifyCompany = false, replyTo = null } = {}) {
+    store.closeBridge(bridge.id);
+    try {
+      await this.sendMessage(bridge.customerPhone, config.closeMessage, {
+        chatId: bridge.customerChatId,
+        replyTo,
+      });
+    } catch (_) {}
+    if (notifyCompany) {
+      try {
+        await this.sendMessage(
+          bridge.companyPhone,
+          `Chat [#${bridge.code}] closed by customer.`,
+          { chatId: bridge.companyChatId }
+        );
+      } catch (_) {}
+    }
+  }
+
+  /** Called from HTTP after form submit — ask Yes/No on WhatsApp */
+  async notifyFormSubmitted(token) {
+    const pending = store.getPendingByToken(token);
+    if (!pending || pending.status !== 'awaiting_confirmation') return false;
+    const summary = store.formatSummary(pending.data);
+    const text = renderTemplate(config.confirmationPrompt, { summary });
+    await this.sendMessage(pending.customerPhone, text, {
+      chatId: pending.customerChatId,
+    });
+    return true;
   }
 
   async logout() {

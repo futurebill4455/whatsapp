@@ -1,54 +1,43 @@
-# Lean WhatsApp Bot
+# In-memory WhatsApp Bot (Render free tier)
 
-Minimal Node.js WhatsApp bot optimized for **Render free tier** (low RAM): QR connect, receive messages, simple auto-replies. No workflows, forms, catalog, or desk bridge.
+No database. No lead/chat history on disk. Pending forms and live customer↔company chats live **only in RAM** and are lost on restart.
 
-## What it does
+## Flow
 
-1. Open `/` and scan the QR to link WhatsApp
-2. Customer sends `Hi` / `Hello` → welcome reply (editable in Admin → Settings)
-3. Any other message → default reply
-4. Messages are logged for the admin dashboard
+1. Customer sends a trigger (`Hi` by default) → bot replies with a one-time form link  
+2. Customer submits the form → bot asks for **Yes** / **No** on WhatsApp  
+3. On **Yes** → details are forwarded to `COMPANY_PHONE` and a live bridge opens  
+4. Messages relay both ways until the customer sends **close**
 
-## Stack
+## Required env
 
-| Layer | Tech |
-|--------|------|
-| Server | Node.js 22.5+, Express |
-| WhatsApp | `whatsapp-web.js` + LocalAuth + `puppeteer-core` + `@sparticuz/chromium` |
-| DB | SQLite (`node:sqlite`) — admins, settings, message_log only |
-| UI | EJS + Tailwind |
-| Realtime | Socket.IO (QR / status) |
+```env
+BASE_URL=https://your-app.onrender.com
+COMPANY_PHONE=9198XXXXXXXX
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=...
+SESSION_SECRET=...
+```
 
-## Local setup
+See `.env.example` for message templates and low-RAM Chromium flags.
+
+## Run locally
 
 ```bash
 npm install
 copy .env.example .env
+# set COMPANY_PHONE + BASE_URL
 npm start
 ```
 
-Open `http://localhost:3000` for QR. Admin: `/admin/login` (defaults from `.env`).
+Open `/` to scan QR. Admin: `/admin/login`.
 
-## Render notes
+## What is still on disk
 
-- Chromium dominates RAM; keep `CHROMIUM_MAX_OLD_SPACE_MB` around `384`
-- `WA_INIT_DELAY_MS=3000` lets health checks pass before WhatsApp starts
-- Use `/healthz` for liveness
+- **WhatsApp LocalAuth** (`.wwebjs_auth`) — required to stay linked without re-scanning QR after every deploy. This is device auth, not chat/lead storage.
+- Built CSS under `public/css`
 
-See `.env.example` for all low-RAM / timeout flags.
+## Notes
 
-## Project layout
-
-```
-server.js
-src/
-  config/db.js
-  models/index.js
-  routes/index.js
-  services/whatsapp.js
-  services/chromiumLaunch.js
-  utils/seed.js
-  middleware/auth.js
-views/          # QR, admin login/dashboard/settings
-public/         # css, js/app.js
-```
+- Render free tier spin-down clears in-memory bridges; customers must start again with `Hi`.
+- Chromium is the main RAM cost; keep `CHROMIUM_MAX_OLD_SPACE_MB≈384` and `WA_INIT_DELAY_MS=3000`.

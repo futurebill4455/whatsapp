@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('partials/styles') %>
+</head>
+<body class="font-sans text-ink bg-sand min-h-screen antialiased">
+  <main class="max-w-lg mx-auto px-4 py-16 text-center animate-in">
+    <div class="w-16 h-16 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-2xl mx-auto mb-4">✓</div>
+    <h1 class="font-display text-3xl font-semibold mb-3"><%= title %></h1>
+    <p class="text-ink/70 text-lg"><%= message %></p>
+  </main>
+</body>
+</html>

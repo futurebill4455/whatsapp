@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('partials/styles') %>
+</head>
+<body class="font-sans text-ink bg-sand min-h-screen antialiased">
+  <main class="max-w-lg mx-auto px-4 py-10 animate-in">
+    <h1 class="font-display text-3xl font-semibold mb-2"><%= businessName %></h1>
+    <p class="text-ink/65 mb-8"><%= formIntro %></p>
+
+    <% if (typeof flash !== 'undefined' && flash) { %>
+      <div class="rounded-lg px-4 py-3 text-sm mb-6 <%= flash.type === 'error' ? 'bg-red-50 text-red-800 border border-red-200' : 'bg-emerald-50 text-emerald-800 border border-emerald-200' %>">
+        <%= flash.message %>
+      </div>
+    <% } %>
+
+    <form method="POST" action="/form/<%= token %>" class="panel p-6 space-y-4">
+      <div>
+        <label class="label" for="name">Full name *</label>
+        <input class="field" id="name" name="name" required autocomplete="name" />
+      </div>
+      <div>
+        <label class="label" for="phone">Phone</label>
+        <input class="field" id="phone" name="phone" value="<%= customerPhone || '' %>" autocomplete="tel" />
+      </div>
+      <div>
+        <label class="label" for="email">Email</label>
+        <input class="field" id="email" name="email" type="email" autocomplete="email" />
+      </div>
+      <div>
+        <label class="label" for="details">Details *</label>
+        <textarea class="field" id="details" name="details" rows="4" required placeholder="What do you need help with?"></textarea>
+      </div>
+      <button type="submit" class="btn btn-primary w-full">Submit</button>
+      <p class="text-xs text-ink/45 text-center">After submit, reply <strong>Yes</strong> on WhatsApp to connect with the company.</p>
+    </form>
+  </main>
+</body>
+</html>

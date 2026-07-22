@@ -1,18 +1,26 @@
 const express = require('express');
-const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const { requireAdmin, guestOnly } = require('../middleware/auth');
-const { Admins, Settings, MessageLog } = require('../models');
+const { config } = require('../config/runtime');
+const store = require('../store/memory');
 const whatsapp = require('../services/whatsapp');
 
 const router = express.Router();
 
 function layoutLocals(req, extra = {}) {
   return {
-    businessName: Settings.get('business_name', 'WhatsApp Bot'),
+    businessName: config.businessName,
     admin: req.session.adminUsername || null,
     flash: req.session.flash || null,
     ...extra,
   };
+}
+
+function safeEqual(a, b) {
+  const x = Buffer.from(String(a || ''), 'utf8');
+  const y = Buffer.from(String(b || ''), 'utf8');
+  if (x.length !== y.length) return false;
+  return crypto.timingSafeEqual(x, y);
 }
 
 router.use((req, res, next) => {
@@ -37,22 +45,89 @@ router.get('/api/whatsapp/status', (req, res) => {
   res.json(whatsapp.getPublicStatus());
 });
 
-// ——— Admin auth ———
+// ——— Customer form (in-memory token) ———
+router.get('/form/:token', (req, res) => {
+  const pending = store.getPendingByToken(req.params.token);
+  if (!pending) {
+    return res.status(404).render('error', layoutLocals(req, {
+      title: 'Not Found',
+      message: 'This form link is invalid or has expired. Message us on WhatsApp with Hi for a new link.',
+    }));
+  }
+
+  if (pending.status === 'awaiting_confirmation') {
+    return res.render('form-done', layoutLocals(req, {
+      title: 'Awaiting Confirmation',
+      message: 'Please reply Yes on WhatsApp to confirm your details.',
+    }));
+  }
+
+  if (pending.status !== 'awaiting_form') {
+    return res.render('form-done', layoutLocals(req, {
+      title: 'Already Submitted',
+      message: 'This form was already used. Message Hi on WhatsApp to start again.',
+    }));
+  }
+
+  res.render('form', layoutLocals(req, {
+    title: 'Your details',
+    token: pending.token,
+    formIntro: config.formIntro,
+    customerPhone: pending.customerPhone,
+  }));
+});
+
+router.post('/form/:token', async (req, res) => {
+  const pending = store.getPendingByToken(req.params.token);
+  if (!pending || pending.status !== 'awaiting_form') {
+    return res.status(400).render('error', layoutLocals(req, {
+      title: 'Invalid',
+      message: 'This form can no longer be submitted.',
+    }));
+  }
+
+  const name = String(req.body.name || '').trim();
+  const email = String(req.body.email || '').trim();
+  const details = String(req.body.details || '').trim();
+  const phone = String(req.body.phone || pending.customerPhone || '').trim();
+
+  if (!name || !details) {
+    req.session.flash = { type: 'error', message: 'Name and details are required.' };
+    return res.redirect(`/form/${req.params.token}`);
+  }
+
+  store.submitForm(req.params.token, { name, phone, email, details });
+
+  try {
+    await whatsapp.notifyFormSubmitted(req.params.token);
+  } catch (err) {
+    console.error('Failed to send confirmation WhatsApp:', err.message);
+  }
+
+  res.render('form-done', layoutLocals(req, {
+    title: 'Submitted',
+    message: 'Thanks! Check WhatsApp and reply Yes to confirm — we will connect you with the company.',
+  }));
+});
+
+// ——— Admin auth (env credentials only) ———
 router.get('/admin/login', guestOnly, (req, res) => {
   res.render('admin/login', layoutLocals(req, { title: 'Admin Login' }));
 });
 
 router.post('/admin/login', guestOnly, (req, res) => {
-  const { username, password } = req.body;
-  const admin = Admins.findByUsername(String(username || '').trim());
-  if (!admin || !bcrypt.compareSync(password || '', admin.password_hash)) {
+  const username = String(req.body.username || '').trim();
+  const password = String(req.body.password || '');
+  const userOk = safeEqual(username, config.adminUsername);
+  const passOk = safeEqual(password, config.adminPassword);
+  if (!userOk || !passOk) {
     return res.render('admin/login', layoutLocals(req, {
       title: 'Admin Login',
       error: 'Invalid username or password',
     }));
   }
-  req.session.adminId = admin.id;
-  req.session.adminUsername = admin.username;
+  req.session.adminId = 1;
+  req.session.adminUsername = username;
   res.redirect('/admin');
 });
 
@@ -60,32 +135,28 @@ router.post('/admin/logout', requireAdmin, (req, res) => {
   req.session.destroy(() => res.redirect('/admin/login'));
 });
 
-// ——— Admin pages ———
 router.get('/admin', requireAdmin, (req, res) => {
   res.render('admin/dashboard', layoutLocals(req, {
     title: 'Dashboard',
-    messageCount: MessageLog.count(),
     waStatus: whatsapp.getPublicStatus(),
-    messages: MessageLog.recent(30),
+    memory: store.stats(),
+    bridges: store.listActiveBridges(),
+    companyPhone: config.companyPhone,
   }));
 });
 
 router.get('/admin/settings', requireAdmin, (req, res) => {
   res.render('admin/settings', layoutLocals(req, {
     title: 'Settings',
-    settings: Settings.getAll(),
+    settings: {
+      business_name: config.businessName,
+      company_phone: config.companyPhone,
+      base_url: config.baseUrl,
+      triggers: config.triggers.join(', '),
+      link_message: config.linkMessage,
+      form_intro: config.formIntro,
+    },
   }));
-});
-
-router.post('/admin/settings', requireAdmin, (req, res) => {
-  const allowed = ['business_name', 'welcome_message', 'default_reply'];
-  const payload = {};
-  for (const key of allowed) {
-    if (req.body[key] !== undefined) payload[key] = req.body[key];
-  }
-  Settings.setMany(payload);
-  req.session.flash = { type: 'success', message: 'Settings saved.' };
-  res.redirect('/admin/settings');
 });
 
 router.post('/admin/whatsapp/logout', requireAdmin, async (req, res) => {
@@ -102,7 +173,7 @@ router.post('/admin/whatsapp/reset-session', requireAdmin, async (req, res) => {
     await whatsapp.resetSession({ reason: 'admin reset-session' });
     req.session.flash = {
       type: 'success',
-      message: 'WhatsApp session wiped. Wait for a fresh QR on the home page.',
+      message: 'WhatsApp auth session wiped. Wait for a fresh QR on the home page.',
     };
   } catch (err) {
     req.session.flash = { type: 'error', message: `Reset failed: ${err.message}` };
