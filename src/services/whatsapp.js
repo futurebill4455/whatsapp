@@ -49,7 +49,8 @@ const DEFAULT_USER_AGENT =
   process.env.WHATSAPP_USER_AGENT ||
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
-function buildPuppeteerArgs() {
+/** Chromium flags required on Render / Linux (no sandbox) and low-memory hosts */
+function buildPuppeteerArgs(extraArgs = []) {
   const args = [
     '--no-sandbox',
     '--disable-setuid-sandbox',
@@ -61,6 +62,7 @@ function buildPuppeteerArgs() {
     '--disable-extensions',
     '--disable-background-networking',
     '--disable-software-rasterizer',
+    '--disable-features=IsolateOrigins,site-per-process',
     '--mute-audio',
     '--window-size=1280,720',
   ];
@@ -70,7 +72,121 @@ function buildPuppeteerArgs() {
     (process.env.PUPPETEER_NO_SINGLE_PROCESS !== '1' && process.platform !== 'win32');
 
   if (wantSingle) args.push('--single-process');
+
+  for (const a of extraArgs) {
+    if (a && !args.includes(a)) args.push(a);
+  }
   return args;
+}
+
+/**
+ * Locate a Chrome/Chromium binary for Puppeteer.
+ * Order: env → system paths → puppeteer cache → @sparticuz/chromium (Render/Linux).
+ */
+async function resolveChromeExecutablePath() {
+  const envPath =
+    process.env.PUPPETEER_EXECUTABLE_PATH ||
+    process.env.CHROME_PATH ||
+    process.env.CHROMIUM_PATH;
+  if (envPath && fs.existsSync(envPath)) {
+    console.log('[WhatsApp] Chrome executable (env):', envPath);
+    return { executablePath: envPath, source: 'env' };
+  }
+
+  const systemPaths =
+    process.platform === 'win32'
+      ? [
+          process.env.LOCALAPPDATA &&
+            path.join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+          'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+          'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+        ]
+      : [
+          '/usr/bin/google-chrome-stable',
+          '/usr/bin/google-chrome',
+          '/usr/bin/chromium',
+          '/usr/bin/chromium-browser',
+          '/snap/bin/chromium',
+          '/usr/lib/chromium/chromium',
+        ];
+
+  for (const candidate of systemPaths.filter(Boolean)) {
+    if (fs.existsSync(candidate)) {
+      console.log('[WhatsApp] Chrome executable (system):', candidate);
+      return { executablePath: candidate, source: 'system' };
+    }
+  }
+
+  try {
+    const puppeteer = require('puppeteer');
+    const exe =
+      typeof puppeteer.executablePath === 'function' ? puppeteer.executablePath() : null;
+    if (exe && fs.existsSync(exe)) {
+      console.log('[WhatsApp] Chrome executable (puppeteer):', exe);
+      return { executablePath: exe, source: 'puppeteer' };
+    }
+  } catch (err) {
+    console.warn('[WhatsApp] puppeteer.executablePath unavailable:', err.message);
+  }
+
+  // Render / slim Linux images often have no system Chrome — use bundled Chromium
+  if (process.platform === 'linux') {
+    try {
+      const chromium = require('@sparticuz/chromium');
+      // Prefer full graphics mode when available (WhatsApp Web needs a real browser)
+      if (typeof chromium.setGraphicsMode === 'function') {
+        chromium.setGraphicsMode(true);
+      }
+      const exe = await chromium.executablePath();
+      if (exe && fs.existsSync(exe)) {
+        console.log('[WhatsApp] Chrome executable (@sparticuz/chromium):', exe);
+        return {
+          executablePath: exe,
+          source: 'sparticuz',
+          extraArgs: Array.isArray(chromium.args) ? chromium.args : [],
+          headless: chromium.headless ?? true,
+        };
+      }
+    } catch (err) {
+      console.warn('[WhatsApp] @sparticuz/chromium unavailable:', err.message);
+    }
+  }
+
+  return { executablePath: null, source: 'none' };
+}
+
+async function buildPuppeteerLaunchOptions() {
+  const resolved = await resolveChromeExecutablePath();
+  const extraArgs = resolved.extraArgs || [];
+  const args = buildPuppeteerArgs(extraArgs);
+
+  const headlessEnv = process.env.PUPPETEER_HEADLESS;
+  let headless = true;
+  if (headlessEnv === 'false') headless = false;
+  else if (headlessEnv === 'shell' || headlessEnv === 'new') headless = headlessEnv;
+  else if (resolved.headless != null) headless = resolved.headless;
+
+  const opts = {
+    headless,
+    args,
+    defaultViewport: { width: 1280, height: 720 },
+    // Prevent Runtime.callFunctionOn timed out during WA Web sync
+    protocolTimeout: Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT) || 180000,
+    timeout: Number(process.env.PUPPETEER_TIMEOUT) || 120000,
+    // Ignore HTTPS errors on some hosts
+    ignoreHTTPSErrors: true,
+  };
+
+  if (resolved.executablePath) {
+    opts.executablePath = resolved.executablePath;
+  } else {
+    console.error(
+      '[WhatsApp] No Chrome/Chromium binary found. On Render set build command to install Chrome, ' +
+        'or set PUPPETEER_EXECUTABLE_PATH. Falling back to Puppeteer default (may fail).'
+    );
+  }
+
+  return opts;
 }
 
 function sleep(ms) {
@@ -207,17 +323,12 @@ class WhatsAppService {
       this.clearQr('reinit');
       this.emit('whatsapp:status', this.getPublicStatus());
 
-      const puppeteerOpts = {
-        headless: process.env.PUPPETEER_HEADLESS === 'false' ? false : true,
-        args: buildPuppeteerArgs(),
-        defaultViewport: { width: 1280, height: 720 },
-        // Prevent Runtime.callFunctionOn timed out during WA Web sync
-        protocolTimeout: Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT) || 180000,
-        timeout: Number(process.env.PUPPETEER_TIMEOUT) || 120000,
-      };
-      if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-        puppeteerOpts.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-      }
+      const puppeteerOpts = await buildPuppeteerLaunchOptions();
+      console.log(
+        '[WhatsApp] Launching browser headless=%s executablePath=%s',
+        puppeteerOpts.headless,
+        puppeteerOpts.executablePath || '(puppeteer default)'
+      );
 
       this.client = new Client({
         authStrategy: new LocalAuth({ dataPath: AUTH_PATH, clientId: CLIENT_ID }),

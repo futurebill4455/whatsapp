@@ -6,6 +6,8 @@
   "scripts": {
     "build:css": "tailwindcss -i ./src/styles/input.css -o ./public/css/tailwind.css --minify",
     "watch:css": "tailwindcss -i ./src/styles/input.css -o ./public/css/tailwind.css --watch",
+    "postinstall": "npx puppeteer browsers install chrome || echo \"Chrome install skipped (use @sparticuz/chromium on Render)\"",
+    "build": "npm run build:css && npx puppeteer browsers install chrome",
     "prestart": "npm run build:css",
     "start": "node --experimental-sqlite server.js",
     "dev": "node --experimental-sqlite --watch server.js",
@@ -23,12 +25,14 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@sparticuz/chromium": "^149.0.0",
     "bcryptjs": "^2.4.3",
     "dotenv": "^16.4.7",
     "drawflow": "^0.0.60",
     "ejs": "^3.1.10",
     "express": "^4.21.2",
     "express-session": "^1.18.1",
+    "puppeteer": "^24.38.0",
     "qrcode": "^1.5.4",
     "socket.io": "^4.8.1",
     "uuid": "^11.0.3",
