@@ -220,8 +220,9 @@ const DEFAULT_USER_AGENT =
   process.env.WHATSAPP_USER_AGENT ||
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
-/** Chromium flags tuned for Render speed + stability (low RAM, no GPU) */
+/** Chromium flags tuned for Render free-tier (low RAM/CPU) */
 function buildPuppeteerArgs(extraArgs = []) {
+  const heapMb = Number(process.env.CHROMIUM_MAX_OLD_SPACE_MB) || 512;
   const args = [
     '--no-sandbox',
     '--disable-setuid-sandbox',
@@ -233,7 +234,7 @@ function buildPuppeteerArgs(extraArgs = []) {
     '--disable-extensions',
     '--disable-background-networking',
     '--disable-software-rasterizer',
-    '--disable-features=IsolateOrigins,site-per-process,TranslateUI,AudioServiceOutOfProcess',
+    '--disable-features=IsolateOrigins,site-per-process,TranslateUI,AudioServiceOutOfProcess,CalculateNativeWinOcclusion',
     '--disable-ipc-flooding-protection',
     '--disable-background-timer-throttling',
     '--disable-backgrounding-occluded-windows',
@@ -247,6 +248,8 @@ function buildPuppeteerArgs(extraArgs = []) {
     '--disable-notifications',
     '--disable-offer-store-unmasked-wallet-cards',
     '--disable-speech-api',
+    '--disable-translate',
+    '--disable-blink-features=AutomationControlled',
     '--metrics-recording-only',
     '--no-default-browser-check',
     '--no-pings',
@@ -254,14 +257,16 @@ function buildPuppeteerArgs(extraArgs = []) {
     '--use-mock-keychain',
     '--mute-audio',
     '--autoplay-policy=no-user-gesture-required',
-    '--memory-pressure-off',
     '--font-render-hinting=none',
-    '--window-size=960,720',
+    // Cap Chromium V8 heap so the OS process stays within free-tier RAM
+    `--js-flags=--max-old-space-size=${heapMb}`,
+    // Tiny viewport = less paint / compositing during sync
+    '--window-size=800,600',
     '--renderer-process-limit=1',
   ];
 
-  // On Render/Linux, --single-process cuts memory and often unsticks "Finishing".
-  // Disable with PUPPETEER_NO_SINGLE_PROCESS=1 if you see frame-detach storms.
+  // Free-tier: prefer single-process to avoid multiple Chromium processes eating RAM.
+  // Set PUPPETEER_NO_SINGLE_PROCESS=1 only if you hit constant frame-detach errors.
   const onRenderLike =
     !!process.env.RENDER ||
     !!process.env.AWS_LAMBDA_FUNCTION_NAME ||
@@ -272,15 +277,17 @@ function buildPuppeteerArgs(extraArgs = []) {
 
   if (allowSingle) {
     args.push('--single-process');
-    console.log('[WhatsApp] Using --single-process (faster on low-RAM hosts)');
+    console.log('[WhatsApp] Low-RAM mode: --single-process + js heap', heapMb, 'MB');
   } else {
-    console.log('[WhatsApp] Multi-process Chromium (PUPPETEER_NO_SINGLE_PROCESS or non-Linux)');
+    console.log('[WhatsApp] Multi-process Chromium; js heap', heapMb, 'MB');
   }
 
   for (const a of extraArgs) {
     if (!a) continue;
-    // Avoid duplicate headless flags from Sparticuz — we set headless in launch opts
     if (String(a).startsWith('--headless')) continue;
+    // Prefer our capped js-flags over Sparticuz defaults
+    if (String(a).startsWith('--js-flags')) continue;
+    if (String(a).startsWith('--window-size')) continue;
     if (!args.includes(a)) args.push(a);
   }
   return args;
@@ -316,8 +323,9 @@ async function buildPuppeteerLaunchOptions() {
     source = 'env';
   } else if (useSparticuz) {
     // Primary path for Render: inflate + return path from chromium.br (no Chrome download)
+    // Graphics OFF saves significant RAM on free tier (WebGL/SwiftShader not needed for WA bot)
     try {
-      chromium.setGraphicsMode = true;
+      chromium.setGraphicsMode = false;
     } catch (_) {}
     executablePath = await chromium.executablePath();
     extraArgs = typeof chromium.args !== 'undefined' ? [...chromium.args] : [];
@@ -352,7 +360,7 @@ async function buildPuppeteerLaunchOptions() {
 
     if (!executablePath) {
       try {
-        chromium.setGraphicsMode = true;
+        chromium.setGraphicsMode = false;
       } catch (_) {}
       executablePath = await chromium.executablePath();
       extraArgs = typeof chromium.args !== 'undefined' ? [...chromium.args] : [];
@@ -376,15 +384,15 @@ async function buildPuppeteerLaunchOptions() {
 
   console.log(`[WhatsApp] Browser source=${source} executablePath=${executablePath}`);
 
-  const protocolTimeout = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT) || 300000;
-  const launchTimeout = Number(process.env.PUPPETEER_TIMEOUT) || 180000;
+  // Free-tier sync after QR is slow — keep CDP/protocol alive for several minutes
+  const protocolTimeout = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT) || 600000;
+  const launchTimeout = Number(process.env.PUPPETEER_TIMEOUT) || 300000;
 
   return {
     headless,
     executablePath,
     args: buildPuppeteerArgs(extraArgs),
-    // Smaller viewport = less paint work while pairing
-    defaultViewport: { width: 960, height: 720 },
+    defaultViewport: { width: 800, height: 600, deviceScaleFactor: 1 },
     protocolTimeout,
     timeout: launchTimeout,
     ignoreHTTPSErrors: true,
@@ -420,7 +428,12 @@ class WhatsAppService {
     this._initAttempt = 0;
     this._initPromise = null;
     this._sendQueue = Promise.resolve();
+    this._msgQueue = Promise.resolve();
+    this._msgQueueDepth = 0;
     this._seenMsgIds = new Map();
+    this._seenCleanupTimer = null;
+    this._boundMessageHandler = null;
+    this._boundMessageCreateHandler = null;
     this.engine = new WorkflowEngine(this);
     this.loadingPercent = null;
     this.loadingMessage = null;
@@ -479,7 +492,7 @@ class WhatsAppService {
    */
   armLoadingWatchdog(percent, message) {
     this.clearLoadingWatchdog();
-    const stuckMs = Number(process.env.WA_LOADING_STUCK_MS) || 90000;
+    const stuckMs = Number(process.env.WA_LOADING_STUCK_MS) || 120000;
     const key = `${percent}|${String(message || '').toLowerCase()}`;
     const now = Date.now();
     if (key !== this._lastLoadingKey) {
@@ -555,13 +568,27 @@ class WhatsAppService {
 
   async destroyClient() {
     this.clearLoadingWatchdog();
+    this._stopSeenCleanup();
     if (!this.client) return;
     const client = this.client;
     this.client = null;
-    try { client.removeAllListeners(); } catch (_) {}
-    try { await client.destroy(); } catch (err) {
+    try {
+      if (this._boundMessageHandler) {
+        client.removeListener('message', this._boundMessageHandler);
+      }
+      if (this._boundMessageCreateHandler) {
+        client.removeListener('message_create', this._boundMessageCreateHandler);
+      }
+      this._boundMessageHandler = null;
+      this._boundMessageCreateHandler = null;
+      client.removeAllListeners();
+    } catch (_) {}
+    try {
+      await client.destroy();
+    } catch (err) {
       console.warn('[WhatsApp] destroy warning:', err.message);
     }
+    this._seenMsgIds.clear();
   }
 
   async resetSession({ reason = 'manual reset' } = {}) {
@@ -632,8 +659,9 @@ class WhatsAppService {
         },
         qrMaxRetries: Number(process.env.WA_QR_MAX_RETRIES) || 20,
         takeoverOnConflict: true,
-        takeoverTimeoutMs: Number(process.env.WA_TAKEOVER_TIMEOUT_MS) || 60000,
-        authTimeoutMs: Number(process.env.WA_AUTH_TIMEOUT_MS) || 240000,
+        takeoverTimeoutMs: Number(process.env.WA_TAKEOVER_TIMEOUT_MS) || 120000,
+        // Free-tier chat sync after QR can take several minutes
+        authTimeoutMs: Number(process.env.WA_AUTH_TIMEOUT_MS) || 600000,
       });
 
       this._bindClientEvents(this.client);
@@ -752,6 +780,7 @@ class WhatsAppService {
       this.setConnectionPhase('ready', this.info?.phone ? `phone ${this.info.phone}` : 'connected');
       console.log('[WhatsApp] Client ready', this.info?.phone || '');
       console.log('[WhatsApp] Listening for incoming messages — send Hi to test');
+      this._startSeenCleanup();
     });
 
     client.on('auth_failure', async (msg) => {
@@ -775,6 +804,7 @@ class WhatsAppService {
       this.info = null;
       this.lastError = String(reason || 'disconnected');
       this.clearQr('disconnected');
+      this._stopSeenCleanup();
       this.emit('whatsapp:status', this.getPublicStatus());
       console.warn('[WhatsApp] Disconnected:', reason);
       const reasonStr = String(reason || '').toUpperCase();
@@ -787,37 +817,99 @@ class WhatsAppService {
       catch (err) { console.error('[WhatsApp] Reconnect failed:', err.message); }
     });
 
-    // Primary + secondary listeners (message_create catches some multi-device deliveries)
-    const onIncoming = async (message) => {
-      try {
-        await this.handleIncomingMessage(message);
-      } catch (err) {
-        console.error('[WhatsApp] Message handler error:', err?.message || err);
-        console.error(err?.stack || '');
-      }
+    // Single shared handler + serial queue — prevents free-tier OOM from parallel message work
+    this._boundMessageHandler = (message) => {
+      this.enqueueIncomingMessage(message, 'message');
+    };
+    this._boundMessageCreateHandler = (message) => {
+      // message_create also fires for outbound — skip early to cut CPU
+      if (message?.fromMe) return;
+      this.enqueueIncomingMessage(message, 'message_create');
     };
 
-    client.on('message', onIncoming);
-    client.on('message_create', async (message) => {
-      // message_create also fires for outbound — skip those early
-      if (message.fromMe) return;
-      await onIncoming(message);
-    });
+    client.on('message', this._boundMessageHandler);
+    client.on('message_create', this._boundMessageCreateHandler);
 
-    console.log('[WhatsApp] Message listeners bound (message + message_create)');
+    console.log('[WhatsApp] Message listeners bound (queued message + message_create)');
+  }
+
+  /**
+   * Process inbound messages one-at-a-time to stay within free-tier CPU/RAM.
+   */
+  enqueueIncomingMessage(message, source = 'message') {
+    const maxDepth = Number(process.env.WA_MSG_QUEUE_MAX) || 40;
+    if (this._msgQueueDepth >= maxDepth) {
+      console.warn(
+        `[WhatsApp] Dropping message (queue full ${this._msgQueueDepth}/${maxDepth}) from ${message?.from || '?'}`
+      );
+      return;
+    }
+
+    this._msgQueueDepth += 1;
+    this._msgQueue = this._msgQueue
+      .then(async () => {
+        try {
+          await this.handleIncomingMessage(message);
+        } catch (err) {
+          console.error(
+            `[WhatsApp] Message handler error (${source}):`,
+            err?.message || err
+          );
+        } finally {
+          this._msgQueueDepth = Math.max(0, this._msgQueueDepth - 1);
+          // Yield event loop so HTTP/Socket.IO stay responsive on tiny instances
+          await sleep(Number(process.env.WA_MSG_YIELD_MS) || 50);
+        }
+      })
+      .catch(() => {
+        this._msgQueueDepth = Math.max(0, this._msgQueueDepth - 1);
+      });
+  }
+
+  _startSeenCleanup() {
+    this._stopSeenCleanup();
+    this._seenCleanupTimer = setInterval(() => {
+      this._pruneSeenIds();
+    }, 60000);
+    // Don't keep the process alive solely for this timer
+    if (typeof this._seenCleanupTimer.unref === 'function') {
+      this._seenCleanupTimer.unref();
+    }
+  }
+
+  _stopSeenCleanup() {
+    if (this._seenCleanupTimer) {
+      clearInterval(this._seenCleanupTimer);
+      this._seenCleanupTimer = null;
+    }
+  }
+
+  _pruneSeenIds() {
+    const now = Date.now();
+    const ttl = Number(process.env.WA_SEEN_TTL_MS) || 90000;
+    const max = Number(process.env.WA_SEEN_MAX) || 200;
+    for (const [k, ts] of this._seenMsgIds) {
+      if (now - ts > ttl) this._seenMsgIds.delete(k);
+    }
+    // Hard cap — drop oldest if still too large
+    if (this._seenMsgIds.size > max) {
+      const entries = [...this._seenMsgIds.entries()].sort((a, b) => a[1] - b[1]);
+      const drop = entries.length - max;
+      for (let i = 0; i < drop; i++) this._seenMsgIds.delete(entries[i][0]);
+    }
   }
 
   _markSeen(message) {
-    const id = message?.id?._serialized || message?.id?.id || null;
+    const id =
+      message?.id?._serialized ||
+      message?.id?.$1 ||
+      message?.id?.id ||
+      null;
     if (!id) return false;
     const now = Date.now();
     if (this._seenMsgIds.has(id)) return true;
     this._seenMsgIds.set(id, now);
-    if (this._seenMsgIds.size > 500) {
-      for (const [k, ts] of this._seenMsgIds) {
-        if (now - ts > 120000) this._seenMsgIds.delete(k);
-      }
-    }
+    if (this._seenMsgIds.size > 250) this._pruneSeenIds();
     return false;
   }
 
