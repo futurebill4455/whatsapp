@@ -1,0 +1,40 @@
+{
+  "name": "insurance-whatsapp-bot",
+  "version": "1.0.0",
+  "description": "Production-ready WhatsApp automation for insurance lead collection and forwarding",
+  "main": "server.js",
+  "scripts": {
+    "build:css": "tailwindcss -i ./src/styles/input.css -o ./public/css/tailwind.css --minify",
+    "watch:css": "tailwindcss -i ./src/styles/input.css -o ./public/css/tailwind.css --watch",
+    "prestart": "npm run build:css",
+    "start": "node --experimental-sqlite server.js",
+    "dev": "node --experimental-sqlite --watch server.js",
+    "seed": "node --experimental-sqlite src/utils/seed.js",
+    "reset:wa": "node scripts/reset-wa-session.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "keywords": [
+    "whatsapp",
+    "insurance",
+    "automation",
+    "bot"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "dotenv": "^16.4.7",
+    "drawflow": "^0.0.60",
+    "ejs": "^3.1.10",
+    "express": "^4.21.2",
+    "express-session": "^1.18.1",
+    "qrcode": "^1.5.4",
+    "socket.io": "^4.8.1",
+    "uuid": "^11.0.3",
+    "whatsapp-web.js": "github:lindionez/whatsapp-web.js#feat/fix-_serialized-id-fallback"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.17"
+  }
+}

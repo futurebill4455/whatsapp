@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('partials/styles') %>
+</head>
+<body class="font-sans text-ink bg-sand min-h-screen antialiased">
+  <%- include('partials/nav') %>
+  <main class="max-w-lg mx-auto px-4 py-16 text-center">
+    <div class="panel p-8">
+      <h1 class="font-display text-2xl font-semibold mb-3"><%= title %></h1>
+      <p class="text-ink/70 mb-6"><%= message %></p>
+      <a href="/" class="btn btn-primary">Back home</a>
+    </div>
+  </main>
+</body>
+</html>

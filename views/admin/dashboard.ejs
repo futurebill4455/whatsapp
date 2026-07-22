@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('../partials/styles') %>
+</head>
+<body class="font-sans text-ink bg-sand min-h-screen antialiased">
+  <%- include('../partials/nav') %>
+  <% if (flash) { %>
+    <div class="max-w-6xl mx-auto px-4 pt-4">
+      <div class="rounded-lg px-4 py-3 text-sm <%= flash.type === 'error' ? 'bg-red-50 text-red-800 border border-red-200' : 'bg-emerald-50 text-emerald-800 border border-emerald-200' %>"><%= flash.message %></div>
+    </div>
+  <% } %>
+
+  <main class="max-w-6xl mx-auto px-4 py-8 space-y-8 animate-in">
+    <div class="flex flex-wrap items-end justify-between gap-4">
+      <div>
+        <h1 class="font-display text-3xl font-semibold">Dashboard</h1>
+        <p class="text-ink/60">Welcome, <%= admin %></p>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <a href="/" class="btn btn-ghost">QR Page</a>
+        <form method="POST" action="/admin/whatsapp/logout">
+          <button class="btn btn-ghost text-coral" type="submit">Relink WhatsApp</button>
+        </form>
+        <form method="POST" action="/admin/whatsapp/reset-session" onsubmit="return confirm('Wipe LocalAuth session files and restart WhatsApp client?');">
+          <button class="btn btn-ghost text-coral" type="submit">Reset session files</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="grid sm:grid-cols-2 lg:grid-cols-6 gap-4">
+      <% const cards = [
+        { label: 'Total leads', value: stats.total },
+        { label: 'Today', value: stats.today },
+        { label: 'Awaiting form', value: stats.awaiting_form },
+        { label: 'Awaiting Yes', value: stats.awaiting_confirmation },
+        { label: 'Forwarded', value: stats.forwarded },
+        { label: 'Live chats', value: typeof activeChats !== 'undefined' ? activeChats : 0 },
+      ]; %>
+      <% cards.forEach(function (c) { %>
+        <div class="panel p-4">
+          <div class="text-xs uppercase tracking-wide text-ink/45 font-semibold"><%= c.label %></div>
+          <div class="font-display text-3xl font-semibold mt-1"><%= c.value %></div>
+        </div>
+      <% }) %>
+    </div>
+
+    <div class="panel p-5 flex flex-wrap items-center justify-between gap-4">
+      <div class="flex items-center gap-3">
+        <span class="status-dot status-<%= waStatus.status %>"></span>
+        <div>
+          <div class="font-semibold capitalize">WhatsApp: <%= waStatus.status.replace(/_/g, ' ') %></div>
+          <div class="text-sm text-ink/60">
+            <% if (waStatus.info && waStatus.info.phone) { %>
+              +<%= waStatus.info.phone %><%= waStatus.info.pushname ? ' · ' + waStatus.info.pushname : '' %>
+            <% } else { %>
+              Not connected — open the QR page to scan
+            <% } %>
+          </div>
+        </div>
+      </div>
+      <a href="/" class="btn btn-primary">Open QR Connect</a>
+    </div>
+
+    <div class="grid lg:grid-cols-2 gap-6">
+      <section class="panel p-5">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="font-display text-xl font-semibold">Recent leads</h2>
+          <a href="/admin/submissions" class="text-sm text-sea font-semibold">View all</a>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Type</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% if (!recent.length) { %>
+                <tr><td colspan="3" class="text-ink/45">No submissions yet.</td></tr>
+              <% } %>
+              <% recent.forEach(function (s) { %>
+                <tr>
+                  <td>
+                    <div class="font-medium"><%= s.customer_name || '—' %></div>
+                    <div class="text-xs text-ink/45">+<%= s.customer_phone %></div>
+                  </td>
+                  <td><%= s.insurance_type || '—' %></td>
+                  <td><span class="badge badge-<%= s.status %>"><%= s.status.replace(/_/g, ' ') %></span></td>
+                </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel p-5">
+        <h2 class="font-display text-xl font-semibold mb-4">Recent messages</h2>
+        <div class="space-y-3 max-h-80 overflow-y-auto">
+          <% if (!messages.length) { %>
+            <p class="text-sm text-ink/45">No messages logged yet.</p>
+          <% } %>
+          <% messages.forEach(function (m) { %>
+            <div class="text-sm border-b border-ink/5 pb-3">
+              <div class="flex justify-between gap-2 text-xs text-ink/45 mb-1">
+                <span><%= m.direction === 'in' ? '← In' : '→ Out' %> · +<%= m.phone %></span>
+                <span><%= m.created_at %></span>
+              </div>
+              <div class="whitespace-pre-wrap text-ink/80"><%= m.body %></div>
+            </div>
+          <% }) %>
+        </div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

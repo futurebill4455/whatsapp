@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('../partials/styles') %>
+</head>
+<body class="font-sans text-ink bg-sand min-h-screen antialiased">
+  <%- include('../partials/nav') %>
+  <% if (flash) { %>
+    <div class="max-w-4xl mx-auto px-4 pt-4">
+      <div class="rounded-lg px-4 py-3 text-sm <%= flash.type === 'error' ? 'bg-red-50 text-red-800 border border-red-200' : 'bg-emerald-50 text-emerald-800 border border-emerald-200' %>"><%= flash.message %></div>
+    </div>
+  <% } %>
+
+  <main class="max-w-4xl mx-auto px-4 py-8 animate-in">
+    <h1 class="font-display text-3xl font-semibold mb-2">Message templates</h1>
+    <p class="text-ink/60 mb-8">Use placeholders like <code class="text-sea">{{name}}</code>, <code class="text-sea">{{insurance_type}}</code>, <code class="text-sea">{{company}}</code>, <code class="text-sea">{{phone}}</code>, <code class="text-sea">{{form_link}}</code>, <code class="text-sea">{{business_name}}</code>.</p>
+
+    <form method="POST" action="/admin/settings" class="panel p-6 space-y-5">
+      <div>
+        <label class="label" for="business_name">Business name</label>
+        <input class="field" id="business_name" name="business_name" value="<%= settings.business_name || '' %>" />
+      </div>
+      <div>
+        <label class="label" for="form_intro">Form intro text</label>
+        <textarea class="field" id="form_intro" name="form_intro" rows="2"><%= settings.form_intro || '' %></textarea>
+      </div>
+      <div>
+        <label class="label" for="confirmation_template">Confirmation WhatsApp message</label>
+        <textarea class="field font-mono text-sm" id="confirmation_template" name="confirmation_template" rows="6"><%= settings.confirmation_template || '' %></textarea>
+      </div>
+      <div>
+        <label class="label" for="forward_template">Internal forward message</label>
+        <textarea class="field font-mono text-sm" id="forward_template" name="forward_template" rows="6"><%= settings.forward_template || '' %></textarea>
+      </div>
+      <div>
+        <label class="label" for="success_message">Success reply after Yes (live chat opens)</label>
+        <textarea class="field" id="success_message" name="success_message" rows="4"><%= settings.success_message || '' %></textarea>
+      </div>
+      <div>
+        <label class="label" for="chat_close_message">Message when customer sends close / ക്ലോസ്</label>
+        <textarea class="field" id="chat_close_message" name="chat_close_message" rows="2"><%= settings.chat_close_message || '' %></textarea>
+      </div>
+      <div>
+        <label class="label" for="cancel_message">Cancel / refill prompt after No</label>
+        <textarea class="field" id="cancel_message" name="cancel_message" rows="2"><%= settings.cancel_message || '' %></textarea>
+      </div>
+      <div>
+        <label class="label" for="already_pending_message">Already pending message</label>
+        <textarea class="field" id="already_pending_message" name="already_pending_message" rows="2"><%= settings.already_pending_message || '' %></textarea>
+      </div>
+      <button type="submit" class="btn btn-primary">Save settings</button>
+    </form>
+  </main>
+</body>
+</html>

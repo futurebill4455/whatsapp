@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('partials/styles') %>
+</head>
+<body class="font-sans text-ink bg-sand min-h-screen antialiased">
+  <main class="max-w-lg mx-auto px-4 py-16 text-center animate-in">
+    <div class="panel p-8">
+      <div class="w-16 h-16 rounded-full bg-sea/10 text-sea flex items-center justify-center text-2xl mx-auto mb-4">✓</div>
+      <h1 class="font-display text-2xl font-semibold mb-3"><%= title %></h1>
+      <p class="text-ink/70 mb-6"><%= message %></p>
+      <% if (submission && submission.customer_name) {
+        let extra = {};
+        try { extra = submission.extra_data ? JSON.parse(submission.extra_data) : {}; } catch (e) { extra = {}; }
+      %>
+        <div class="text-left text-sm bg-mist/60 rounded-lg p-4 space-y-1">
+          <div><span class="text-ink/50">Name:</span> <%= submission.customer_name %></div>
+          <div><span class="text-ink/50">Type:</span> <%= submission.insurance_type %></div>
+          <div><span class="text-ink/50">Company:</span> <%= submission.company %></div>
+          <% if (submission.insurance_type === 'Health') { %>
+            <% if (extra.member_count) { %><div><span class="text-ink/50">Members:</span> <%= extra.member_count %></div><% } %>
+            <% if (extra.coverage_amount) { %><div><span class="text-ink/50">Coverage:</span> <%= extra.coverage_amount %></div><% } %>
+            <% if (extra.members && extra.members.length) { %>
+              <div class="mt-2 space-y-1">
+                <% extra.members.forEach(function(m, i) { %>
+                  <div class="text-xs bg-white/70 rounded px-2 py-1">
+                    <strong>Member <%= i+1 %>:</strong> <%= m.name %> · <%= m.dob %> · <%= m.gender %>
+                  </div>
+                <% }) %>
+              </div>
+            <% } %>
+          <% } %>
+          <% if (submission.insurance_type === 'Vehicle') { %>
+            <% if (extra.vehicle_model) { %><div><span class="text-ink/50">Model:</span> <%= extra.vehicle_model %></div><% } %>
+            <% if (extra.manufacturing_year) { %><div><span class="text-ink/50">Year:</span> <%= extra.manufacturing_year %></div><% } %>
+            <% if (extra.policy_type) { %><div><span class="text-ink/50">Policy:</span> <%= extra.policy_type %></div><% } %>
+          <% } %>
+        </div>
+      <% } %>
+    </div>
+  </main>
+</body>
+</html>

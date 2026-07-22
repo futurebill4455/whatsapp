@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('partials/styles') %>
+</head>
+<body class="font-sans text-ink bg-sand min-h-screen antialiased">
+  <%- include('partials/nav') %>
+  <% if (typeof flash !== 'undefined' && flash) { %>
+    <div class="max-w-5xl mx-auto px-4 pt-4">
+      <div class="rounded-lg px-4 py-3 text-sm <%= flash.type === 'error' ? 'bg-red-50 text-red-800 border border-red-200' : 'bg-emerald-50 text-emerald-800 border border-emerald-200' %>">
+        <%= flash.message %>
+      </div>
+    </div>
+  <% } %>
+
+  <main class="max-w-5xl mx-auto px-4 py-10">
+    <div class="grid lg:grid-cols-2 gap-10 items-start animate-in">
+      <section>
+        <p class="text-sea font-semibold text-sm tracking-wide uppercase mb-2">Connection</p>
+        <h1 class="font-display text-4xl font-semibold leading-tight mb-4">Link WhatsApp to run your insurance desk</h1>
+        <p class="text-ink/70 text-lg mb-8 max-w-md">
+          Scan once. The backend keeps the session alive with LocalAuth so automation continues even after you close this page.
+        </p>
+
+        <div class="panel p-5 space-y-4">
+          <div class="flex items-center gap-3">
+            <span id="wa-dot" class="status-dot status-<%= status.status %>"></span>
+            <div>
+              <div class="font-semibold capitalize" id="wa-status"><%= status.status.replace(/_/g, ' ') %></div>
+              <div class="text-sm text-ink/60" id="wa-info">
+                <% if (status.info && status.info.phone) { %>
+                  Connected as +<%= status.info.phone %><%= status.info.pushname ? ' (' + status.info.pushname + ')' : '' %>
+                <% } else if (status.status === 'qr') { %>
+                  Scan the QR code with WhatsApp → Linked Devices
+                <% } else { %>
+                  Waiting for connection…
+                <% } %>
+              </div>
+            </div>
+          </div>
+
+          <ol class="text-sm text-ink/70 space-y-2 list-decimal list-inside">
+            <li>Open WhatsApp on your phone</li>
+            <li>Go to <strong>Settings → Linked devices → Link a device</strong></li>
+            <li>Scan the <strong>latest</strong> QR within ~20 seconds of it appearing</li>
+          </ol>
+
+          <div class="flex flex-wrap gap-2 pt-2">
+            <a href="/admin/login" class="btn btn-ink">Open Admin Panel</a>
+            <a href="/admin" class="btn btn-ghost">Dashboard</a>
+            <form method="POST" action="/whatsapp/reset-session" onsubmit="return confirm('Clear WhatsApp session and generate a fresh QR?');">
+              <button type="submit" class="btn btn-ghost text-coral">Reset session</button>
+            </form>
+          </div>
+
+          <p class="text-xs text-ink/45 pt-2">
+            If WhatsApp says “Could not link device”, click <strong>Reset session</strong>, wait for a new QR, then scan immediately.
+          </p>
+        </div>
+      </section>
+
+      <section class="panel p-6 flex flex-col items-center justify-center min-h-[360px]">
+        <div id="qr-wrap" class="<%= status.ready ? 'hidden' : '' %> text-center">
+          <% if (status.qr) { %>
+            <img id="wa-qr" src="<%= status.qr %>" alt="WhatsApp QR Code" class="mx-auto rounded-lg border border-ink/10 w-72 h-72 bg-white" />
+            <div id="qr-placeholder" class="hidden w-72 h-72 mx-auto rounded-lg border border-dashed border-ink/20 flex items-center justify-center text-ink/40 text-sm">
+              Generating QR…
+            </div>
+          <% } else { %>
+            <img id="wa-qr" src="" alt="WhatsApp QR Code" class="mx-auto rounded-lg border border-ink/10 w-72 h-72 bg-white hidden" />
+            <div id="qr-placeholder" class="w-72 h-72 mx-auto rounded-lg border border-dashed border-ink/20 flex items-center justify-center text-ink/40 text-sm">
+              Generating QR…
+            </div>
+          <% } %>
+          <p class="mt-4 text-sm text-ink/55">QR auto-refreshes. Always scan the newest image — old codes fail to link.</p>
+        </div>
+        <div id="ready-wrap" class="<%= status.ready ? '' : 'hidden' %> text-center">
+          <div class="w-20 h-20 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-3xl mx-auto mb-4">✓</div>
+          <h2 class="font-display text-2xl font-semibold mb-2">WhatsApp is live</h2>
+          <p class="text-ink/65 max-w-xs mx-auto">Background automation is running. Customers can message <em>Hi</em> to receive the form link.</p>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/app.js"></script>
+  <script>
+    InsuranceApp.connectWhatsAppStatus({
+      statusSelector: '#wa-status',
+      qrSelector: '#wa-qr',
+      qrWrapSelector: '#qr-wrap',
+      infoSelector: '#wa-info',
+      dotSelector: '#wa-dot',
+      placeholderSelector: '#qr-placeholder',
+      readySelector: '#ready-wrap',
+    });
+  </script>
+</body>
+</html>

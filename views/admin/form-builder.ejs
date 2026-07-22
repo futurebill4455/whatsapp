@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('../partials/styles') %>
+</head>
+<body class="font-sans text-ink bg-sand min-h-screen antialiased">
+  <%- include('../partials/nav') %>
+
+  <% if (flash) { %>
+    <div class="max-w-5xl mx-auto px-4 pt-4">
+      <div class="rounded-lg px-4 py-3 text-sm <%= flash.type === 'error' ? 'bg-red-50 text-red-800 border border-red-200' : 'bg-emerald-50 text-emerald-800 border border-emerald-200' %>"><%= flash.message %></div>
+    </div>
+  <% } %>
+
+  <main class="max-w-5xl mx-auto px-4 py-8 space-y-10 animate-in">
+
+    <div>
+      <h1 class="font-display text-3xl font-semibold mb-2">Form Builder</h1>
+      <p class="text-ink/60 text-sm">
+        Manage what appears in the customer-facing insurance form.<br/>
+        The multi-step Health flow (product → members → member details → coverage/company) is built in.
+        Use this page to configure coverage options and add custom extra fields.
+      </p>
+    </div>
+
+    <!-- ── Multi-step flow map ── -->
+    <section class="panel p-5 space-y-3">
+      <h2 class="font-display text-xl font-semibold">Current form flow</h2>
+      <ol class="list-decimal list-inside space-y-2 text-sm text-ink/80">
+        <li><strong>Step 1 — Product &amp; Name:</strong> Customer enters their name and selects <em>Health Insurance</em> or <em>Vehicle Insurance</em>.</li>
+        <li><strong>Step 2a (Health) — Number of members:</strong> Dropdown 1–5 members.</li>
+        <li><strong>Step 3a (Health) — Member details:</strong> For each member: Full Name, Date of Birth, Gender (Male/Female/Other).</li>
+        <li><strong>Step 4a (Health) — Coverage &amp; company:</strong> Desired coverage amount and preferred company.</li>
+        <li><strong>Step 2b (Vehicle) — Vehicle details:</strong> Make/model, manufacturing year, policy type, preferred company.</li>
+      </ol>
+    </section>
+
+    <!-- ── Coverage amount options ── -->
+    <section class="space-y-4">
+      <h2 class="font-display text-xl font-semibold">Health — coverage amount options</h2>
+      <p class="text-sm text-ink/55">One option per line. These populate the "Desired coverage amount" dropdown on Step 4.</p>
+      <form method="POST" action="/admin/form-builder/coverage" class="panel p-4 space-y-3">
+        <textarea class="field h-36 font-mono text-sm" name="coverage_options" placeholder="₹2 Lakh&#10;₹5 Lakh&#10;₹10 Lakh"><%= (coverageOptions || []).join('\n') %></textarea>
+        <button type="submit" class="btn btn-primary">Save coverage options</button>
+      </form>
+    </section>
+
+    <!-- ── Companies (read-only reference) ── -->
+    <section class="space-y-4">
+      <h2 class="font-display text-xl font-semibold">Companies (from Catalog)</h2>
+      <p class="text-sm text-ink/55">Companies shown in the form dropdowns come from the <a href="/admin/catalog" class="text-sea underline">Catalog</a> page.</p>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="panel p-4">
+          <h3 class="font-semibold text-sm mb-2 text-sea">Health companies (<%= (healthCompanies||[]).length %>)</h3>
+          <ul class="text-sm space-y-0.5 text-ink/70">
+            <% (healthCompanies||[]).forEach(function(c){ %><li>• <%= c.name %></li><% }) %>
+            <% if (!(healthCompanies||[]).length) { %><li class="text-ink/40 italic">None configured — add from Catalog</li><% } %>
+          </ul>
+        </div>
+        <div class="panel p-4">
+          <h3 class="font-semibold text-sm mb-2 text-sea">Vehicle companies (<%= (vehicleCompanies||[]).length %>)</h3>
+          <ul class="text-sm space-y-0.5 text-ink/70">
+            <% (vehicleCompanies||[]).forEach(function(c){ %><li>• <%= c.name %></li><% }) %>
+            <% if (!(vehicleCompanies||[]).length) { %><li class="text-ink/40 italic">None configured — add from Catalog</li><% } %>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Custom extra fields ── -->
+    <section class="space-y-4">
+      <h2 class="font-display text-xl font-semibold">Custom extra fields</h2>
+      <p class="text-sm text-ink/55">Add additional fields that appear below the standard steps on the form (e.g. referral code, notes). These are stored in <code>extra_data</code> alongside member details.</p>
+
+      <!-- Add form -->
+      <form method="POST" action="/admin/form-builder/fields" class="panel p-5 space-y-4">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label class="label">Field key (no spaces, e.g. <code>referral_code</code>)</label>
+            <input class="field" name="field_key" required placeholder="referral_code" />
+          </div>
+          <div>
+            <label class="label">Label shown to customer</label>
+            <input class="field" name="label" required placeholder="Referral Code" />
+          </div>
+          <div>
+            <label class="label">Field type</label>
+            <select class="field" name="field_type" id="add-type">
+              <option value="text">Text</option>
+              <option value="number">Number</option>
+              <option value="date">Date</option>
+              <option value="select">Dropdown (select)</option>
+              <option value="textarea">Textarea</option>
+            </select>
+          </div>
+          <div>
+            <label class="label">Sort order</label>
+            <input class="field" type="number" name="sort_order" value="0" />
+          </div>
+        </div>
+        <div id="add-options-wrap" class="hidden">
+          <label class="label">Options (one per line, for dropdown)</label>
+          <textarea class="field h-24 font-mono text-sm" name="options" placeholder="Option A&#10;Option B&#10;Option C"></textarea>
+        </div>
+        <div class="flex items-center gap-3">
+          <label class="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="checkbox" name="is_required" value="1" checked class="w-4 h-4 accent-sea" />
+            Required
+          </label>
+          <button type="submit" class="btn btn-primary">Add field</button>
+        </div>
+      </form>
+
+      <!-- Existing fields table -->
+      <% if (fields && fields.length) { %>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Label</th>
+                <th>Type</th>
+                <th>Required</th>
+                <th>Active</th>
+                <th>Sort</th>
+                <th>Options</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <% fields.forEach(function(f) { %>
+                <tr>
+                  <td class="font-mono text-xs"><%= f.field_key %></td>
+                  <td>
+                    <form method="POST" action="/admin/form-builder/fields/<%= f.id %>" class="flex gap-2 items-center">
+                      <input class="field text-sm py-1 w-36" name="label" value="<%= f.label %>" />
+                      <input type="hidden" name="is_active" value="<%= f.is_active %>" />
+                      <input type="hidden" name="is_required" value="<%= f.is_required %>" />
+                      <button type="submit" class="btn btn-ghost text-xs px-2 py-1">Save</button>
+                    </form>
+                  </td>
+                  <td class="text-sm"><%= f.field_type %></td>
+                  <td class="text-sm"><%= f.is_required ? 'Yes' : 'No' %></td>
+                  <td>
+                    <form method="POST" action="/admin/form-builder/fields/<%= f.id %>">
+                      <input type="hidden" name="label" value="<%= f.label %>" />
+                      <input type="hidden" name="is_required" value="<%= f.is_required %>" />
+                      <input type="hidden" name="is_active" value="<%= f.is_active ? 0 : 1 %>" />
+                      <button type="submit" class="btn btn-ghost text-xs px-2 py-1 <%= f.is_active ? 'text-emerald-700' : 'text-ink/40' %>">
+                        <%= f.is_active ? 'Active' : 'Inactive' %>
+                      </button>
+                    </form>
+                  </td>
+                  <td class="text-sm"><%= f.sort_order %></td>
+                  <td class="text-xs text-ink/50">
+                    <% if (f.options && f.options.length) { %>
+                      <%= f.options.slice(0,3).join(', ') %><% if (f.options.length > 3) { %>…<% } %>
+                    <% } else { %>—<% } %>
+                  </td>
+                  <td>
+                    <form method="POST" action="/admin/form-builder/fields/<%= f.id %>" onsubmit="return confirm('Delete this field?')">
+                      <input type="hidden" name="_method" value="DELETE" />
+                      <button type="submit" class="btn text-xs px-2 py-1 text-red-600 hover:bg-red-50">Delete</button>
+                    </form>
+                  </td>
+                </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      <% } else { %>
+        <div class="panel p-6 text-center text-ink/40 text-sm">No custom fields yet — add one above.</div>
+      <% } %>
+    </section>
+
+  </main>
+
+  <script>
+    // Show options textarea when field type is "select"
+    var addTypeSelect = document.getElementById('add-type');
+    var addOptionsWrap = document.getElementById('add-options-wrap');
+    addTypeSelect.addEventListener('change', function() {
+      addOptionsWrap.classList.toggle('hidden', this.value !== 'select');
+    });
+  </script>
+</body>
+</html>
