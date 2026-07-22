@@ -17,6 +17,7 @@ const { WorkflowEngine } = require('./workflowEngine');
 const AUTH_PATH = path.join(process.cwd(), '.wwebjs_auth');
 const CACHE_PATH = path.join(process.cwd(), '.wwebjs_cache');
 const CLIENT_ID = 'insurance-bot';
+const WHATSAPP_WEB_URL = 'https://web.whatsapp.com/';
 
 /** Always-on greetings — work even if Admin Panel / DB triggers are misconfigured */
 const HARDCODED_GREETINGS = ['hi', 'hello', 'hey', 'start', 'ഹായ്'];
@@ -45,11 +46,181 @@ function humanDelayMs() {
   return 3000 + Math.floor(Math.random() * 2001);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientBrowserError(err) {
+  const msg = String(err?.message || err || '');
+  return /frame got detached|detached Frame|Navigating frame was detached|Execution context was destroyed|Target closed|Session closed|Protocol error|auth timeout|ready timeout|net::ERR_/i.test(
+    msg
+  );
+}
+
+/** Soften WhatsApp Web navigation + waitForFunction against SPA frame reloads */
+function patchPuppeteerPageHelpers() {
+  let Page;
+  const candidates = [
+    'puppeteer-core/lib/cjs/puppeteer/api/Page.js',
+    'puppeteer-core/lib/cjs/puppeteer/api/Page',
+    'puppeteer-core/lib/esm/puppeteer/api/Page.js',
+  ];
+  for (const id of candidates) {
+    try {
+      Page = require(id).Page;
+      if (Page?.prototype) break;
+    } catch (_) {}
+  }
+  if (!Page?.prototype || Page.prototype.__waNavPatched) return;
+  Page.prototype.__waNavPatched = true;
+
+  const origGoto = Page.prototype.goto;
+  Page.prototype.goto = async function gotoStable(url, options = {}) {
+    const isWa = String(url || '').includes('web.whatsapp.com');
+    const opts = isWa
+      ? {
+          ...options,
+          // 'load' races SPA remounts → "frame got detached" on the next waitForFunction
+          waitUntil: 'domcontentloaded',
+          timeout:
+            !options.timeout || options.timeout === 0
+              ? 180000
+              : options.timeout,
+        }
+      : { ...options };
+
+    try {
+      return await origGoto.call(this, url, opts);
+    } catch (err) {
+      if (!isWa || !isTransientBrowserError(err)) throw err;
+      console.warn('[WhatsApp] page.goto recovered after:', err.message || err);
+      await sleep(1500);
+      return origGoto.call(this, url, {
+        ...opts,
+        waitUntil: 'domcontentloaded',
+        timeout: 180000,
+      });
+    }
+  };
+
+  const origWaitForFunction = Page.prototype.waitForFunction;
+  Page.prototype.waitForFunction = async function waitForFunctionStable(...args) {
+    const tries = Number(process.env.WA_WAIT_RETRIES) || 5;
+    let lastErr;
+    for (let i = 1; i <= tries; i++) {
+      try {
+        return await origWaitForFunction.apply(this, args);
+      } catch (err) {
+        lastErr = err;
+        if (!isTransientBrowserError(err) || i === tries) throw err;
+        console.warn(
+          `[WhatsApp] waitForFunction retry ${i}/${tries}:`,
+          err.message || err
+        );
+        await sleep(700 * i);
+      }
+    }
+    throw lastErr;
+  };
+
+  console.log('[WhatsApp] Patched Page.goto + Page.waitForFunction for frame detach');
+}
+
+/**
+ * Patch whatsapp-web.js Client so initialize/inject survive Render frame detach races.
+ */
+function patchClientForDetachedFrames() {
+  if (Client.prototype.__detachedFramePatch) return;
+  Client.prototype.__detachedFramePatch = true;
+
+  patchPuppeteerPageHelpers();
+
+  const originalInject = Client.prototype.inject;
+  const originalInitialize = Client.prototype.initialize;
+
+  Client.prototype.inject = async function injectWithRetry() {
+    const maxAttempts = Number(process.env.WA_INJECT_RETRIES) || 6;
+    let lastErr;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        if (!this.pupPage || this.pupPage.isClosed?.()) {
+          throw new Error('Puppeteer page is closed before inject');
+        }
+        return await originalInject.call(this);
+      } catch (err) {
+        lastErr = err;
+        const transient = isTransientBrowserError(err);
+        console.warn(
+          `[WhatsApp] inject attempt ${attempt}/${maxAttempts} failed:`,
+          err?.message || err
+        );
+        if (!transient || attempt === maxAttempts) break;
+
+        try {
+          if (this.pupPage && !this.pupPage.isClosed?.()) {
+            try {
+              await this.pupPage.reload({
+                waitUntil: 'domcontentloaded',
+                timeout: 120000,
+              });
+            } catch (_) {
+              await this.pupPage.goto(WHATSAPP_WEB_URL, {
+                waitUntil: 'domcontentloaded',
+                timeout: 120000,
+                referer: 'https://whatsapp.com/',
+              });
+            }
+            await sleep(1200 * attempt);
+          }
+        } catch (navErr) {
+          console.warn('[WhatsApp] inject recovery navigation failed:', navErr.message);
+        }
+      }
+    }
+
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  };
+
+  Client.prototype.initialize = async function initializeWithRetry() {
+    const maxAttempts = Number(process.env.WA_INIT_RETRIES) || 4;
+    let lastErr;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await originalInitialize.call(this);
+      } catch (err) {
+        lastErr = err;
+        console.warn(
+          `[WhatsApp] initialize attempt ${attempt}/${maxAttempts} failed:`,
+          err?.message || err
+        );
+        if (!isTransientBrowserError(err) || attempt === maxAttempts) break;
+
+        try {
+          await this.destroy();
+        } catch (_) {}
+        this.pupBrowser = null;
+        this.pupPage = null;
+        this._framenavigatedRegistered = false;
+        this._injectAbort = null;
+        await sleep(2000 * attempt);
+      }
+    }
+
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  };
+
+  console.log('[WhatsApp] Applied detached-frame init/inject patches');
+}
+
+patchClientForDetachedFrames();
+
 const DEFAULT_USER_AGENT =
   process.env.WHATSAPP_USER_AGENT ||
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
-/** Chromium flags required on Render / Linux (no sandbox) and low-memory hosts */
+/** Chromium flags tuned for Render speed + stability (low RAM, no GPU) */
 function buildPuppeteerArgs(extraArgs = []) {
   const args = [
     '--no-sandbox',
@@ -62,19 +233,55 @@ function buildPuppeteerArgs(extraArgs = []) {
     '--disable-extensions',
     '--disable-background-networking',
     '--disable-software-rasterizer',
-    '--disable-features=IsolateOrigins,site-per-process',
+    '--disable-features=IsolateOrigins,site-per-process,TranslateUI,AudioServiceOutOfProcess',
+    '--disable-ipc-flooding-protection',
+    '--disable-background-timer-throttling',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    '--disable-hang-monitor',
+    '--disable-component-update',
+    '--disable-default-apps',
+    '--disable-sync',
+    '--disable-breakpad',
+    '--disable-domain-reliability',
+    '--disable-notifications',
+    '--disable-offer-store-unmasked-wallet-cards',
+    '--disable-speech-api',
+    '--metrics-recording-only',
+    '--no-default-browser-check',
+    '--no-pings',
+    '--password-store=basic',
+    '--use-mock-keychain',
     '--mute-audio',
-    '--window-size=1280,720',
+    '--autoplay-policy=no-user-gesture-required',
+    '--memory-pressure-off',
+    '--font-render-hinting=none',
+    '--window-size=960,720',
+    '--renderer-process-limit=1',
   ];
 
-  const wantSingle =
+  // On Render/Linux, --single-process cuts memory and often unsticks "Finishing".
+  // Disable with PUPPETEER_NO_SINGLE_PROCESS=1 if you see frame-detach storms.
+  const onRenderLike =
+    !!process.env.RENDER ||
+    !!process.env.AWS_LAMBDA_FUNCTION_NAME ||
+    process.platform === 'linux';
+  const allowSingle =
     process.env.PUPPETEER_SINGLE_PROCESS === '1' ||
-    (process.env.PUPPETEER_NO_SINGLE_PROCESS !== '1' && process.platform !== 'win32');
+    (process.env.PUPPETEER_NO_SINGLE_PROCESS !== '1' && onRenderLike);
 
-  if (wantSingle) args.push('--single-process');
+  if (allowSingle) {
+    args.push('--single-process');
+    console.log('[WhatsApp] Using --single-process (faster on low-RAM hosts)');
+  } else {
+    console.log('[WhatsApp] Multi-process Chromium (PUPPETEER_NO_SINGLE_PROCESS or non-Linux)');
+  }
 
   for (const a of extraArgs) {
-    if (a && !args.includes(a)) args.push(a);
+    if (!a) continue;
+    // Avoid duplicate headless flags from Sparticuz — we set headless in launch opts
+    if (String(a).startsWith('--headless')) continue;
+    if (!args.includes(a)) args.push(a);
   }
   return args;
 }
@@ -169,19 +376,22 @@ async function buildPuppeteerLaunchOptions() {
 
   console.log(`[WhatsApp] Browser source=${source} executablePath=${executablePath}`);
 
+  const protocolTimeout = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT) || 300000;
+  const launchTimeout = Number(process.env.PUPPETEER_TIMEOUT) || 180000;
+
   return {
     headless,
     executablePath,
     args: buildPuppeteerArgs(extraArgs),
-    defaultViewport: { width: 1280, height: 720 },
-    protocolTimeout: Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT) || 180000,
-    timeout: Number(process.env.PUPPETEER_TIMEOUT) || 120000,
+    // Smaller viewport = less paint work while pairing
+    defaultViewport: { width: 960, height: 720 },
+    protocolTimeout,
+    timeout: launchTimeout,
     ignoreHTTPSErrors: true,
+    handleSIGINT: false,
+    handleSIGTERM: false,
+    handleSIGHUP: false,
   };
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function rmDirSafe(dir) {
@@ -207,10 +417,18 @@ class WhatsAppService {
     this.ready = false;
     this.initializing = false;
     this.authFailCount = 0;
+    this._initAttempt = 0;
     this._initPromise = null;
     this._sendQueue = Promise.resolve();
     this._seenMsgIds = new Map();
     this.engine = new WorkflowEngine(this);
+    this.loadingPercent = null;
+    this.loadingMessage = null;
+    this._loadingWatchdog = null;
+    this._loadingStuckCount = 0;
+    this._lastLoadingKey = null;
+    this._lastLoadingAt = 0;
+    this._connectionPhase = 'idle';
   }
 
   attachSocket(io) {
@@ -236,7 +454,75 @@ class WhatsAppService {
       info: this.info,
       lastError: this.lastError,
       authFailCount: this.authFailCount,
+      loadingPercent: this.loadingPercent,
+      loadingMessage: this.loadingMessage,
+      connectionPhase: this._connectionPhase,
     };
+  }
+
+  setConnectionPhase(phase, detail = '') {
+    this._connectionPhase = phase;
+    const suffix = detail ? ` — ${detail}` : '';
+    console.log(`[WhatsApp] Status: ${phase}${suffix}`);
+    this.emit('whatsapp:status', this.getPublicStatus());
+  }
+
+  clearLoadingWatchdog() {
+    if (this._loadingWatchdog) {
+      clearTimeout(this._loadingWatchdog);
+      this._loadingWatchdog = null;
+    }
+  }
+
+  /**
+   * If WA Web sits on Waiting / Link accepted / Finishing too long, reload once then re-init.
+   */
+  armLoadingWatchdog(percent, message) {
+    this.clearLoadingWatchdog();
+    const stuckMs = Number(process.env.WA_LOADING_STUCK_MS) || 90000;
+    const key = `${percent}|${String(message || '').toLowerCase()}`;
+    const now = Date.now();
+    if (key !== this._lastLoadingKey) {
+      this._lastLoadingKey = key;
+      this._lastLoadingAt = now;
+      this._loadingStuckCount = 0;
+    }
+
+    this._loadingWatchdog = setTimeout(async () => {
+      if (this.ready) return;
+      const label = String(message || 'loading');
+      console.warn(
+        `[WhatsApp] Connection stuck at "${label}" (${percent}%) for ${stuckMs}ms — recovering…`
+      );
+      this.setConnectionPhase('recovering', `unstick from ${label}`);
+      this._loadingStuckCount += 1;
+
+      try {
+        if (this.client?.pupPage && !this.client.pupPage.isClosed?.()) {
+          await this.client.pupPage.reload({
+            waitUntil: 'domcontentloaded',
+            timeout: 120000,
+          });
+          console.log('[WhatsApp] Reloaded WhatsApp Web after stuck loading screen');
+          this.setConnectionPhase('loading', 'page reloaded — waiting for QR/ready');
+        }
+      } catch (err) {
+        console.warn('[WhatsApp] Stuck-loading reload failed:', err.message);
+      }
+
+      // Second consecutive stuck → full client re-init (keep session files)
+      if (this._loadingStuckCount >= 2 && !this.initializing) {
+        console.warn('[WhatsApp] Still stuck after reload — restarting client…');
+        this._loadingStuckCount = 0;
+        try {
+          await this.init({ force: true });
+        } catch (err) {
+          console.error('[WhatsApp] Recovery re-init failed:', err.message);
+        }
+      } else if (!this.ready) {
+        this.armLoadingWatchdog(percent, message);
+      }
+    }, stuckMs);
   }
 
   getBaseUrl() {
@@ -268,6 +554,7 @@ class WhatsAppService {
   }
 
   async destroyClient() {
+    this.clearLoadingWatchdog();
     if (!this.client) return;
     const client = this.client;
     this.client = null;
@@ -284,8 +571,11 @@ class WhatsAppService {
     this.info = null;
     this.lastError = null;
     this.authFailCount = 0;
+    this.loadingPercent = null;
+    this.loadingMessage = null;
+    this.clearLoadingWatchdog();
     this.clearQr('reset');
-    this.emit('whatsapp:status', this.getPublicStatus());
+    this.setConnectionPhase('resetting', reason);
     await this.destroyClient();
     await sleep(800);
     this.clearSessionFiles();
@@ -307,49 +597,81 @@ class WhatsAppService {
   async _doInit() {
     if (this.initializing) return;
     this.initializing = true;
+    this._initAttempt = (this._initAttempt || 0) + 1;
     try {
       await this.destroyClient();
+      this.clearLoadingWatchdog();
       this.status = 'initializing';
       this.ready = false;
+      this.loadingPercent = null;
+      this.loadingMessage = null;
       this.clearQr('reinit');
-      this.emit('whatsapp:status', this.getPublicStatus());
+      this.setConnectionPhase('initializing', `boot attempt ${this._initAttempt}`);
 
       const launchOpts = await buildPuppeteerLaunchOptions();
       console.log(
-        '[WhatsApp] Launching browser (puppeteer-core) headless=%s executablePath=%s',
+        '[WhatsApp] Launching browser (puppeteer-core) headless=%s executablePath=%s (attempt %s)',
         launchOpts.headless,
-        launchOpts.executablePath
+        launchOpts.executablePath,
+        this._initAttempt
       );
+
+      const cacheDir = path.join(process.cwd(), '.wwebjs_cache');
+      try {
+        fs.mkdirSync(cacheDir, { recursive: true });
+      } catch (_) {}
 
       this.client = new Client({
         authStrategy: new LocalAuth({ dataPath: AUTH_PATH, clientId: CLIENT_ID }),
         puppeteer: launchOpts,
         userAgent: DEFAULT_USER_AGENT,
-        webVersionCache: { type: 'none' },
-        qrMaxRetries: 15,
+        // Local HTML cache speeds QR on subsequent boots (avoids re-downloading WA Web)
+        webVersionCache: {
+          type: process.env.WA_WEB_VERSION_CACHE === 'none' ? 'none' : 'local',
+          path: cacheDir,
+        },
+        qrMaxRetries: Number(process.env.WA_QR_MAX_RETRIES) || 20,
         takeoverOnConflict: true,
-        takeoverTimeoutMs: 10000,
-        authTimeoutMs: 120000,
+        takeoverTimeoutMs: Number(process.env.WA_TAKEOVER_TIMEOUT_MS) || 60000,
+        authTimeoutMs: Number(process.env.WA_AUTH_TIMEOUT_MS) || 240000,
       });
 
       this._bindClientEvents(this.client);
+      this.setConnectionPhase('connecting', 'opening WhatsApp Web…');
       await this.client.initialize();
+      this._initAttempt = 0;
+      if (!this.ready && this.status !== 'qr' && this.status !== 'authenticated') {
+        this.setConnectionPhase('waiting_qr', 'browser up — waiting for QR or session restore');
+      }
     } catch (err) {
       console.error('[WhatsApp] Init failed:', err);
       this.status = 'error';
       this.lastError = err.message || String(err);
       this.ready = false;
-      this.emit('whatsapp:status', this.getPublicStatus());
-      if (this.authFailCount < 3) {
-        this.authFailCount += 1;
-        console.warn('[WhatsApp] Clearing session after init failure and retrying…');
+      this.setConnectionPhase('error', this.lastError);
+
+      const transient = isTransientBrowserError(err);
+      const maxAttempts = Number(process.env.WA_SERVICE_INIT_RETRIES) || 5;
+
+      if (this._initAttempt < maxAttempts) {
         await this.destroyClient();
-        await sleep(2000);
-        this.clearSessionFiles();
-        await sleep(1500);
+        // Transient frame-detach / auth timeout: keep LocalAuth (avoid forced re-QR)
+        if (!transient) {
+          this.authFailCount += 1;
+          console.warn('[WhatsApp] Non-transient init failure — clearing session files…');
+          await sleep(1500);
+          this.clearSessionFiles();
+        } else {
+          console.warn(
+            `[WhatsApp] Transient browser error — retrying without wiping session (${this._initAttempt}/${maxAttempts})…`
+          );
+        }
+        await sleep(transient ? 2000 * this._initAttempt : 2000);
         this.initializing = false;
         return this._doInit();
       }
+
+      this._initAttempt = 0;
       throw err;
     } finally {
       this.initializing = false;
@@ -363,15 +685,18 @@ class WhatsAppService {
       this.ready = false;
       this.info = null;
       this.qrDataUrl = null;
+      this.clearLoadingWatchdog();
+      this.loadingPercent = null;
+      this.loadingMessage = null;
       this.emit('whatsapp:qr', { qr: null, seq, clearing: true, reason: 'refreshing' });
-      this.emit('whatsapp:status', this.getPublicStatus());
+      this.setConnectionPhase('qr', `code #${seq} — scan within ~20s`);
       try {
         const dataUrl = await qrcode.toDataURL(qr, { margin: 1, width: 360, errorCorrectionLevel: 'M' });
         if (seq !== this.qrSeq) return;
         this.qrDataUrl = dataUrl;
         this.emit('whatsapp:qr', { qr: dataUrl, seq, ts: Date.now() });
         this.emit('whatsapp:status', this.getPublicStatus());
-        console.log(`[WhatsApp] QR #${seq} ready — scan promptly (codes expire ~20s)`);
+        console.log(`[WhatsApp] QR #${seq} ready — open Linked devices → Link a device`);
       } catch (err) {
         if (seq !== this.qrSeq) return;
         console.error('[WhatsApp] QR generation failed:', err.message);
@@ -381,11 +706,19 @@ class WhatsAppService {
     });
 
     client.on('loading_screen', (percent, message) => {
-      console.log(`[WhatsApp] Loading ${percent}% ${message || ''}`);
+      const pct = percent == null ? '?' : percent;
+      const msg = String(message || '').trim() || 'Waiting';
+      this.loadingPercent = percent;
+      this.loadingMessage = msg;
+      console.log(`[WhatsApp] Loading ${pct}% — ${msg}`);
       if (!this.ready) {
         this.status = 'loading';
-        this.clearQr('loading');
-        this.emit('whatsapp:status', this.getPublicStatus());
+        // Keep QR visible until auth clears it; only hide once pairing advances
+        if (/link accepted|finishing|loading|waiting/i.test(msg)) {
+          this.clearQr('loading');
+        }
+        this.setConnectionPhase('loading', `${pct}% ${msg}`);
+        this.armLoadingWatchdog(percent, msg);
       }
     });
 
@@ -393,8 +726,8 @@ class WhatsAppService {
       this.status = 'authenticated';
       this.authFailCount = 0;
       this.clearQr('authenticated');
-      this.emit('whatsapp:status', this.getPublicStatus());
-      console.log('[WhatsApp] Authenticated — waiting for ready…');
+      this.clearLoadingWatchdog();
+      this.setConnectionPhase('authenticated', 'link accepted — finishing sync…');
     });
 
     client.on('ready', async () => {
@@ -402,7 +735,10 @@ class WhatsAppService {
       this.ready = true;
       this.authFailCount = 0;
       this.lastError = null;
+      this.loadingPercent = 100;
+      this.loadingMessage = 'Connected';
       this.clearQr('ready');
+      this.clearLoadingWatchdog();
       try {
         const wid = this.client.info?.wid?.user;
         this.info = {
@@ -413,7 +749,7 @@ class WhatsAppService {
       } catch (_) {
         this.info = null;
       }
-      this.emit('whatsapp:status', this.getPublicStatus());
+      this.setConnectionPhase('ready', this.info?.phone ? `phone ${this.info.phone}` : 'connected');
       console.log('[WhatsApp] Client ready', this.info?.phone || '');
       console.log('[WhatsApp] Listening for incoming messages — send Hi to test');
     });

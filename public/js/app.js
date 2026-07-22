@@ -51,7 +51,11 @@
           } else if (data.status === 'qr') {
             infoEl.textContent = 'Scan the latest QR within ~20 seconds (Linked devices → Link a device)';
           } else if (data.status === 'loading' || data.status === 'authenticated') {
-            infoEl.textContent = 'Link accepted — finishing handshake… keep this page open';
+            var loadBit =
+              data.loadingMessage
+                ? ((data.loadingPercent != null ? data.loadingPercent + '% ' : '') + data.loadingMessage)
+                : 'Link accepted — finishing handshake…';
+            infoEl.textContent = loadBit + ' (keep this page open)';
           } else if (data.status === 'resetting') {
             infoEl.textContent = 'Clearing old session and generating a fresh QR…';
           } else if (data.lastError) {
