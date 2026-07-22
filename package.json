@@ -41,5 +41,8 @@
   },
   "overrides": {
     "puppeteer": "$puppeteer-core"
+  },
+  "puppeteer": {
+    "skipDownload": true
   }
 }

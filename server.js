@@ -162,10 +162,18 @@ server.listen(PORT, HOST, () => {
   console.log(`Server running at http://${HOST}:${PORT}`);
   console.log(`Admin panel: http://${HOST}:${PORT}/admin/login`);
   console.log(`[Static] CSS URLs: /css/tailwind.css  /css/app.css`);
-  // Start WhatsApp after HTTP is accepting connections (avoids Render 502 during boot)
-  whatsapp.init().catch((err) => {
-    console.error('Failed to start WhatsApp client:', err);
-  });
+
+  // On Render free tier: let the HTTP service become healthy first, then start Chromium.
+  // Inflating @sparticuz/chromium + WhatsApp Web can take 1–3 minutes and must not block boot.
+  const delayMs = Number(process.env.WA_INIT_DELAY_MS) || (process.env.RENDER ? 3000 : 0);
+  console.log(
+    `[WhatsApp] Scheduling client init in ${delayMs}ms (puppeteer-core + @sparticuz/chromium)`
+  );
+  setTimeout(() => {
+    whatsapp.init().catch((err) => {
+      console.error('Failed to start WhatsApp client:', err);
+    });
+  }, delayMs);
 });
 
 process.on('SIGINT', async () => {

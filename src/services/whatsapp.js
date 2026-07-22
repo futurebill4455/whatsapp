@@ -13,6 +13,7 @@ const {
   ChatSessions,
 } = require('../models');
 const { WorkflowEngine } = require('./workflowEngine');
+const { buildPuppeteerLaunchOptions, isRenderLike } = require('./chromiumLaunch');
 
 const AUTH_PATH = path.join(process.cwd(), '.wwebjs_auth');
 const CACHE_PATH = path.join(process.cwd(), '.wwebjs_cache');
@@ -219,188 +220,6 @@ patchClientForDetachedFrames();
 const DEFAULT_USER_AGENT =
   process.env.WHATSAPP_USER_AGENT ||
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
-
-/** Chromium flags tuned for Render free-tier (low RAM/CPU) */
-function buildPuppeteerArgs(extraArgs = []) {
-  const heapMb = Number(process.env.CHROMIUM_MAX_OLD_SPACE_MB) || 512;
-  const args = [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-accelerated-2d-canvas',
-    '--no-first-run',
-    '--no-zygote',
-    '--disable-gpu',
-    '--disable-extensions',
-    '--disable-background-networking',
-    '--disable-software-rasterizer',
-    '--disable-features=IsolateOrigins,site-per-process,TranslateUI,AudioServiceOutOfProcess,CalculateNativeWinOcclusion',
-    '--disable-ipc-flooding-protection',
-    '--disable-background-timer-throttling',
-    '--disable-backgrounding-occluded-windows',
-    '--disable-renderer-backgrounding',
-    '--disable-hang-monitor',
-    '--disable-component-update',
-    '--disable-default-apps',
-    '--disable-sync',
-    '--disable-breakpad',
-    '--disable-domain-reliability',
-    '--disable-notifications',
-    '--disable-offer-store-unmasked-wallet-cards',
-    '--disable-speech-api',
-    '--disable-translate',
-    '--disable-blink-features=AutomationControlled',
-    '--metrics-recording-only',
-    '--no-default-browser-check',
-    '--no-pings',
-    '--password-store=basic',
-    '--use-mock-keychain',
-    '--mute-audio',
-    '--autoplay-policy=no-user-gesture-required',
-    '--font-render-hinting=none',
-    // Cap Chromium V8 heap so the OS process stays within free-tier RAM
-    `--js-flags=--max-old-space-size=${heapMb}`,
-    // Tiny viewport = less paint / compositing during sync
-    '--window-size=800,600',
-    '--renderer-process-limit=1',
-  ];
-
-  // Free-tier: prefer single-process to avoid multiple Chromium processes eating RAM.
-  // Set PUPPETEER_NO_SINGLE_PROCESS=1 only if you hit constant frame-detach errors.
-  const onRenderLike =
-    !!process.env.RENDER ||
-    !!process.env.AWS_LAMBDA_FUNCTION_NAME ||
-    process.platform === 'linux';
-  const allowSingle =
-    process.env.PUPPETEER_SINGLE_PROCESS === '1' ||
-    (process.env.PUPPETEER_NO_SINGLE_PROCESS !== '1' && onRenderLike);
-
-  if (allowSingle) {
-    args.push('--single-process');
-    console.log('[WhatsApp] Low-RAM mode: --single-process + js heap', heapMb, 'MB');
-  } else {
-    console.log('[WhatsApp] Multi-process Chromium; js heap', heapMb, 'MB');
-  }
-
-  for (const a of extraArgs) {
-    if (!a) continue;
-    if (String(a).startsWith('--headless')) continue;
-    // Prefer our capped js-flags over Sparticuz defaults
-    if (String(a).startsWith('--js-flags')) continue;
-    if (String(a).startsWith('--window-size')) continue;
-    if (!args.includes(a)) args.push(a);
-  }
-  return args;
-}
-
-/**
- * Build puppeteer-core launch options using @sparticuz/chromium on Render/Linux.
- * Optional PUPPETEER_EXECUTABLE_PATH / system Chrome for local Windows/macOS.
- */
-async function buildPuppeteerLaunchOptions() {
-  // @sparticuz/chromium is ESM; CJS consumers get the class on `.default`
-  const chromiumMod = require('@sparticuz/chromium');
-  const chromium = chromiumMod.default || chromiumMod;
-
-  const envPath =
-    process.env.PUPPETEER_EXECUTABLE_PATH ||
-    process.env.CHROME_PATH ||
-    process.env.CHROMIUM_PATH;
-
-  let executablePath = null;
-  let extraArgs = [];
-  let headless = true;
-  let source = 'none';
-
-  const useSparticuz =
-    process.env.USE_SPARTICUZ_CHROMIUM === '1' ||
-    process.platform === 'linux' ||
-    !!process.env.RENDER ||
-    !!process.env.AWS_LAMBDA_FUNCTION_NAME;
-
-  if (envPath && fs.existsSync(envPath)) {
-    executablePath = envPath;
-    source = 'env';
-  } else if (useSparticuz) {
-    // Primary path for Render: inflate + return path from chromium.br (no Chrome download)
-    // Graphics OFF saves significant RAM on free tier (WebGL/SwiftShader not needed for WA bot)
-    try {
-      chromium.setGraphicsMode = false;
-    } catch (_) {}
-    executablePath = await chromium.executablePath();
-    extraArgs = typeof chromium.args !== 'undefined' ? [...chromium.args] : [];
-    // chrome-headless-shell is required by recent @sparticuz/chromium builds
-    headless = 'shell';
-    source = 'sparticuz';
-  } else {
-    // Local Windows/macOS: prefer installed Chrome so WhatsApp Web still works
-    const systemPaths =
-      process.platform === 'win32'
-        ? [
-            process.env.LOCALAPPDATA &&
-              path.join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe'),
-            'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-            'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-          ]
-        : [
-            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-            '/usr/bin/google-chrome-stable',
-            '/usr/bin/google-chrome',
-            '/usr/bin/chromium',
-            '/usr/bin/chromium-browser',
-          ];
-
-    for (const candidate of systemPaths.filter(Boolean)) {
-      if (fs.existsSync(candidate)) {
-        executablePath = candidate;
-        source = 'system';
-        break;
-      }
-    }
-
-    if (!executablePath) {
-      try {
-        chromium.setGraphicsMode = false;
-      } catch (_) {}
-      executablePath = await chromium.executablePath();
-      extraArgs = typeof chromium.args !== 'undefined' ? [...chromium.args] : [];
-      headless = 'shell';
-      source = 'sparticuz';
-    }
-  }
-
-  const headlessEnv = process.env.PUPPETEER_HEADLESS;
-  if (headlessEnv === 'false') headless = false;
-  else if (headlessEnv === 'shell' || headlessEnv === 'new' || headlessEnv === 'true') {
-    headless = headlessEnv === 'true' ? true : headlessEnv;
-  }
-
-  if (!executablePath) {
-    throw new Error(
-      'Could not find Chrome/Chromium. On Render, @sparticuz/chromium must provide chromium.executablePath(). ' +
-        'Locally, install Chrome or set PUPPETEER_EXECUTABLE_PATH.'
-    );
-  }
-
-  console.log(`[WhatsApp] Browser source=${source} executablePath=${executablePath}`);
-
-  // Free-tier sync after QR is slow — keep CDP/protocol alive for several minutes
-  const protocolTimeout = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT) || 600000;
-  const launchTimeout = Number(process.env.PUPPETEER_TIMEOUT) || 300000;
-
-  return {
-    headless,
-    executablePath,
-    args: buildPuppeteerArgs(extraArgs),
-    defaultViewport: { width: 800, height: 600, deviceScaleFactor: 1 },
-    protocolTimeout,
-    timeout: launchTimeout,
-    ignoreHTTPSErrors: true,
-    handleSIGINT: false,
-    handleSIGTERM: false,
-    handleSIGHUP: false,
-  };
-}
 
 function rmDirSafe(dir) {
   if (!fs.existsSync(dir)) return false;
@@ -637,10 +456,9 @@ class WhatsAppService {
 
       const launchOpts = await buildPuppeteerLaunchOptions();
       console.log(
-        '[WhatsApp] Launching browser (puppeteer-core) headless=%s executablePath=%s (attempt %s)',
-        launchOpts.headless,
-        launchOpts.executablePath,
-        this._initAttempt
+        '[WhatsApp] Launching browser via puppeteer-core + @sparticuz/chromium' +
+          ` headless=${launchOpts.headless} executablePath=${launchOpts.executablePath} (attempt ${this._initAttempt})` +
+          (isRenderLike() ? ' [Render/serverless]' : '')
       );
 
       const cacheDir = path.join(process.cwd(), '.wwebjs_cache');
