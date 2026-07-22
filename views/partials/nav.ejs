@@ -1,17 +1,13 @@
 <header class="border-b border-ink/10 bg-white/70 backdrop-blur sticky top-0 z-40">
   <div class="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
     <a href="/" class="font-display text-lg font-semibold tracking-tight text-ink hover:text-sea transition">
-      <%= businessName || 'Insurance Bot' %>
+      <%= businessName || 'WhatsApp Bot' %>
     </a>
     <nav class="flex items-center gap-1 text-sm">
       <a href="/" class="px-3 py-1.5 rounded-md hover:bg-mist text-ink/80">QR Connect</a>
       <% if (typeof admin !== 'undefined' && admin) { %>
         <a href="/admin" class="px-3 py-1.5 rounded-md hover:bg-mist text-ink/80">Dashboard</a>
-        <a href="/admin/workflow" class="px-3 py-1.5 rounded-md hover:bg-mist text-ink/80 font-semibold text-sea">Workflow</a>
-        <a href="/admin/form-builder" class="px-3 py-1.5 rounded-md hover:bg-mist text-ink/80">Form Builder</a>
-        <a href="/admin/catalog" class="px-3 py-1.5 rounded-md hover:bg-mist text-ink/80">Catalog</a>
         <a href="/admin/settings" class="px-3 py-1.5 rounded-md hover:bg-mist text-ink/80">Settings</a>
-        <a href="/admin/submissions" class="px-3 py-1.5 rounded-md hover:bg-mist text-ink/80">Leads</a>
         <form action="/admin/logout" method="POST" class="inline">
           <button type="submit" class="px-3 py-1.5 rounded-md text-coral hover:bg-coral/10">Logout</button>
         </form>

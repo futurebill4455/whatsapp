@@ -34,7 +34,7 @@ if (!fs.existsSync(PUBLIC_DIR)) {
   console.error('[Static] Missing public directory:', PUBLIC_DIR);
 } else {
   console.log('[Static] Serving', PUBLIC_DIR);
-  for (const name of ['tailwind.css', 'app.css', 'workflow.css']) {
+  for (const name of ['tailwind.css', 'app.css']) {
     const file = path.join(CSS_DIR, name);
     console.log(
       `[Static] ${name}:`,
