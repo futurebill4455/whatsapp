@@ -1,6 +1,7 @@
 require('dotenv').config();
 
 const path = require('path');
+const fs = require('fs');
 const http = require('http');
 const express = require('express');
 const session = require('express-session');
@@ -17,13 +18,56 @@ const server = http.createServer(app);
 const io = new Server(server);
 
 const PORT = Number(process.env.PORT) || 3000;
+const HOST = process.env.HOST || '0.0.0.0';
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const CSS_DIR = path.join(PUBLIC_DIR, 'css');
 
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
+app.set('trust proxy', 1);
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+
+// Serve /public at site root so /css/*.css and /js/*.js resolve in production
+if (!fs.existsSync(PUBLIC_DIR)) {
+  console.error('[Static] Missing public directory:', PUBLIC_DIR);
+} else {
+  console.log('[Static] Serving', PUBLIC_DIR);
+  for (const name of ['tailwind.css', 'app.css', 'workflow.css']) {
+    const file = path.join(CSS_DIR, name);
+    console.log(
+      `[Static] ${name}:`,
+      fs.existsSync(file) ? `${fs.statSync(file).size} bytes` : 'MISSING'
+    );
+  }
+}
+
+app.use(
+  express.static(PUBLIC_DIR, {
+    index: false,
+    fallthrough: true,
+    maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0,
+    setHeaders(res, filePath) {
+      if (filePath.endsWith('.css')) {
+        res.setHeader('Content-Type', 'text/css; charset=utf-8');
+      }
+    },
+  })
+);
+
+// Explicit CSS mount (belt-and-suspenders for Render reverse proxies)
+app.use(
+  '/css',
+  express.static(CSS_DIR, {
+    index: false,
+    fallthrough: true,
+    maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0,
+    setHeaders(res) {
+      res.setHeader('Content-Type', 'text/css; charset=utf-8');
+    },
+  })
+);
 
 app.use(
   session({
@@ -41,38 +85,84 @@ app.use(
 );
 
 app.use((req, res, next) => {
-  res.locals.businessName = require('./src/models').Settings.get('business_name', 'Insurance Bot');
+  try {
+    res.locals.businessName = require('./src/models').Settings.get(
+      'business_name',
+      'Insurance Bot'
+    );
+  } catch (_) {
+    res.locals.businessName = 'Insurance Bot';
+  }
   next();
+});
+
+// Liveness — Render / proxies can hit this without loading WhatsApp
+app.get('/healthz', (_req, res) => {
+  res.status(200).type('text').send('ok');
 });
 
 app.use(routes);
 
+function sendErrorPage(res, status, title, message) {
+  const safe = String(message || 'Error')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  if (res.headersSent) return;
+  res
+    .status(status)
+    .type('html')
+    .send(
+      `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title>` +
+        `<link rel="stylesheet" href="/css/tailwind.css" />` +
+        `<link rel="stylesheet" href="/css/app.css" /></head>` +
+        `<body style="font-family:system-ui;padding:2rem"><h1>${title}</h1>` +
+        `<pre>${safe}</pre></body></html>`
+    );
+}
+
 app.use((req, res) => {
-  res.status(404).render('error', {
-    title: 'Not Found',
-    message: 'Page not found.',
-    businessName: res.locals.businessName,
-    admin: req.session?.adminUsername || null,
-    flash: null,
-  });
+  // Avoid EJS render failures cascading into 502 for missing assets
+  if (req.path.startsWith('/css/') || req.path.startsWith('/js/') || req.path.startsWith('/vendor/')) {
+    return res.status(404).type('text').send(`Not found: ${req.path}`);
+  }
+  try {
+    return res.status(404).render('error', {
+      title: 'Not Found',
+      message: 'Page not found.',
+      businessName: res.locals.businessName,
+      admin: req.session?.adminUsername || null,
+      flash: null,
+    });
+  } catch (err) {
+    return sendErrorPage(res, 404, 'Not Found', 'Page not found.');
+  }
 });
 
 app.use((err, req, res, _next) => {
   console.error(err);
-  res.status(500).render('error', {
-    title: 'Error',
-    message: process.env.NODE_ENV === 'production' ? 'Something went wrong.' : err.message,
-    businessName: res.locals.businessName,
-    admin: req.session?.adminUsername || null,
-    flash: null,
-  });
+  const message =
+    process.env.NODE_ENV === 'production' ? 'Something went wrong.' : err.message || String(err);
+  try {
+    return res.status(500).render('error', {
+      title: 'Error',
+      message,
+      businessName: res.locals.businessName,
+      admin: req.session?.adminUsername || null,
+      flash: null,
+    });
+  } catch (_) {
+    return sendErrorPage(res, 500, 'Error', message);
+  }
 });
 
 whatsapp.attachSocket(io);
 
-server.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
-  console.log(`Admin panel: http://localhost:${PORT}/admin/login`);
+server.listen(PORT, HOST, () => {
+  console.log(`Server running at http://${HOST}:${PORT}`);
+  console.log(`Admin panel: http://${HOST}:${PORT}/admin/login`);
+  console.log(`[Static] CSS URLs: /css/tailwind.css  /css/app.css`);
+  // Start WhatsApp after HTTP is accepting connections (avoids Render 502 during boot)
   whatsapp.init().catch((err) => {
     console.error('Failed to start WhatsApp client:', err);
   });
@@ -81,4 +171,8 @@ server.listen(PORT, () => {
 process.on('SIGINT', async () => {
   console.log('\nShutting down...');
   process.exit(0);
+});
+
+process.on('unhandledRejection', (err) => {
+  console.error('[Process] unhandledRejection:', err);
 });

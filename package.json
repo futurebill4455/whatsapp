@@ -7,8 +7,8 @@
     "build:css": "tailwindcss -i ./src/styles/input.css -o ./public/css/tailwind.css --minify",
     "watch:css": "tailwindcss -i ./src/styles/input.css -o ./public/css/tailwind.css --watch",
     "build": "npm run build:css",
-    "postinstall": "node scripts/shim-puppeteer-core.js",
-    "prestart": "npm run build:css",
+    "postinstall": "node scripts/shim-puppeteer-core.js && npm run build:css",
+    "prestart": "node scripts/ensure-css.js",
     "start": "node --experimental-sqlite server.js",
     "dev": "node --experimental-sqlite --watch server.js",
     "seed": "node --experimental-sqlite src/utils/seed.js",
@@ -35,11 +35,9 @@
     "puppeteer-core": "^24.38.0",
     "qrcode": "^1.5.4",
     "socket.io": "^4.8.1",
+    "tailwindcss": "^3.4.17",
     "uuid": "^11.0.3",
     "whatsapp-web.js": "github:lindionez/whatsapp-web.js#feat/fix-_serialized-id-fallback"
-  },
-  "devDependencies": {
-    "tailwindcss": "^3.4.17"
   },
   "overrides": {
     "puppeteer": "$puppeteer-core"
