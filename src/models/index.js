@@ -946,6 +946,165 @@ const ChatSessions = {
   },
 };
 
+function digitsOnly(phone) {
+  return String(phone || '').replace(/\D/g, '');
+}
+
+const AccessWhitelist = {
+  list(activeOnly = false) {
+    const sql = activeOnly
+      ? 'SELECT * FROM access_whitelist WHERE is_active = 1 ORDER BY created_at DESC'
+      : 'SELECT * FROM access_whitelist ORDER BY created_at DESC';
+    return db.prepare(sql).all();
+  },
+
+  isAllowed(phone) {
+    const digits = digitsOnly(phone);
+    if (!digits) return false;
+    return !!db
+      .prepare(
+        'SELECT id FROM access_whitelist WHERE is_active = 1 AND phone = ? LIMIT 1'
+      )
+      .get(digits);
+  },
+
+  create({ phone, label = null }) {
+    const digits = digitsOnly(phone);
+    if (!digits) throw new Error('Phone required');
+    db.prepare(
+      `INSERT INTO access_whitelist (phone, label) VALUES (?, ?)
+       ON CONFLICT(phone) DO UPDATE SET label = excluded.label, is_active = 1`
+    ).run(digits, label || null);
+    return db.prepare('SELECT * FROM access_whitelist WHERE phone = ?').get(digits);
+  },
+
+  update(id, { phone, label, is_active }) {
+    const current = db.prepare('SELECT * FROM access_whitelist WHERE id = ?').get(id);
+    if (!current) return null;
+    const digits =
+      phone !== undefined ? digitsOnly(phone) || current.phone : current.phone;
+    db.prepare(
+      `UPDATE access_whitelist
+       SET phone = ?, label = COALESCE(?, label), is_active = COALESCE(?, is_active)
+       WHERE id = ?`
+    ).run(digits, label ?? null, is_active ?? null, id);
+    return db.prepare('SELECT * FROM access_whitelist WHERE id = ?').get(id);
+  },
+
+  remove(id) {
+    return db.prepare('DELETE FROM access_whitelist WHERE id = ?').run(id);
+  },
+};
+
+const AccessCodes = {
+  list(activeOnly = false) {
+    const sql = activeOnly
+      ? 'SELECT * FROM access_codes WHERE is_active = 1 ORDER BY created_at DESC'
+      : 'SELECT * FROM access_codes ORDER BY created_at DESC';
+    return db.prepare(sql).all();
+  },
+
+  normalize(code) {
+    return String(code || '')
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .trim()
+      .toUpperCase();
+  },
+
+  findValid(code) {
+    const c = this.normalize(code);
+    if (!c || c.length < 4) return null;
+    const row = db
+      .prepare('SELECT * FROM access_codes WHERE is_active = 1 AND UPPER(code) = ? LIMIT 1')
+      .get(c);
+    if (!row) return null;
+    if (row.expires_at) {
+      const exp = Date.parse(row.expires_at);
+      if (Number.isFinite(exp) && exp < Date.now()) return null;
+    }
+    if (row.max_uses > 0 && row.use_count >= row.max_uses) return null;
+    return row;
+  },
+
+  create({ code, label = null, max_uses = 0, expires_at = null }) {
+    const c = this.normalize(code);
+    if (!c) throw new Error('Code required');
+    const result = db
+      .prepare(
+        `INSERT INTO access_codes (code, label, max_uses, expires_at) VALUES (?, ?, ?, ?)`
+      )
+      .run(c, label || null, Number(max_uses) || 0, expires_at || null);
+    return db.prepare('SELECT * FROM access_codes WHERE id = ?').get(result.lastInsertRowid);
+  },
+
+  incrementUse(id) {
+    db.prepare(`UPDATE access_codes SET use_count = use_count + 1 WHERE id = ?`).run(id);
+  },
+
+  update(id, { code, label, max_uses, is_active, expires_at }) {
+    const current = db.prepare('SELECT * FROM access_codes WHERE id = ?').get(id);
+    if (!current) return null;
+    const c = code !== undefined ? this.normalize(code) : current.code;
+    db.prepare(
+      `UPDATE access_codes
+       SET code = ?,
+           label = COALESCE(?, label),
+           max_uses = COALESCE(?, max_uses),
+           is_active = COALESCE(?, is_active),
+           expires_at = ?
+       WHERE id = ?`
+    ).run(
+      c,
+      label ?? null,
+      max_uses === undefined ? null : Number(max_uses) || 0,
+      is_active ?? null,
+      expires_at === undefined ? current.expires_at : expires_at || null,
+      id
+    );
+    return db.prepare('SELECT * FROM access_codes WHERE id = ?').get(id);
+  },
+
+  remove(id) {
+    return db.prepare('DELETE FROM access_codes WHERE id = ?').run(id);
+  },
+};
+
+const AuthorizedPeers = {
+  isAuthorized(phone) {
+    const digits = digitsOnly(phone);
+    if (!digits) return false;
+    if (AccessWhitelist.isAllowed(digits)) return true;
+    return !!db
+      .prepare('SELECT id FROM authorized_peers WHERE phone = ? LIMIT 1')
+      .get(digits);
+  },
+
+  authorize(phone, { method = 'code', code_used = null } = {}) {
+    const digits = digitsOnly(phone);
+    if (!digits) throw new Error('Phone required');
+    db.prepare(
+      `INSERT INTO authorized_peers (phone, method, code_used, authorized_at, updated_at)
+       VALUES (?, ?, ?, datetime('now'), datetime('now'))
+       ON CONFLICT(phone) DO UPDATE SET
+         method = excluded.method,
+         code_used = excluded.code_used,
+         updated_at = datetime('now')`
+    ).run(digits, method, code_used || null);
+    return db.prepare('SELECT * FROM authorized_peers WHERE phone = ?').get(digits);
+  },
+
+  revoke(phone) {
+    const digits = digitsOnly(phone);
+    return db.prepare('DELETE FROM authorized_peers WHERE phone = ?').run(digits);
+  },
+
+  list() {
+    return db
+      .prepare('SELECT * FROM authorized_peers ORDER BY authorized_at DESC LIMIT 200')
+      .all();
+  },
+};
+
 module.exports = {
   Settings,
   InsuranceTypes,
@@ -959,4 +1118,7 @@ module.exports = {
   Workflows,
   WorkflowRuns,
   ChatSessions,
+  AccessWhitelist,
+  AccessCodes,
+  AuthorizedPeers,
 };

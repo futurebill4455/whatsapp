@@ -94,7 +94,11 @@ function sleep(ms) {
 }
 
 function humanDelayMs() {
-  return 3000 + Math.floor(Math.random() * 2001);
+  try {
+    return require('./antiBan').humanJitterMs();
+  } catch (_) {
+    return 3000 + Math.floor(Math.random() * 4001);
+  }
 }
 
 function getSettingsTriggerKeywords() {
@@ -396,6 +400,12 @@ class WorkflowEngine {
 
       let session = null;
       try {
+        // Space out new live sessions (anti bulk-pattern)
+        try {
+          await sleep(require('./antiBan').sessionSpacingMs());
+        } catch (_) {
+          await sleep(2000 + Math.floor(Math.random() * 3000));
+        }
         session = ChatSessions.open({
           submission_id: submission.id,
           customer_phone: phone,

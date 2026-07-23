@@ -41,6 +41,13 @@ function seed() {
     close_keywords: 'close',
     trigger_keywords: 'hi,hello,hey,start,ഹായ്',
     relay_delay_ms: '300',
+    access_control_enabled: '1',
+    access_denied_message:
+      'This service is invite-only. Please send your *unique access code* to continue.',
+    access_granted_message: 'Access granted. Send *Hi* to receive your form link.',
+    anti_ban_jitter_min_ms: '3000',
+    anti_ban_jitter_max_ms: '7000',
+    anti_ban_min_gap_ms: '3500',
   };
 
   for (const [key, value] of Object.entries(defaults)) {
@@ -85,6 +92,32 @@ function seed() {
   }
   if (Settings.get('relay_delay_ms') === null) {
     Settings.set('relay_delay_ms', defaults.relay_delay_ms);
+  }
+  for (const key of [
+    'access_control_enabled',
+    'access_denied_message',
+    'access_granted_message',
+    'anti_ban_jitter_min_ms',
+    'anti_ban_jitter_max_ms',
+    'anti_ban_min_gap_ms',
+  ]) {
+    if (Settings.get(key) === null && defaults[key] != null) {
+      Settings.set(key, defaults[key]);
+    }
+  }
+
+  try {
+    const { AccessCodes } = require('../models');
+    if (AccessCodes.list().length === 0) {
+      AccessCodes.create({
+        code: 'DEMO2026',
+        label: 'Default demo code — change/delete in Admin → Access',
+        max_uses: 0,
+      });
+      console.log('Seeded demo access code: DEMO2026');
+    }
+  } catch (err) {
+    console.warn('[Seed] Access codes skipped:', err.message);
   }
 
   if (InsuranceTypes.list().length === 0) {

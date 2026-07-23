@@ -162,6 +162,34 @@ function initSchema() {
       created_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS access_whitelist (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      phone TEXT NOT NULL UNIQUE,
+      label TEXT,
+      is_active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS access_codes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code TEXT NOT NULL UNIQUE,
+      label TEXT,
+      max_uses INTEGER DEFAULT 0,
+      use_count INTEGER DEFAULT 0,
+      is_active INTEGER DEFAULT 1,
+      expires_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS authorized_peers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      phone TEXT NOT NULL UNIQUE,
+      method TEXT NOT NULL,
+      code_used TEXT,
+      authorized_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
   `);
 
   // Lightweight migrations for existing DBs

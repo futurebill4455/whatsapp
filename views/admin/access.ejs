@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('../partials/styles') %>
+</head>
+<body class="font-sans text-ink bg-sand min-h-screen antialiased">
+  <%- include('../partials/nav') %>
+  <% if (flash) { %>
+    <div class="max-w-5xl mx-auto px-4 pt-4">
+      <div class="rounded-lg px-4 py-3 text-sm <%= flash.type === 'error' ? 'bg-red-50 text-red-800 border border-red-200' : 'bg-emerald-50 text-emerald-800 border border-emerald-200' %>"><%= flash.message %></div>
+    </div>
+  <% } %>
+
+  <main class="max-w-5xl mx-auto px-4 py-8 space-y-8 animate-in">
+    <div>
+      <h1 class="font-display text-3xl font-semibold mb-2">Access control</h1>
+      <p class="text-ink/60 max-w-2xl">
+        Random <em>Hi</em> messages are ignored until the number is whitelisted or the user sends a valid unique access code.
+        Live chats still only end when the customer sends <strong>Close</strong>.
+      </p>
+    </div>
+
+    <section class="panel p-6 space-y-4">
+      <h2 class="font-display text-xl font-semibold">Gate settings</h2>
+      <form method="POST" action="/admin/access/settings" class="space-y-4">
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" name="access_control_enabled" value="1" <%= settings.access_control_enabled !== '0' ? 'checked' : '' %> />
+          Require whitelist or access code for form / Hi flow
+        </label>
+        <div>
+          <label class="label" for="access_denied_message">Denied / ask-for-code message</label>
+          <textarea class="field" id="access_denied_message" name="access_denied_message" rows="2"><%= settings.access_denied_message || '' %></textarea>
+        </div>
+        <div>
+          <label class="label" for="access_granted_message">Granted message</label>
+          <textarea class="field" id="access_granted_message" name="access_granted_message" rows="2"><%= settings.access_granted_message || '' %></textarea>
+        </div>
+        <button type="submit" class="btn btn-primary">Save settings</button>
+      </form>
+    </section>
+
+    <div class="grid lg:grid-cols-2 gap-6">
+      <section class="panel p-6 space-y-4">
+        <h2 class="font-display text-xl font-semibold">Phone whitelist</h2>
+        <form method="POST" action="/admin/access/whitelist" class="space-y-3">
+          <input class="field" name="phone" required placeholder="9198XXXXXXXX" />
+          <input class="field" name="label" placeholder="Label (optional)" />
+          <button type="submit" class="btn btn-primary">Add number</button>
+        </form>
+        <ul class="text-sm space-y-2 max-h-64 overflow-y-auto">
+          <% (whitelist || []).forEach(function (w) { %>
+            <li class="flex justify-between gap-2 border-b border-ink/5 pb-2">
+              <span>+<%= w.phone %><% if (w.label) { %> · <%= w.label %><% } %></span>
+              <form method="POST" action="/admin/access/whitelist/<%= w.id %>">
+                <input type="hidden" name="_action" value="delete" />
+                <button class="text-coral text-xs" type="submit">Remove</button>
+              </form>
+            </li>
+          <% }) %>
+          <% if (!whitelist || !whitelist.length) { %><li class="text-ink/45">No whitelisted numbers.</li><% } %>
+        </ul>
+      </section>
+
+      <section class="panel p-6 space-y-4">
+        <h2 class="font-display text-xl font-semibold">Access codes</h2>
+        <form method="POST" action="/admin/access/codes" class="space-y-3">
+          <input class="field" name="code" required placeholder="e.g. INSURE2026" />
+          <input class="field" name="label" placeholder="Label (optional)" />
+          <input class="field" type="number" name="max_uses" min="0" value="0" placeholder="Max uses (0 = unlimited)" />
+          <button type="submit" class="btn btn-primary">Create code</button>
+        </form>
+        <ul class="text-sm space-y-2 max-h-64 overflow-y-auto">
+          <% (codes || []).forEach(function (c) { %>
+            <li class="flex justify-between gap-2 border-b border-ink/5 pb-2">
+              <span>
+                <code class="text-sea"><%= c.code %></code>
+                <% if (c.label) { %> · <%= c.label %><% } %>
+                · used <%= c.use_count %><% if (c.max_uses) { %>/<%= c.max_uses %><% } %>
+              </span>
+              <form method="POST" action="/admin/access/codes/<%= c.id %>">
+                <input type="hidden" name="_action" value="delete" />
+                <button class="text-coral text-xs" type="submit">Delete</button>
+              </form>
+            </li>
+          <% }) %>
+          <% if (!codes || !codes.length) { %><li class="text-ink/45">No access codes yet.</li><% } %>
+        </ul>
+      </section>
+    </div>
+
+    <section class="panel p-6">
+      <h2 class="font-display text-xl font-semibold mb-3">Recently authorized</h2>
+      <ul class="text-sm space-y-1">
+        <% (authorized || []).forEach(function (a) { %>
+          <li>+<%= a.phone %> · <%= a.method %><% if (a.code_used) { %> (<%= a.code_used %>)<% } %> · <%= a.authorized_at %></li>
+        <% }) %>
+        <% if (!authorized || !authorized.length) { %><li class="text-ink/45">None yet.</li><% } %>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

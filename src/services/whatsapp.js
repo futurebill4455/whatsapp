@@ -12,6 +12,8 @@ const {
   InternalNumbers,
   ChatSessions,
   ChatFlow,
+  AccessCodes,
+  AuthorizedPeers,
 } = require('../models');
 const { bindEngine, newToken } = require('./workflowEngine');
 const { buildPuppeteerLaunchOptions, isRenderLike, isVpsLinux } = require('./chromiumLaunch');
@@ -24,6 +26,7 @@ const {
   getBaseUrl: requireBaseUrl,
   buildFormUrl: requireBuildFormUrl,
 } = require('../config/baseUrl');
+const antiBan = require('./antiBan');
 
 const AUTH_PATH = path.join(process.cwd(), '.wwebjs_auth');
 const CACHE_PATH = path.join(process.cwd(), '.wwebjs_cache');
@@ -101,11 +104,11 @@ function makeToken() {
 }
 
 function humanDelayMs() {
-  return 3000 + Math.floor(Math.random() * 2001);
+  return antiBan.humanJitterMs();
 }
 
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return antiBan.sleep(ms);
 }
 
 function isTransientBrowserError(err) {
@@ -713,10 +716,10 @@ class WhatsAppService {
   }
 
   /**
-   * Serial inbound queue — keeps Chromium memory stable on ~2GB VPS.
+   * Serial inbound queue with anti-ban pauses between messages (burst protection).
    */
   enqueueIncomingMessage(message, source = 'message') {
-    const maxDepth = Number(process.env.WA_MSG_QUEUE_MAX) || 80;
+    const maxDepth = Number(process.env.WA_MSG_QUEUE_MAX) || 40;
     if (this._msgQueueDepth >= maxDepth) {
       console.warn(
         `[WhatsApp] Dropping message (queue full ${this._msgQueueDepth}/${maxDepth}) from ${message?.from || '?'}`
@@ -728,6 +731,8 @@ class WhatsAppService {
     this._msgQueue = this._msgQueue
       .then(async () => {
         try {
+          // Space out burst arrivals so we never fire rapid sequential replies
+          await sleep(antiBan.randInt(400, 1200));
           await this.handleIncomingMessage(message);
         } catch (err) {
           console.error(
@@ -736,8 +741,7 @@ class WhatsAppService {
           );
         } finally {
           this._msgQueueDepth = Math.max(0, this._msgQueueDepth - 1);
-          // Yield event loop so HTTP/Socket.IO stay responsive on tiny instances
-          await sleep(Number(process.env.WA_MSG_YIELD_MS) || 30);
+          await sleep(antiBan.humanJitterMs());
         }
       })
       .catch(() => {
@@ -865,8 +869,27 @@ class WhatsAppService {
   }
 
   /**
-   * Queued send. For inbound turns, ALWAYS prefer msg.reply / inbound chatId (LID-safe).
-   * Optional delay from Settings.relay_delay_ms (or options.delayMs).
+   * Show typing (or recording) indicator for a realistic duration.
+   */
+  async simulatePresence(chatId, text = '', { recording = false } = {}) {
+    if (!this.client || !chatId) return;
+    try {
+      const chat = await this.client.getChatById(chatId);
+      if (!chat) return;
+      if (recording && typeof chat.sendStateRecording === 'function') {
+        await chat.sendStateRecording();
+        await sleep(antiBan.recordingDurationMs());
+      } else if (typeof chat.sendStateTyping === 'function') {
+        await chat.sendStateTyping();
+        await sleep(antiBan.typingDurationMs(text));
+      }
+    } catch (err) {
+      console.warn('[AntiBan] Presence simulation skipped:', err.message);
+    }
+  }
+
+  /**
+   * Queued send with human jitter + typing indicator (anti-ban).
    */
   async sendMessage(to, body, options = {}) {
     if (!this.client) {
@@ -877,16 +900,27 @@ class WhatsAppService {
     }
 
     const run = async () => {
+      await antiBan.outboundLimiter.waitTurn();
+
       const text = String(body || '');
       if (!text) return null;
 
+      // Always apply randomized human delay (3–7s) unless explicitly zeroed
       const delayMs =
-        options.delayMs != null
-          ? Number(options.delayMs)
-          : Number(Settings.get('relay_delay_ms') || 0);
+        options.delayMs != null ? Number(options.delayMs) : antiBan.humanJitterMs();
       if (delayMs > 0) await sleep(delayMs);
 
       const logPhone = this.formatPhone(to) || String(to || '').replace(/@.+$/, '');
+      const presenceChat =
+        options.chatId ||
+        options.replyTo?.from ||
+        (String(to || '').includes('@') ? String(to) : null);
+
+      if (!options.skipTyping && presenceChat) {
+        await this.simulatePresence(presenceChat, text, {
+          recording: !!options.asVoiceNote,
+        });
+      }
 
       // 1) Reply on the same chat — most reliable for @lid peers
       if (options.replyTo && typeof options.replyTo.reply === 'function') {
@@ -916,7 +950,6 @@ class WhatsAppService {
           throw err;
         }
       } else {
-        // Optional extra candidate for real phone numbers (desk forwards)
         const digits = this.formatPhone(to);
         if (digits && digits.length >= 10 && !String(options.chatId || '').endsWith('@lid')) {
           try {
@@ -933,6 +966,12 @@ class WhatsAppService {
             try {
               const chat = await this.client.getChatById(chatId);
               if (chat) {
+                if (!options.skipTyping) {
+                  try {
+                    await chat.sendStateTyping();
+                    await sleep(Math.min(2000, antiBan.typingDurationMs(text) / 2));
+                  } catch (_) {}
+                }
                 const result = await chat.sendMessage(text);
                 MessageLog.add({
                   direction: 'out',
@@ -1071,6 +1110,42 @@ class WhatsAppService {
             chatId,
             replyTo: message,
           });
+          return;
+        }
+      }
+
+      // 2.4) Access gate — unlock form / main flow only via whitelist or unique code
+      const accessEnabled = Settings.get('access_control_enabled', '1') !== '0';
+      if (accessEnabled) {
+        const codeRow = AccessCodes.findValid(body);
+        if (codeRow) {
+          AuthorizedPeers.authorize(phone, { method: 'code', code_used: codeRow.code });
+          AccessCodes.incrementUse(codeRow.id);
+          console.log(`[Access] Authorized ${phone} via code ${codeRow.code}`);
+          await this.sendMessage(
+            phone,
+            Settings.get('access_granted_message') ||
+              'Access granted. Send *Hi* to receive your form link.',
+            { chatId, replyTo: message }
+          );
+          return;
+        }
+
+        const wantsForm =
+          isHardcodedGreeting(body) ||
+          (ChatFlow.findByKeyword(body) &&
+            isFormLinkChatFlow(ChatFlow.findByKeyword(body)));
+
+        if (wantsForm && !AuthorizedPeers.isAuthorized(phone)) {
+          console.log(`[Access] Denied form flow for unknown ${phone}`);
+          // Ignore random Hi silently? User asked to ignore OR require code.
+          // Reply once with instructions (humanized) so legitimate users know what to do.
+          await this.sendMessage(
+            phone,
+            Settings.get('access_denied_message') ||
+              'This service is invite-only. Please send your *unique access code* to continue.',
+            { chatId, replyTo: message }
+          );
           return;
         }
       }
@@ -1338,14 +1413,15 @@ class WhatsAppService {
   }
 
   /**
-   * Forward text/media across the bridge. Downloads desk media with retries.
+   * Prefer native WhatsApp forward (shows official "Forwarded" tag).
+   * Falls back to media download / text copy when forward is unavailable.
    */
   async relayMessageAcrossBridge(message, session, direction, body, hasMediaFlag = null) {
     this.normalizeIncomingMessageIds(message);
 
     const toCustomer = direction === 'desk_to_customer';
     const destPhone = toCustomer ? session.customer_phone : session.desk_phone;
-    const destChatId = toCustomer ? session.customer_chat_id : session.desk_chat_id;
+    let destChatId = toCustomer ? session.customer_chat_id : session.desk_chat_id;
     const code = session.session_code || String(session.id);
     const msgType = String(message.type || '').toLowerCase();
     const hasMedia =
@@ -1365,15 +1441,62 @@ class WhatsAppService {
       return;
     }
 
-    const prefix = toCustomer
-      ? ''
-      : `[#${code}] `;
+    // Resolve dest chat id for native forward
+    if (!destChatId) {
+      try {
+        destChatId = await this.resolveOutboundChatId(destPhone);
+      } catch (err) {
+        console.warn('[ChatBridge] dest resolve failed:', err.message);
+        destChatId = `${this.formatPhone(destPhone)}@c.us`;
+      }
+    }
+
+    await antiBan.outboundLimiter.waitTurn();
+    await sleep(antiBan.humanJitterMs());
+
+    // ── Native forward (Forwarded tag) ──
+    if (typeof message.forward === 'function' && destChatId) {
+      try {
+        await this.simulatePresence(destChatId, body || '[media]', {
+          recording: msgType === 'ptt' || msgType === 'audio',
+        });
+        const ok = await message.forward(destChatId);
+        console.log(`[ChatBridge] Native forward → ${destChatId} result=${ok}`);
+
+        // Customer→desk: tip with session code so desk can reply with [#CODE] if needed
+        if (!toCustomer) {
+          await sleep(antiBan.randInt(800, 1800));
+          await this.sendMessage(destPhone, `[#${code}] ↑ forwarded from customer`, {
+            chatId: destChatId,
+            skipTyping: false,
+            delayMs: antiBan.randInt(500, 1500),
+          });
+        }
+
+        ChatSessions.touch(session.id, {
+          side: toCustomer ? 'desk' : 'customer',
+          ...(toCustomer
+            ? { customer_chat_id: destChatId }
+            : { desk_chat_id: destChatId }),
+        });
+        MessageLog.add({
+          direction: 'out',
+          phone: destPhone,
+          body: `[bridge ${direction} native-forward] ${body || '[media]'}`,
+          meta: { session_id: session.id, session_code: code, direction, native: true },
+        });
+        return;
+      } catch (err) {
+        console.warn('[ChatBridge] Native forward failed, falling back:', err.message);
+      }
+    }
+
+    const prefix = toCustomer ? '' : `[#${code}] `;
 
     try {
       let sent = null;
 
       if (hasMedia) {
-        // Brief settle so WhatsApp finishes writing media keys / blob cache
         await sleep(500);
         const media = await this.downloadMediaWithRetry(message);
         if (media) {
@@ -1420,7 +1543,6 @@ class WhatsAppService {
       if (waId) {
         ChatSessions.trackMessage(session.id, direction, waId, body);
       }
-      // Also bind outbound chat id when sending to desk
       if (!toCustomer && sent?._outboundChatId) {
         ChatSessions.bindDeskChatId(session.id, sent._outboundChatId);
       }
@@ -1632,9 +1754,18 @@ class WhatsAppService {
   async sendMedia(to, media, options = {}) {
     if (!this.client) throw new Error('WhatsApp client is not ready');
     const run = async () => {
+      await antiBan.outboundLimiter.waitTurn();
+      await sleep(antiBan.humanJitterMs());
+
       const chatId =
         options.chatId ||
         (String(to).includes('@') ? String(to) : await this.resolveOutboundChatId(to));
+
+      try {
+        await this.simulatePresence(chatId, options.caption || '', {
+          recording: !!options.sendAudioAsVoice,
+        });
+      } catch (_) {}
 
       const sendOpts = {};
       if (options.caption) sendOpts.caption = options.caption;
