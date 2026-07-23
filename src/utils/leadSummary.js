@@ -152,21 +152,18 @@ function sanitizeFormLink(url) {
 }
 
 /**
- * Format a URL so WhatsApp renders it as a tappable blue link.
- * Angle brackets keep it as one token; bare URL on the next line covers clients
- * that only auto-link plain http(s) text (WhatsApp has no [text](url) markdown).
+ * Format a URL for WhatsApp: one clean bare http(s) link (no angle brackets, no duplicate).
+ * Sent alone in its own message so WhatsApp can auto-link it.
  */
 function formatWhatsAppClickableLink(url) {
-  const href = sanitizeFormLink(url);
-  if (!href) return '';
-  return `<${href}>\n${href}`;
+  return sanitizeFormLink(url);
 }
 
 /**
  * Build a WhatsApp-safe form-link message.
  * Splits around {{form_link}} so the URL can be sent alone (avoids WhatsApp
  * soft-hyphenating long URLs mid-line). Prefer: intro → link → optional footer.
- * `link` is angle-bracket wrapped for clickable rendering; `linkUrl` is bare href.
+ * `link` / `linkUrl` are the same clean bare http(s) URL (no brackets, no duplicate).
  */
 function buildFormLinkParts(template, vars = {}) {
   const linkUrl = sanitizeFormLink(vars.form_link);
