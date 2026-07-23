@@ -1,9 +1,7 @@
 /**
  * Enterprise anti-ban / humanization layer for WhatsApp automation.
- * - 5–12s jitter on outbound
- * - Reading delay ∝ inbound length, then typing indicator
- * - Working-hours gate
- * - Per-user hourly/daily caps + global outbound gap
+ * Fully dynamic variable timing (default 4–25s) — no fixed/repeating delays.
+ * Typing duration scales with each planned delay. Working hours + rate caps.
  */
 const Settings = (() => {
   try {
@@ -42,47 +40,136 @@ function numSetting(key, fallback, envAliases = []) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-/** Primary human jitter: 5–12 seconds (settings / env override). */
-function humanJitterMs() {
-  const min = numSetting('anti_ban_jitter_min_ms', 5000, ['WA_JITTER_MIN_MS']);
-  const max = numSetting('anti_ban_jitter_max_ms', 12000, ['WA_JITTER_MAX_MS']);
-  const lo = Math.min(min, max);
-  const hi = Math.max(min, max);
-  return randInt(lo, hi);
+/** Recent delays — ensure consecutive sends never share the same timing fingerprint. */
+const _recentDelays = [];
+const RECENT_DELAY_WINDOW = 10;
+
+function jitterBounds() {
+  const min = numSetting('anti_ban_jitter_min_ms', 4000, ['WA_JITTER_MIN_MS']);
+  const max = numSetting('anti_ban_jitter_max_ms', 25000, ['WA_JITTER_MAX_MS']);
+  return { lo: Math.min(min, max), hi: Math.max(min, max) };
 }
 
-/** Extra pause between different customers / queue slots. */
+/**
+ * Unique randomized delay for every outbound action (default 4–25s).
+ * Never returns the exact same value as the previous delay (or near-duplicates).
+ */
+function nextVariableDelayMs() {
+  const { lo, hi } = jitterBounds();
+  const span = Math.max(1, hi - lo);
+  let delay = lo;
+  for (let attempt = 0; attempt < 16; attempt++) {
+    // Non-uniform-ish: mix uniform with occasional long/short tails
+    const roll = Math.random();
+    if (roll < 0.12) {
+      delay = randInt(lo, lo + Math.floor(span * 0.35));
+    } else if (roll < 0.28) {
+      delay = randInt(hi - Math.floor(span * 0.35), hi);
+    } else {
+      delay = randInt(lo, hi);
+    }
+
+    const last = _recentDelays[_recentDelays.length - 1];
+    const tooClose =
+      last != null && Math.abs(delay - last) < Math.min(750, Math.floor(span * 0.04));
+    const exactRepeat = _recentDelays.includes(delay);
+    if (!tooClose && !exactRepeat) break;
+    // Nudge away from last value
+    delay = last != null
+      ? Math.min(hi, Math.max(lo, last + (delay >= last ? 1 : -1) * randInt(800, 3500)))
+      : delay;
+  }
+
+  _recentDelays.push(delay);
+  while (_recentDelays.length > RECENT_DELAY_WINDOW) _recentDelays.shift();
+  return delay;
+}
+
+/** @deprecated alias — use nextVariableDelayMs / planOutboundTiming */
+function humanJitterMs() {
+  return nextVariableDelayMs();
+}
+
+/**
+ * Plan think + typing for one outbound message.
+ * totalMs is unique 4–25s; typingMs is proportional to that delay (+ text length).
+ */
+function planOutboundTiming(text = '', { forcedTotalMs = null } = {}) {
+  const totalMs =
+    forcedTotalMs != null && Number.isFinite(Number(forcedTotalMs)) && Number(forcedTotalMs) >= 0
+      ? Number(forcedTotalMs)
+      : nextVariableDelayMs();
+
+  const len = String(text || '').length;
+  // Typing takes ~28–62% of the planned delay, scaled by message length
+  const share = 0.28 + Math.random() * 0.34;
+  let typingMs = Math.floor(totalMs * share);
+  typingMs += Math.min(len, 360) * randInt(8, 18);
+  typingMs += randInt(-500, 700);
+  typingMs = Math.max(1400, Math.min(typingMs, Math.max(1600, totalMs - 600), 20000));
+
+  const thinkMs = Math.max(400, totalMs - typingMs);
+  return {
+    totalMs,
+    thinkMs,
+    typingMs,
+    delayMs: totalMs,
+  };
+}
+
+/** Extra pause between different customers / queue slots (also non-repeating). */
 function sessionSpacingMs() {
-  const min = Number(process.env.WA_SESSION_GAP_MIN_MS || 2000);
-  const max = Number(process.env.WA_SESSION_GAP_MAX_MS || 5000);
-  return randInt(Math.min(min, max), Math.max(min, max));
+  return nextVariableDelayMs();
 }
 
 /**
  * Simulate reading the inbound message before composing a reply.
- * Longer messages → longer pause (clamped for realism).
+ * Longer messages → longer pause (clamped for realism). Still randomized.
  */
 function readingDelayMs(inboundText) {
   const len = String(inboundText || '').length;
-  // ~180–280 chars/min reading + short “think”
   const base = 700 + Math.min(len, 500) * 28;
-  const jitter = randInt(250, 1100);
+  const jitter = randInt(250, 1400);
   return Math.min(10000, Math.max(800, base + jitter));
 }
 
 /**
- * How long to keep the typing indicator before send.
- * Roughly proportional to outbound message length.
+ * Typing indicator duration — proportional to planned delay when provided.
  */
-function typingDurationMs(text) {
-  const len = String(text || '').length;
-  const base = 1400 + Math.min(len, 320) * 38;
-  const jitter = randInt(300, 1100);
-  return Math.min(12000, Math.max(1800, base + jitter));
+function typingDurationMs(text, plannedDelayMs = null) {
+  if (plannedDelayMs != null && Number(plannedDelayMs) > 0) {
+    return planOutboundTiming(text, { forcedTotalMs: Number(plannedDelayMs) }).typingMs;
+  }
+  return planOutboundTiming(text).typingMs;
 }
 
 function recordingDurationMs() {
-  return randInt(2000, 5200);
+  // Still variable — never a fixed recording wait
+  return randInt(2200, Math.min(12000, Math.floor(nextVariableDelayMs() * 0.45)));
+}
+
+/**
+ * Extra irregularity wrapper — always a fresh unique delay (never static).
+ */
+function antiPatternJitterMs() {
+  return nextVariableDelayMs();
+}
+
+/** Inter-chunk gap: same dynamic engine (4–25s), never a fixed 1s/3s pattern. */
+function microDelayMs() {
+  return nextVariableDelayMs();
+}
+
+/**
+ * Full pre-reply humanization: read inbound → unique variable delay.
+ */
+async function humanPauseBeforeReply(inboundText, { skipReading = false, skipJitter = false } = {}) {
+  if (!skipReading) {
+    await sleep(readingDelayMs(inboundText));
+  }
+  if (!skipJitter) {
+    await sleep(nextVariableDelayMs());
+  }
 }
 
 /**
@@ -171,40 +258,9 @@ function checkSendCaps(phone) {
   return { ok: true };
 }
 
-/**
- * Full pre-reply humanization: read inbound → jitter gap → caller shows typing.
- */
-async function humanPauseBeforeReply(inboundText, { skipReading = false, skipJitter = false } = {}) {
-  if (!skipReading) {
-    await sleep(readingDelayMs(inboundText));
-  }
-  if (!skipJitter) {
-    await sleep(humanJitterMs());
-  }
-}
-
 /** Long-message chunk threshold (chars). */
 function chunkThresholdChars() {
   return numSetting('anti_ban_chunk_threshold', 160);
-}
-
-/** Micro-delay between conversational chunks (default 1–3s). */
-function microDelayMs() {
-  const min = numSetting('anti_ban_chunk_gap_min_ms', 1000);
-  const max = numSetting('anti_ban_chunk_gap_max_ms', 3000);
-  return randInt(Math.min(min, max), Math.max(min, max));
-}
-
-/**
- * Extra irregularity on top of base jitter — breaks repetitive timing signatures.
- */
-function antiPatternJitterMs() {
-  const base = humanJitterMs();
-  // Occasional longer "think", occasional shorter burst
-  const roll = Math.random();
-  if (roll < 0.15) return base + randInt(1200, 2800);
-  if (roll < 0.35) return Math.max(2500, base - randInt(400, 1800));
-  return base + randInt(0, 900);
 }
 
 function shouldChunkMessage(text, hasMedia = false) {
@@ -340,6 +396,8 @@ module.exports = {
   sleep,
   randInt,
   humanJitterMs,
+  nextVariableDelayMs,
+  planOutboundTiming,
   sessionSpacingMs,
   readingDelayMs,
   typingDurationMs,

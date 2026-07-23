@@ -865,19 +865,25 @@ class WhatsAppService {
   }
 
   /**
-   * Show typing (or recording) indicator for a realistic duration.
+   * Show typing (or recording) indicator for a planned variable duration.
    */
-  async simulatePresence(chatId, text = '', { recording = false } = {}) {
+  async simulatePresence(chatId, text = '', { recording = false, durationMs = null } = {}) {
     if (!this.client || !chatId) return;
     try {
       const chat = await this.client.getChatById(chatId);
       if (!chat) return;
       if (recording && typeof chat.sendStateRecording === 'function') {
         await chat.sendStateRecording();
-        await sleep(antiBan.recordingDurationMs());
+        await sleep(
+          durationMs != null ? durationMs : antiBan.recordingDurationMs()
+        );
       } else if (typeof chat.sendStateTyping === 'function') {
         await chat.sendStateTyping();
-        await sleep(antiBan.typingDurationMs(text));
+        await sleep(
+          durationMs != null
+            ? durationMs
+            : antiBan.typingDurationMs(text)
+        );
       }
     } catch (err) {
       console.warn('[AntiBan] Presence simulation skipped:', err.message);
@@ -885,7 +891,7 @@ class WhatsAppService {
   }
 
   /**
-   * Queued send with human jitter (5–12s) + typing indicator + volume caps.
+   * Queued send with fully dynamic 4–25s timing + proportional typing + volume caps.
    */
   async sendMessage(to, body, options = {}) {
     if (!this.client) {
@@ -913,13 +919,20 @@ class WhatsAppService {
       const text = String(body || '');
       if (!text) return null;
 
-      // Reading simulation (inbound length) then 5–12s jitter — eliminates instant replies
       if (options.inboundText && !options.skipReading) {
         await sleep(antiBan.readingDelayMs(options.inboundText));
       }
-      const delayMs =
-        options.delayMs != null ? Number(options.delayMs) : antiBan.humanJitterMs();
-      if (delayMs > 0) await sleep(delayMs);
+
+      // Unique variable delay (4–25s) + typing share proportional to that delay
+      const plan =
+        options.timingPlan ||
+        (options.delayMs != null
+          ? antiBan.planOutboundTiming(text, { forcedTotalMs: Number(options.delayMs) })
+          : antiBan.planOutboundTiming(text));
+
+      if (!options.skipTiming && plan.thinkMs > 0) {
+        await sleep(plan.thinkMs);
+      }
 
       const presenceChat =
         options.chatId ||
@@ -929,8 +942,13 @@ class WhatsAppService {
       if (!options.skipTyping && presenceChat) {
         await this.simulatePresence(presenceChat, text, {
           recording: !!options.asVoiceNote,
+          durationMs: plan.typingMs,
         });
       }
+
+      console.log(
+        `[AntiBan] Outbound pace total=${plan.totalMs}ms think=${plan.thinkMs}ms typing=${plan.typingMs}ms → ${logPhone}`
+      );
 
       // 1) Reply on the same chat — most reliable for @lid peers
       if (options.replyTo && typeof options.replyTo.reply === 'function') {
@@ -978,8 +996,9 @@ class WhatsAppService {
               if (chat) {
                 if (!options.skipTyping) {
                   try {
+                    // Brief typing refresh only — main typing already applied above
                     await chat.sendStateTyping();
-                    await sleep(Math.min(2500, antiBan.typingDurationMs(text) / 2));
+                    await sleep(antiBan.randInt(180, 650));
                   } catch (_) {}
                 }
                 const result = await chat.sendMessage(text);
@@ -1198,7 +1217,6 @@ class WhatsAppService {
               chatId,
               replyTo: message,
               inboundText: body,
-              delayMs: antiBan.randInt(4000, 8000),
             }
           );
         }
@@ -1603,10 +1621,9 @@ class WhatsAppService {
       return;
     }
 
-    // Shared humanization: read → anti-pattern jitter (never identical timing)
+    // Shared: rate-limit turn + reading. Each outbound then gets its own unique 4–25s plan.
     await antiBan.outboundLimiter.waitTurn();
     await sleep(antiBan.readingDelayMs(cleanBody || body));
-    await sleep(antiBan.antiPatternJitterMs());
 
     if (useChunks) {
       await this.relayChunkedTextAcrossBridge({
@@ -1621,12 +1638,15 @@ class WhatsAppService {
     }
 
     try {
+      const plan = antiBan.planOutboundTiming(cleanBody || '[media]');
+      console.log(
+        `[AntiBan] Bridge pace total=${plan.totalMs}ms think=${plan.thinkMs}ms typing=${plan.typingMs}ms (${direction})`
+      );
+      await sleep(plan.thinkMs);
       await this.simulatePresence(destChatIds[0], cleanBody || '[media]', {
         recording: msgType === 'ptt' || msgType === 'audio',
+        durationMs: plan.typingMs,
       });
-
-      // Extra micro-pause so typing → forward never looks instantaneous
-      await sleep(antiBan.randInt(350, 1200));
 
       const forwarded = await this.nativeForwardToChat(message, destChatIds);
       const destChatId = forwarded.destChatId;
@@ -1665,9 +1685,6 @@ class WhatsAppService {
       console.log(
         `[ChatBridge] Native Forwarded relay OK #${session.id}[${code}] → ${destChatId}`
       );
-
-      // Irregular cooldown after forward (anti burst signature)
-      await sleep(antiBan.randInt(250, 1100));
     } catch (err) {
       console.error(
         `[ChatBridge] Native forward FAILED (${direction}):`,
@@ -1729,16 +1746,15 @@ class WhatsAppService {
 
     for (let i = 0; i < chunks.length; i++) {
       if (i > 0) {
-        await sleep(antiBan.microDelayMs());
+        // Unique variable gap before the next chunk (never a fixed interval)
         await antiBan.outboundLimiter.waitTurn();
       }
 
       const chunk = antiBan.lightlyVaryTextStructure(chunks[i]);
-      // Per-chunk: small pre-delay + typing (sendMessage) — not a full 5–12s again
+      // Full dynamic 4–25s plan + proportional typing inside sendMessage
       const sent = await this.sendMessage(destPhone, chunk, {
         chatId: destChatId,
         skipReading: true,
-        delayMs: antiBan.randInt(600, 2200),
       });
 
       if (sent?._outboundChatId) {
@@ -1982,15 +1998,18 @@ class WhatsAppService {
     if (!this.client) throw new Error('WhatsApp client is not ready');
     const run = async () => {
       await antiBan.outboundLimiter.waitTurn();
-      await sleep(antiBan.humanJitterMs());
+      const caption = options.caption || '';
+      const plan = antiBan.planOutboundTiming(caption || '[media]');
+      await sleep(plan.thinkMs);
 
       const chatId =
         options.chatId ||
         (String(to).includes('@') ? String(to) : await this.resolveOutboundChatId(to));
 
       try {
-        await this.simulatePresence(chatId, options.caption || '', {
+        await this.simulatePresence(chatId, caption, {
           recording: !!options.sendAudioAsVoice,
+          durationMs: plan.typingMs,
         });
       } catch (_) {}
 
@@ -2007,7 +2026,9 @@ class WhatsAppService {
         phone: this.formatPhone(to) || String(chatId).replace(/@.+$/, ''),
         body: options.caption || '[media]',
       });
-      console.log(`[WhatsApp] Media sent → ${chatId}`);
+      console.log(
+        `[AntiBan] Media pace total=${plan.totalMs}ms think=${plan.thinkMs}ms typing=${plan.typingMs}ms → ${chatId}`
+      );
       return result;
     };
     const next = this._sendQueue.then(run, run);

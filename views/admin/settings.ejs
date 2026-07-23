@@ -58,16 +58,16 @@
 
       <fieldset class="border border-ink/10 rounded-lg p-4 space-y-4">
         <legend class="font-display text-lg font-semibold px-1">Anti-ban &amp; humanization</legend>
-        <p class="text-sm text-ink/55">Reading delay + typing indicator + 5–12s jitter on replies. Working hours pause new automation (live chats still relay).</p>
+        <p class="text-sm text-ink/55">Every outbound message uses a unique random delay (default 4–25s) plus a typing indicator scaled to that delay. No fixed/repeating intervals.</p>
 
         <div class="grid md:grid-cols-3 gap-4">
           <div>
-            <label class="label" for="anti_ban_jitter_min_ms">Jitter min (ms)</label>
-            <input class="field" type="number" min="1000" step="100" id="anti_ban_jitter_min_ms" name="anti_ban_jitter_min_ms" value="<%= settings.anti_ban_jitter_min_ms || '5000' %>" />
+            <label class="label" for="anti_ban_jitter_min_ms">Variable delay min (ms)</label>
+            <input class="field" type="number" min="1000" step="100" id="anti_ban_jitter_min_ms" name="anti_ban_jitter_min_ms" value="<%= settings.anti_ban_jitter_min_ms || '4000' %>" />
           </div>
           <div>
-            <label class="label" for="anti_ban_jitter_max_ms">Jitter max (ms)</label>
-            <input class="field" type="number" min="1000" step="100" id="anti_ban_jitter_max_ms" name="anti_ban_jitter_max_ms" value="<%= settings.anti_ban_jitter_max_ms || '12000' %>" />
+            <label class="label" for="anti_ban_jitter_max_ms">Variable delay max (ms)</label>
+            <input class="field" type="number" min="1000" step="100" id="anti_ban_jitter_max_ms" name="anti_ban_jitter_max_ms" value="<%= settings.anti_ban_jitter_max_ms || '25000' %>" />
           </div>
           <div>
             <label class="label" for="anti_ban_min_gap_ms">Min gap between sends (ms)</label>

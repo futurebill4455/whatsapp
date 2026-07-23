@@ -47,8 +47,8 @@ function seed() {
     access_granted_message: '',
     access_wrong_code_message:
       'That access code is not valid for this number. Please check and try again.',
-    anti_ban_jitter_min_ms: '5000',
-    anti_ban_jitter_max_ms: '12000',
+    anti_ban_jitter_min_ms: '4000',
+    anti_ban_jitter_max_ms: '25000',
     anti_ban_min_gap_ms: '4000',
     anti_ban_hours_enabled: '1',
     anti_ban_hours_start: '9',
@@ -131,14 +131,14 @@ function seed() {
     }
   }
 
-  // Migrate legacy 3–7s jitter → enterprise 5–12s
+  // Migrate legacy jitter ranges toward dynamic 4–25s defaults (once)
   const jMin = Number(Settings.get('anti_ban_jitter_min_ms'));
   const jMax = Number(Settings.get('anti_ban_jitter_max_ms'));
-  if (Number.isFinite(jMin) && jMin < 5000) {
-    Settings.set('anti_ban_jitter_min_ms', '5000');
+  if (jMin === 3000 || jMin === 5000) {
+    Settings.set('anti_ban_jitter_min_ms', '4000');
   }
-  if (Number.isFinite(jMax) && jMax < 12000) {
-    Settings.set('anti_ban_jitter_max_ms', '12000');
+  if (jMax === 7000 || jMax === 12000) {
+    Settings.set('anti_ban_jitter_max_ms', '25000');
   }
   if (Settings.get('anti_ban_min_gap_ms') === '3500') {
     Settings.set('anti_ban_min_gap_ms', '4000');
