@@ -13,9 +13,7 @@ const {
   MessageLog,
   Workflows,
   ChatSessions,
-  AccessWhitelist,
-  AccessCodes,
-  AuthorizedPeers,
+  AccessUsers,
 } = require('../models');
 const whatsapp = require('../services/whatsapp');
 const { NODE_META, buildDefaultWorkflowGraph } = require('../services/workflowDefaults');
@@ -255,65 +253,53 @@ router.get('/admin/flow', requireAdmin, (req, res) => {
 
 router.get('/admin/access', requireAdmin, (req, res) => {
   res.render('admin/access', layoutLocals(req, {
-    title: 'Access Control',
+    title: 'Authorized Users',
     settings: Settings.getAll(),
-    whitelist: AccessWhitelist.list(),
-    codes: AccessCodes.list(),
-    authorized: AuthorizedPeers.list(),
+    users: AccessUsers.list(),
   }));
 });
 
 router.post('/admin/access/settings', requireAdmin, (req, res) => {
   Settings.set('access_control_enabled', req.body.access_control_enabled === '1' ? '1' : '0');
-  if (req.body.access_denied_message !== undefined) {
-    Settings.set('access_denied_message', req.body.access_denied_message);
-  }
-  if (req.body.access_granted_message !== undefined) {
-    Settings.set('access_granted_message', req.body.access_granted_message);
+  for (const key of [
+    'access_denied_message',
+    'access_granted_message',
+    'access_wrong_code_message',
+  ]) {
+    if (req.body[key] !== undefined) Settings.set(key, req.body[key]);
   }
   req.session.flash = { type: 'success', message: 'Access settings saved.' };
   res.redirect('/admin/access');
 });
 
-router.post('/admin/access/whitelist', requireAdmin, (req, res) => {
+router.post('/admin/access/users', requireAdmin, (req, res) => {
   try {
-    AccessWhitelist.create({
+    AccessUsers.create({
+      name: req.body.name,
       phone: req.body.phone,
-      label: req.body.label || null,
+      access_code: req.body.access_code,
     });
-    req.session.flash = { type: 'success', message: 'Number whitelisted.' };
+    req.session.flash = { type: 'success', message: 'Authorized user added.' };
   } catch (err) {
-    req.session.flash = { type: 'error', message: err.message };
+    req.session.flash = {
+      type: 'error',
+      message: err.message || 'Could not add user (phone/code must be unique).',
+    };
   }
   res.redirect('/admin/access');
 });
 
-router.post('/admin/access/whitelist/:id', requireAdmin, (req, res) => {
+router.post('/admin/access/users/:id', requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
   if (req.body._action === 'delete') {
-    AccessWhitelist.remove(Number(req.params.id));
-    req.session.flash = { type: 'success', message: 'Removed from whitelist.' };
-  }
-  res.redirect('/admin/access');
-});
-
-router.post('/admin/access/codes', requireAdmin, (req, res) => {
-  try {
-    AccessCodes.create({
-      code: req.body.code,
-      label: req.body.label || null,
-      max_uses: Number(req.body.max_uses) || 0,
-    });
-    req.session.flash = { type: 'success', message: 'Access code created.' };
-  } catch (err) {
-    req.session.flash = { type: 'error', message: err.message || 'Could not create code.' };
-  }
-  res.redirect('/admin/access');
-});
-
-router.post('/admin/access/codes/:id', requireAdmin, (req, res) => {
-  if (req.body._action === 'delete') {
-    AccessCodes.remove(Number(req.params.id));
-    req.session.flash = { type: 'success', message: 'Access code deleted.' };
+    AccessUsers.remove(id);
+    req.session.flash = { type: 'success', message: 'User removed.' };
+  } else if (req.body._action === 'lock') {
+    const user = AccessUsers.get(id);
+    if (user) {
+      AccessUsers.lock(user.phone);
+      req.session.flash = { type: 'success', message: `${user.name} locked — must send code again.` };
+    }
   }
   res.redirect('/admin/access');
 });

@@ -12,8 +12,7 @@ const {
   InternalNumbers,
   ChatSessions,
   ChatFlow,
-  AccessCodes,
-  AuthorizedPeers,
+  AccessUsers,
 } = require('../models');
 const { bindEngine, newToken } = require('./workflowEngine');
 const { buildPuppeteerLaunchOptions, isRenderLike, isVpsLinux } = require('./chromiumLaunch');
@@ -1114,36 +1113,66 @@ class WhatsAppService {
         }
       }
 
-      // 2.4) Access gate — unlock form / main flow only via whitelist or unique code
+      // 2.4) Access gate — phone + assigned unique code required to unlock form / main flow
       const accessEnabled = Settings.get('access_control_enabled', '1') !== '0';
       if (accessEnabled) {
-        const codeRow = AccessCodes.findValid(body);
-        if (codeRow) {
-          AuthorizedPeers.authorize(phone, { method: 'code', code_used: codeRow.code });
-          AccessCodes.incrementUse(codeRow.id);
-          console.log(`[Access] Authorized ${phone} via code ${codeRow.code}`);
-          await this.sendMessage(
-            phone,
-            Settings.get('access_granted_message') ||
-              'Access granted. Send *Hi* to receive your form link.',
-            { chatId, replyTo: message }
-          );
+        const alreadyUnlocked = AccessUsers.isUnlocked(phone);
+        const looksLikeCode = /^[A-Za-z0-9_-]{4,32}$/.test(body);
+
+        // Only treat code-like messages as unlock attempts until this phone is unlocked
+        if (looksLikeCode && !alreadyUnlocked) {
+          const result = AccessUsers.tryUnlock(phone, body);
+          if (result.ok) {
+            console.log(
+              `[Access] Unlocked ${phone} (${result.user.name}) with code ${result.user.access_code}`
+            );
+            const granted =
+              Settings.get('access_granted_message') ||
+              `Welcome *{{name}}*. Access granted. Send *Hi* to receive your form link.`;
+            await this.sendMessage(
+              phone,
+              this.renderTemplate(granted, {
+                name: result.user.name,
+                phone,
+                business_name: Settings.get('business_name', 'Insurance Bot'),
+              }),
+              { chatId, replyTo: message }
+            );
+            return;
+          }
+
+          // Registered phone but wrong code → polite deny; unknown phone → ignore
+          if (result.reason === 'wrong_code') {
+            await this.sendMessage(
+              phone,
+              Settings.get('access_wrong_code_message') ||
+                'That access code is not valid for this number. Please check and try again.',
+              { chatId, replyTo: message }
+            );
+            return;
+          }
+          console.log(`[Access] Ignored code attempt from unknown ${phone}`);
           return;
         }
 
         const wantsForm =
           isHardcodedGreeting(body) ||
-          (ChatFlow.findByKeyword(body) &&
-            isFormLinkChatFlow(ChatFlow.findByKeyword(body)));
+          (() => {
+            const f = ChatFlow.findByKeyword(body);
+            return f && isFormLinkChatFlow(f);
+          })();
 
-        if (wantsForm && !AuthorizedPeers.isAuthorized(phone)) {
-          console.log(`[Access] Denied form flow for unknown ${phone}`);
-          // Ignore random Hi silently? User asked to ignore OR require code.
-          // Reply once with instructions (humanized) so legitimate users know what to do.
+        if (wantsForm && !alreadyUnlocked) {
+          const registered = AccessUsers.findByPhone(phone);
+          if (!registered) {
+            console.log(`[Access] Ignoring Hi from unregistered ${phone}`);
+            return;
+          }
+          console.log(`[Access] ${phone} registered but not unlocked yet`);
           await this.sendMessage(
             phone,
             Settings.get('access_denied_message') ||
-              'This service is invite-only. Please send your *unique access code* to continue.',
+              `Hi *${registered.name}*. Please send your unique access code to continue.`,
             { chatId, replyTo: message }
           );
           return;
@@ -1153,6 +1182,7 @@ class WhatsAppService {
       // 2.5) Custom admin keywords (brochure, address, …) — never starts form flow
       const keywordFlow = ChatFlow.findByKeyword(body);
       if (keywordFlow && !isFormLinkChatFlow(keywordFlow) && !isHardcodedGreeting(body)) {
+        // Optional: require unlock for keyword replies too — keep public for now
         const business = Settings.get('business_name', 'SecureLife Insurance');
         const text = this.renderTemplate(keywordFlow.response_template, {
           business_name: business,

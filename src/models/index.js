@@ -950,158 +950,129 @@ function digitsOnly(phone) {
   return String(phone || '').replace(/\D/g, '');
 }
 
-const AccessWhitelist = {
+/**
+ * Simple authorized users: Name + Phone + Unique Access Code.
+ * Unlock requires BOTH matching phone AND that user's assigned code.
+ */
+const AccessUsers = {
   list(activeOnly = false) {
     const sql = activeOnly
-      ? 'SELECT * FROM access_whitelist WHERE is_active = 1 ORDER BY created_at DESC'
-      : 'SELECT * FROM access_whitelist ORDER BY created_at DESC';
+      ? 'SELECT * FROM access_users WHERE is_active = 1 ORDER BY name COLLATE NOCASE, id'
+      : 'SELECT * FROM access_users ORDER BY name COLLATE NOCASE, id';
     return db.prepare(sql).all();
   },
 
-  isAllowed(phone) {
+  get(id) {
+    return db.prepare('SELECT * FROM access_users WHERE id = ?').get(id);
+  },
+
+  findByPhone(phone) {
     const digits = digitsOnly(phone);
-    if (!digits) return false;
-    return !!db
-      .prepare(
-        'SELECT id FROM access_whitelist WHERE is_active = 1 AND phone = ? LIMIT 1'
-      )
+    if (!digits) return null;
+    return db
+      .prepare('SELECT * FROM access_users WHERE is_active = 1 AND phone = ? LIMIT 1')
       .get(digits);
   },
 
-  create({ phone, label = null }) {
-    const digits = digitsOnly(phone);
-    if (!digits) throw new Error('Phone required');
-    db.prepare(
-      `INSERT INTO access_whitelist (phone, label) VALUES (?, ?)
-       ON CONFLICT(phone) DO UPDATE SET label = excluded.label, is_active = 1`
-    ).run(digits, label || null);
-    return db.prepare('SELECT * FROM access_whitelist WHERE phone = ?').get(digits);
-  },
-
-  update(id, { phone, label, is_active }) {
-    const current = db.prepare('SELECT * FROM access_whitelist WHERE id = ?').get(id);
-    if (!current) return null;
-    const digits =
-      phone !== undefined ? digitsOnly(phone) || current.phone : current.phone;
-    db.prepare(
-      `UPDATE access_whitelist
-       SET phone = ?, label = COALESCE(?, label), is_active = COALESCE(?, is_active)
-       WHERE id = ?`
-    ).run(digits, label ?? null, is_active ?? null, id);
-    return db.prepare('SELECT * FROM access_whitelist WHERE id = ?').get(id);
-  },
-
-  remove(id) {
-    return db.prepare('DELETE FROM access_whitelist WHERE id = ?').run(id);
-  },
-};
-
-const AccessCodes = {
-  list(activeOnly = false) {
-    const sql = activeOnly
-      ? 'SELECT * FROM access_codes WHERE is_active = 1 ORDER BY created_at DESC'
-      : 'SELECT * FROM access_codes ORDER BY created_at DESC';
-    return db.prepare(sql).all();
-  },
-
-  normalize(code) {
+  normalizeCode(code) {
     return String(code || '')
       .replace(/[\u200B-\u200D\uFEFF]/g, '')
       .trim()
       .toUpperCase();
   },
 
-  findValid(code) {
-    const c = this.normalize(code);
-    if (!c || c.length < 4) return null;
-    const row = db
-      .prepare('SELECT * FROM access_codes WHERE is_active = 1 AND UPPER(code) = ? LIMIT 1')
-      .get(c);
-    if (!row) return null;
-    if (row.expires_at) {
-      const exp = Date.parse(row.expires_at);
-      if (Number.isFinite(exp) && exp < Date.now()) return null;
-    }
-    if (row.max_uses > 0 && row.use_count >= row.max_uses) return null;
-    return row;
+  /** True when this phone already verified their own code. */
+  isUnlocked(phone) {
+    const user = this.findByPhone(phone);
+    return !!(user && user.verified_at);
   },
 
-  create({ code, label = null, max_uses = 0, expires_at = null }) {
-    const c = this.normalize(code);
-    if (!c) throw new Error('Code required');
+  /**
+   * Verify inbound message as access code for this phone.
+   * Returns { ok, user, reason }.
+   */
+  tryUnlock(phone, codeInput) {
+    const digits = digitsOnly(phone);
+    const code = this.normalizeCode(codeInput);
+    if (!digits || !code || code.length < 4) {
+      return { ok: false, reason: 'invalid_input' };
+    }
+
+    const user = this.findByPhone(digits);
+    if (!user) {
+      return { ok: false, reason: 'unknown_phone' };
+    }
+
+    if (this.normalizeCode(user.access_code) !== code) {
+      return { ok: false, reason: 'wrong_code', user };
+    }
+
+    db.prepare(
+      `UPDATE access_users
+       SET verified_at = datetime('now'), updated_at = datetime('now')
+       WHERE id = ?`
+    ).run(user.id);
+
+    return { ok: true, user: this.get(user.id), reason: 'unlocked' };
+  },
+
+  create({ name, phone, access_code }) {
+    const digits = digitsOnly(phone);
+    const code = this.normalizeCode(access_code);
+    const displayName = String(name || '').trim();
+    if (!displayName) throw new Error('Name is required');
+    if (!digits) throw new Error('Phone number is required');
+    if (!code || code.length < 4) throw new Error('Access code must be at least 4 characters');
+
     const result = db
       .prepare(
-        `INSERT INTO access_codes (code, label, max_uses, expires_at) VALUES (?, ?, ?, ?)`
+        `INSERT INTO access_users (name, phone, access_code) VALUES (?, ?, ?)`
       )
-      .run(c, label || null, Number(max_uses) || 0, expires_at || null);
-    return db.prepare('SELECT * FROM access_codes WHERE id = ?').get(result.lastInsertRowid);
+      .run(displayName, digits, code);
+    return this.get(result.lastInsertRowid);
   },
 
-  incrementUse(id) {
-    db.prepare(`UPDATE access_codes SET use_count = use_count + 1 WHERE id = ?`).run(id);
-  },
-
-  update(id, { code, label, max_uses, is_active, expires_at }) {
-    const current = db.prepare('SELECT * FROM access_codes WHERE id = ?').get(id);
+  update(id, { name, phone, access_code, is_active, clear_verified }) {
+    const current = this.get(id);
     if (!current) return null;
-    const c = code !== undefined ? this.normalize(code) : current.code;
+    const digits =
+      phone !== undefined ? digitsOnly(phone) || current.phone : current.phone;
+    const code =
+      access_code !== undefined
+        ? this.normalizeCode(access_code) || current.access_code
+        : current.access_code;
+    const displayName =
+      name !== undefined ? String(name || '').trim() || current.name : current.name;
+
     db.prepare(
-      `UPDATE access_codes
-       SET code = ?,
-           label = COALESCE(?, label),
-           max_uses = COALESCE(?, max_uses),
+      `UPDATE access_users
+       SET name = ?,
+           phone = ?,
+           access_code = ?,
            is_active = COALESCE(?, is_active),
-           expires_at = ?
+           verified_at = CASE WHEN ? = 1 THEN NULL ELSE verified_at END,
+           updated_at = datetime('now')
        WHERE id = ?`
     ).run(
-      c,
-      label ?? null,
-      max_uses === undefined ? null : Number(max_uses) || 0,
+      displayName,
+      digits,
+      code,
       is_active ?? null,
-      expires_at === undefined ? current.expires_at : expires_at || null,
+      clear_verified ? 1 : 0,
       id
     );
-    return db.prepare('SELECT * FROM access_codes WHERE id = ?').get(id);
+    return this.get(id);
+  },
+
+  lock(phone) {
+    const digits = digitsOnly(phone);
+    db.prepare(
+      `UPDATE access_users SET verified_at = NULL, updated_at = datetime('now') WHERE phone = ?`
+    ).run(digits);
   },
 
   remove(id) {
-    return db.prepare('DELETE FROM access_codes WHERE id = ?').run(id);
-  },
-};
-
-const AuthorizedPeers = {
-  isAuthorized(phone) {
-    const digits = digitsOnly(phone);
-    if (!digits) return false;
-    if (AccessWhitelist.isAllowed(digits)) return true;
-    return !!db
-      .prepare('SELECT id FROM authorized_peers WHERE phone = ? LIMIT 1')
-      .get(digits);
-  },
-
-  authorize(phone, { method = 'code', code_used = null } = {}) {
-    const digits = digitsOnly(phone);
-    if (!digits) throw new Error('Phone required');
-    db.prepare(
-      `INSERT INTO authorized_peers (phone, method, code_used, authorized_at, updated_at)
-       VALUES (?, ?, ?, datetime('now'), datetime('now'))
-       ON CONFLICT(phone) DO UPDATE SET
-         method = excluded.method,
-         code_used = excluded.code_used,
-         updated_at = datetime('now')`
-    ).run(digits, method, code_used || null);
-    return db.prepare('SELECT * FROM authorized_peers WHERE phone = ?').get(digits);
-  },
-
-  revoke(phone) {
-    const digits = digitsOnly(phone);
-    return db.prepare('DELETE FROM authorized_peers WHERE phone = ?').run(digits);
-  },
-
-  list() {
-    return db
-      .prepare('SELECT * FROM authorized_peers ORDER BY authorized_at DESC LIMIT 200')
-      .all();
+    return db.prepare('DELETE FROM access_users WHERE id = ?').run(id);
   },
 };
 
@@ -1118,7 +1089,5 @@ module.exports = {
   Workflows,
   WorkflowRuns,
   ChatSessions,
-  AccessWhitelist,
-  AccessCodes,
-  AuthorizedPeers,
+  AccessUsers,
 };

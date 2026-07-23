@@ -9,96 +9,112 @@
 <body class="font-sans text-ink bg-sand min-h-screen antialiased">
   <%- include('../partials/nav') %>
   <% if (flash) { %>
-    <div class="max-w-5xl mx-auto px-4 pt-4">
+    <div class="max-w-4xl mx-auto px-4 pt-4">
       <div class="rounded-lg px-4 py-3 text-sm <%= flash.type === 'error' ? 'bg-red-50 text-red-800 border border-red-200' : 'bg-emerald-50 text-emerald-800 border border-emerald-200' %>"><%= flash.message %></div>
     </div>
   <% } %>
 
-  <main class="max-w-5xl mx-auto px-4 py-8 space-y-8 animate-in">
+  <main class="max-w-4xl mx-auto px-4 py-8 space-y-8 animate-in">
     <div>
-      <h1 class="font-display text-3xl font-semibold mb-2">Access control</h1>
+      <h1 class="font-display text-3xl font-semibold mb-2">Authorized users</h1>
       <p class="text-ink/60 max-w-2xl">
-        Random <em>Hi</em> messages are ignored until the number is whitelisted or the user sends a valid unique access code.
-        Live chats still only end when the customer sends <strong>Close</strong>.
+        Add users one by one with <strong>Name</strong>, <strong>Phone</strong>, and a <strong>Unique Access Code</strong>.
+        The form / chat flow unlocks only when that phone sends <em>their</em> assigned code, then <em>Hi</em>.
       </p>
     </div>
 
     <section class="panel p-6 space-y-4">
-      <h2 class="font-display text-xl font-semibold">Gate settings</h2>
+      <h2 class="font-display text-xl font-semibold">Settings</h2>
       <form method="POST" action="/admin/access/settings" class="space-y-4">
         <label class="flex items-center gap-2 text-sm">
           <input type="checkbox" name="access_control_enabled" value="1" <%= settings.access_control_enabled !== '0' ? 'checked' : '' %> />
-          Require whitelist or access code for form / Hi flow
+          Require Name/Phone/Code match before form &amp; live chat
         </label>
         <div>
-          <label class="label" for="access_denied_message">Denied / ask-for-code message</label>
+          <label class="label" for="access_denied_message">Ask-for-code message (registered phone, not yet unlocked)</label>
           <textarea class="field" id="access_denied_message" name="access_denied_message" rows="2"><%= settings.access_denied_message || '' %></textarea>
         </div>
         <div>
-          <label class="label" for="access_granted_message">Granted message</label>
+          <label class="label" for="access_granted_message">Success after correct code</label>
           <textarea class="field" id="access_granted_message" name="access_granted_message" rows="2"><%= settings.access_granted_message || '' %></textarea>
+          <p class="text-xs text-ink/45 mt-1">Placeholders: <code>{{name}}</code>, <code>{{phone}}</code>, <code>{{business_name}}</code></p>
+        </div>
+        <div>
+          <label class="label" for="access_wrong_code_message">Wrong code message</label>
+          <textarea class="field" id="access_wrong_code_message" name="access_wrong_code_message" rows="2"><%= settings.access_wrong_code_message || '' %></textarea>
         </div>
         <button type="submit" class="btn btn-primary">Save settings</button>
       </form>
     </section>
 
-    <div class="grid lg:grid-cols-2 gap-6">
-      <section class="panel p-6 space-y-4">
-        <h2 class="font-display text-xl font-semibold">Phone whitelist</h2>
-        <form method="POST" action="/admin/access/whitelist" class="space-y-3">
-          <input class="field" name="phone" required placeholder="9198XXXXXXXX" />
-          <input class="field" name="label" placeholder="Label (optional)" />
-          <button type="submit" class="btn btn-primary">Add number</button>
-        </form>
-        <ul class="text-sm space-y-2 max-h-64 overflow-y-auto">
-          <% (whitelist || []).forEach(function (w) { %>
-            <li class="flex justify-between gap-2 border-b border-ink/5 pb-2">
-              <span>+<%= w.phone %><% if (w.label) { %> · <%= w.label %><% } %></span>
-              <form method="POST" action="/admin/access/whitelist/<%= w.id %>">
-                <input type="hidden" name="_action" value="delete" />
-                <button class="text-coral text-xs" type="submit">Remove</button>
-              </form>
-            </li>
-          <% }) %>
-          <% if (!whitelist || !whitelist.length) { %><li class="text-ink/45">No whitelisted numbers.</li><% } %>
-        </ul>
-      </section>
-
-      <section class="panel p-6 space-y-4">
-        <h2 class="font-display text-xl font-semibold">Access codes</h2>
-        <form method="POST" action="/admin/access/codes" class="space-y-3">
-          <input class="field" name="code" required placeholder="e.g. INSURE2026" />
-          <input class="field" name="label" placeholder="Label (optional)" />
-          <input class="field" type="number" name="max_uses" min="0" value="0" placeholder="Max uses (0 = unlimited)" />
-          <button type="submit" class="btn btn-primary">Create code</button>
-        </form>
-        <ul class="text-sm space-y-2 max-h-64 overflow-y-auto">
-          <% (codes || []).forEach(function (c) { %>
-            <li class="flex justify-between gap-2 border-b border-ink/5 pb-2">
-              <span>
-                <code class="text-sea"><%= c.code %></code>
-                <% if (c.label) { %> · <%= c.label %><% } %>
-                · used <%= c.use_count %><% if (c.max_uses) { %>/<%= c.max_uses %><% } %>
-              </span>
-              <form method="POST" action="/admin/access/codes/<%= c.id %>">
-                <input type="hidden" name="_action" value="delete" />
-                <button class="text-coral text-xs" type="submit">Delete</button>
-              </form>
-            </li>
-          <% }) %>
-          <% if (!codes || !codes.length) { %><li class="text-ink/45">No access codes yet.</li><% } %>
-        </ul>
-      </section>
-    </div>
+    <section class="panel p-6 space-y-4">
+      <h2 class="font-display text-xl font-semibold">Add user</h2>
+      <form method="POST" action="/admin/access/users" class="grid md:grid-cols-3 gap-3 items-end">
+        <div>
+          <label class="label" for="name">Name</label>
+          <input class="field" id="name" name="name" required placeholder="Rahul Sharma" />
+        </div>
+        <div>
+          <label class="label" for="phone">Phone number</label>
+          <input class="field" id="phone" name="phone" required placeholder="9198XXXXXXXX" />
+        </div>
+        <div>
+          <label class="label" for="access_code">Unique access code</label>
+          <input class="field" id="access_code" name="access_code" required placeholder="INSU2026" />
+        </div>
+        <div class="md:col-span-3">
+          <button type="submit" class="btn btn-primary">Add authorized user</button>
+        </div>
+      </form>
+    </section>
 
     <section class="panel p-6">
-      <h2 class="font-display text-xl font-semibold mb-3">Recently authorized</h2>
-      <ul class="text-sm space-y-1">
-        <% (authorized || []).forEach(function (a) { %>
-          <li>+<%= a.phone %> · <%= a.method %><% if (a.code_used) { %> (<%= a.code_used %>)<% } %> · <%= a.authorized_at %></li>
-        <% }) %>
-        <% if (!authorized || !authorized.length) { %><li class="text-ink/45">None yet.</li><% } %>
-      </ul>
+      <h2 class="font-display text-xl font-semibold mb-4">Users</h2>
+      <% if (!users || !users.length) { %>
+        <p class="text-sm text-ink/45">No authorized users yet. Add the first one above.</p>
+      <% } else { %>
+        <div class="table-wrap overflow-x-auto">
+          <table class="data w-full text-sm">
+            <thead>
+              <tr class="text-left text-ink/50 border-b border-ink/10">
+                <th class="py-2 pr-3">Name</th>
+                <th class="py-2 pr-3">Phone</th>
+                <th class="py-2 pr-3">Access code</th>
+                <th class="py-2 pr-3">Status</th>
+                <th class="py-2">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% users.forEach(function (u) { %>
+                <tr class="border-b border-ink/5 align-top">
+                  <td class="py-3 pr-3 font-medium"><%= u.name %></td>
+                  <td class="py-3 pr-3">+<%= u.phone %></td>
+                  <td class="py-3 pr-3"><code class="text-sea"><%= u.access_code %></code></td>
+                  <td class="py-3 pr-3">
+                    <% if (!u.is_active) { %>
+                      <span class="text-ink/45">Inactive</span>
+                    <% } else if (u.verified_at) { %>
+                      <span class="text-emerald-700">Unlocked</span>
+                    <% } else { %>
+                      <span class="text-ink/55">Waiting for code</span>
+                    <% } %>
+                  </td>
+                  <td class="py-3">
+                    <form method="POST" action="/admin/access/users/<%= u.id %>" class="inline">
+                      <input type="hidden" name="_action" value="lock" />
+                      <button type="submit" class="text-xs text-ink/60 hover:text-sea mr-2" title="Require code again">Lock</button>
+                    </form>
+                    <form method="POST" action="/admin/access/users/<%= u.id %>" class="inline" onsubmit="return confirm('Remove <%= u.name %>?');">
+                      <input type="hidden" name="_action" value="delete" />
+                      <button type="submit" class="text-xs text-coral">Delete</button>
+                    </form>
+                  </td>
+                </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      <% } %>
     </section>
   </main>
 </body>
