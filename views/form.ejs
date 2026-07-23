@@ -121,7 +121,46 @@
       color: var(--sea);
     }
 
-    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+      align-items: start;
+    }
+
+    @media (max-width: 480px) {
+      .row { grid-template-columns: 1fr; }
+    }
+
+    /* Stack age + gender cleanly — avoid select overflow/overlap */
+    .member-meta {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.85rem 1rem;
+      align-items: start;
+    }
+
+    @media (max-width: 480px) {
+      .member-meta { grid-template-columns: 1fr; }
+    }
+
+    .member-meta .field-group {
+      margin-bottom: 0;
+      min-width: 0;
+    }
+
+    .member-meta select,
+    .member-meta input {
+      width: 100%;
+      max-width: 100%;
+      display: block;
+      position: relative;
+      z-index: 1;
+    }
+
+    .member-card + .member-card {
+      margin-top: 0.25rem;
+    }
 
     .btn {
       display: inline-flex;
@@ -295,8 +334,12 @@
         </div>
 
         <div class="field-group">
-          <label for="duration_days">Policy duration (days)</label>
-          <input type="number" id="duration_days" name="duration_days" min="1" max="3650" placeholder="e.g. 365" />
+          <label for="policy_duration">Policy duration</label>
+          <select id="policy_duration" name="policy_duration">
+            <option value="">Select…</option>
+            <option value="2 Years">2 Years</option>
+            <option value="3 Years">3 Years</option>
+          </select>
         </div>
 
         <div class="field-group">
@@ -422,10 +465,10 @@
             '<label>Full name</label>' +
             '<input type="text" name="member_name_' + i + '" required maxlength="120" placeholder="Full name" />' +
           '</div>' +
-          '<div class="row">' +
+          '<div class="member-meta">' +
             '<div class="field-group">' +
-              '<label>Date of birth</label>' +
-              '<input type="date" name="member_dob_' + i + '" required />' +
+              '<label>Age (years)</label>' +
+              '<input type="number" name="member_age_' + i + '" required min="1" max="120" inputmode="numeric" placeholder="e.g. 21" />' +
             '</div>' +
             '<div class="field-group">' +
               '<label>Gender</label>' +
@@ -433,7 +476,6 @@
                 '<option value="">Select…</option>' +
                 '<option value="Male">Male</option>' +
                 '<option value="Female">Female</option>' +
-                '<option value="Other">Other</option>' +
               '</select>' +
             '</div>' +
           '</div>';

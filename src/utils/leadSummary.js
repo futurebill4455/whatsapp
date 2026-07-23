@@ -23,14 +23,16 @@ function formatExtraDetails(extra, type) {
   if (t === 'health') {
     if (extra.member_count) lines.push(`• Members: ${extra.member_count}`);
     if (extra.coverage_amount) lines.push(`• Coverage amount: ${extra.coverage_amount}`);
-    if (extra.duration_days) lines.push(`• Duration: ${extra.duration_days} days`);
+    if (extra.policy_duration) lines.push(`• Policy duration: ${extra.policy_duration}`);
+    else if (extra.duration_days) lines.push(`• Duration: ${extra.duration_days} days`);
     if (Array.isArray(extra.members) && extra.members.length) {
       lines.push('• Member details:');
       extra.members.forEach((m, i) => {
         const name = m.name || '—';
-        const dob = m.dob || '—';
+        const age = m.age != null && m.age !== '' ? m.age : (m.dob || '—');
         const gender = m.gender || '—';
-        lines.push(`   ${i + 1}. ${name} | DOB: ${dob} | Gender: ${gender}`);
+        const ageLabel = m.age != null && m.age !== '' ? `Age: ${age}` : `DOB: ${age}`;
+        lines.push(`   ${i + 1}. ${name} | ${ageLabel} | Gender: ${gender}`);
       });
     }
     // Legacy single-person health fields
@@ -43,11 +45,13 @@ function formatExtraDetails(extra, type) {
     if (extra.manufacturing_year) lines.push(`• Year: ${extra.manufacturing_year}`);
     if (extra.policy_type) lines.push(`• Policy type: ${extra.policy_type}`);
     if (extra.coverage_amount) lines.push(`• Coverage amount: ${extra.coverage_amount}`);
-    if (extra.duration_days) lines.push(`• Duration: ${extra.duration_days} days`);
+    if (extra.policy_duration) lines.push(`• Policy duration: ${extra.policy_duration}`);
+    else if (extra.duration_days) lines.push(`• Duration: ${extra.duration_days} days`);
   } else {
     // Generic fallback when type is unknown
     if (extra.coverage_amount) lines.push(`• Coverage amount: ${extra.coverage_amount}`);
-    if (extra.duration_days) lines.push(`• Duration: ${extra.duration_days} days`);
+    if (extra.policy_duration) lines.push(`• Policy duration: ${extra.policy_duration}`);
+    else if (extra.duration_days) lines.push(`• Duration: ${extra.duration_days} days`);
     if (Array.isArray(extra.members) && extra.members.length) {
       lines.push('• Member details:');
       extra.members.forEach((m, i) => {
@@ -86,6 +90,7 @@ function buildLeadVars(submission, overrides = {}) {
     member_count: extra.member_count || '',
     coverage_amount: extra.coverage_amount || '',
     duration_days: extra.duration_days || '',
+    policy_duration: extra.policy_duration || '',
     ...extra,
     ...overrides,
   };

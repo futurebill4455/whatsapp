@@ -48,16 +48,40 @@ function isHardcodedGreeting(text) {
 }
 
 function getCloseKeywords() {
-  const raw = Settings.get('close_keywords') || 'close,ക്ലോസ്';
+  // Default: only the word "close" (case-insensitive). Admin may add more in Settings.
+  const raw = Settings.get('close_keywords') || 'close';
   return String(raw)
     .split(',')
     .map((k) => k.trim().toLowerCase())
     .filter(Boolean);
 }
 
+/** Exact keyword match only — never auto-timeout; customer must send Close. */
 function isCloseCommand(text) {
   const n = normalizeMsg(text);
-  return getCloseKeywords().some((k) => n === k || n.startsWith(`${k} `));
+  return getCloseKeywords().some((k) => n === k);
+}
+
+/**
+ * ChatFlow rows that start the insurance form link (greetings).
+ * Custom info keywords (brochure, address, …) return false.
+ */
+function isFormLinkChatFlow(flow) {
+  if (!flow) return false;
+  const tpl = String(flow.response_template || '');
+  if (tpl.includes('{{form_link}}')) return true;
+  const keys = String(flow.trigger_keyword || '')
+    .split(',')
+    .map((k) => k.trim().toLowerCase())
+    .filter(Boolean);
+  const greetings = new Set([
+    ...HARDCODED_GREETINGS.map((g) => g.toLowerCase()),
+    ...String(Settings.get('trigger_keywords') || 'hi,hello,hey,start,ഹായ്')
+      .split(',')
+      .map((k) => k.trim().toLowerCase())
+      .filter(Boolean),
+  ]);
+  return keys.some((k) => greetings.has(k));
 }
 
 function isYesReply(text) {
@@ -1051,6 +1075,19 @@ class WhatsAppService {
         }
       }
 
+      // 2.5) Custom admin keywords (brochure, address, …) — never starts form flow
+      const keywordFlow = ChatFlow.findByKeyword(body);
+      if (keywordFlow && !isFormLinkChatFlow(keywordFlow) && !isHardcodedGreeting(body)) {
+        const business = Settings.get('business_name', 'SecureLife Insurance');
+        const text = this.renderTemplate(keywordFlow.response_template, {
+          business_name: business,
+          phone,
+        });
+        console.log(`[WhatsApp] Custom keyword reply for: ${body}`);
+        await this.sendMessage(phone, text, { chatId, replyTo: message });
+        return;
+      }
+
       // 3) Active Drawflow workflow (or Settings/ChatFlow fallback inside engine)
       const result = await this.engine.handleIncomingMessage({
         phone,
@@ -1066,14 +1103,14 @@ class WhatsAppService {
       if (result?.handled) return;
       if (result?.reason === 'unmatched_reply' && !isHardcodedGreeting(body)) return;
 
-      // 4) ChatFlow greeting → form link (and hardcoded Hi safety net)
+      // 4) Greeting ChatFlow / Hi → form link (default flow untouched)
       const flow = ChatFlow.findByKeyword(body);
-      if (flow || isHardcodedGreeting(body)) {
-        console.log('[WhatsApp] ChatFlow / greeting fallback for:', body);
+      if ((flow && isFormLinkChatFlow(flow)) || isHardcodedGreeting(body)) {
+        console.log('[WhatsApp] ChatFlow / greeting form-link for:', body);
         await this.sendGreetingFormLink(phone, {
           chatId,
           replyTo: message,
-          flow: flow || null,
+          flow: flow && isFormLinkChatFlow(flow) ? flow : null,
         });
         return;
       }

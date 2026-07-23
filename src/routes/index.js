@@ -124,27 +124,28 @@ router.post('/form/:token', async (req, res) => {
     const memberCount = Math.min(5, Math.max(1, parseInt(req.body.member_count) || 1));
     extra_data.member_count = memberCount;
     extra_data.coverage_amount = String(req.body.coverage_amount || '').trim() || 'Not specified';
-    const durationRaw = String(req.body.duration_days || '').trim();
-    if (durationRaw) {
-      const durationDays = parseInt(durationRaw, 10);
-      if (!Number.isFinite(durationDays) || durationDays < 1) {
-        req.session.flash = { type: 'error', message: 'Please enter a valid policy duration in days.' };
-        return res.redirect(`/form/${req.params.token}`);
-      }
-      extra_data.duration_days = durationDays;
+    const policyDuration = String(req.body.policy_duration || '').trim();
+    if (policyDuration && !['2 Years', '3 Years'].includes(policyDuration)) {
+      req.session.flash = { type: 'error', message: 'Please select a valid policy duration (2 Years or 3 Years).' };
+      return res.redirect(`/form/${req.params.token}`);
     }
+    if (policyDuration) extra_data.policy_duration = policyDuration;
     const members = [];
     for (let i = 1; i <= memberCount; i++) {
+      const ageRaw = String(req.body[`member_age_${i}`] || req.body[`member_dob_${i}`] || '').trim();
+      const ageNum = parseInt(ageRaw, 10);
       members.push({
         name: String(req.body[`member_name_${i}`] || '').trim(),
-        dob: String(req.body[`member_dob_${i}`] || '').trim(),
+        age: Number.isFinite(ageNum) ? ageNum : ageRaw,
         gender: String(req.body[`member_gender_${i}`] || '').trim(),
       });
     }
     extra_data.members = members;
-    const missingMember = members.find((m) => !m.name || !m.dob || !m.gender);
+    const missingMember = members.find(
+      (m) => !m.name || m.age === '' || m.age == null || !m.gender || (typeof m.age === 'number' && (m.age < 1 || m.age > 120))
+    );
     if (missingMember) {
-      req.session.flash = { type: 'error', message: 'Please fill in all member details (name, date of birth, gender).' };
+      req.session.flash = { type: 'error', message: 'Please fill in all member details (name, age, gender).' };
       return res.redirect(`/form/${req.params.token}`);
     }
   } else if (insurance_type === 'Vehicle') {
@@ -243,7 +244,10 @@ router.post('/admin/settings', requireAdmin, (req, res) => {
 });
 
 router.get('/admin/flow', requireAdmin, (req, res) => {
-  res.redirect('/admin/workflow');
+  res.render('admin/flow', layoutLocals(req, {
+    title: 'Keyword Replies',
+    flows: ChatFlow.list(),
+  }));
 });
 
 router.get('/admin/workflow', requireAdmin, (req, res) => {

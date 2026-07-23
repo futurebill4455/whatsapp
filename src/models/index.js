@@ -266,9 +266,15 @@ const ChatFlow = {
       .trim()
       .toLowerCase();
     const flows = this.list(true);
+    // Prefer exact keyword match first (brochure, address, …)
+    const exact = flows.find((f) => {
+      const keywords = f.trigger_keyword.split(',').map((k) => k.trim().toLowerCase()).filter(Boolean);
+      return keywords.some((k) => k === normalized);
+    });
+    if (exact) return exact;
     return flows.find((f) => {
       const keywords = f.trigger_keyword.split(',').map((k) => k.trim().toLowerCase()).filter(Boolean);
-      return keywords.some((k) => k === normalized || normalized.startsWith(`${k} `));
+      return keywords.some((k) => normalized.startsWith(`${k} `));
     });
   },
 

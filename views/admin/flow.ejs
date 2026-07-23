@@ -8,15 +8,80 @@
 </head>
 <body class="font-sans text-ink bg-sand min-h-screen antialiased">
   <%- include('../partials/nav') %>
-  <main class="max-w-lg mx-auto px-4 py-16 animate-in">
-    <div class="panel p-8 text-center">
-      <h1 class="font-display text-2xl font-semibold mb-3">Chat Flow moved</h1>
-      <p class="text-ink/70 mb-6">
-        Legacy keyword chat flow is replaced by the visual <strong>Workflow</strong> builder.
-        Triggers, form links, Yes/No confirmation, and desk forwarding are edited on the canvas.
-      </p>
-      <a href="/admin/workflow" class="btn btn-primary">Open Workflow Builder</a>
+  <% if (flash) { %>
+    <div class="max-w-5xl mx-auto px-4 pt-4">
+      <div class="rounded-lg px-4 py-3 text-sm <%= flash.type === 'error' ? 'bg-red-50 text-red-800 border border-red-200' : 'bg-emerald-50 text-emerald-800 border border-emerald-200' %>"><%= flash.message %></div>
     </div>
+  <% } %>
+
+  <main class="max-w-5xl mx-auto px-4 py-8 space-y-8 animate-in">
+    <div>
+      <h1 class="font-display text-3xl font-semibold mb-2">Keyword replies</h1>
+      <p class="text-ink/60 max-w-2xl">
+        Save custom triggers (e.g. <code class="text-sea">brochure</code>, <code class="text-sea">contact</code>, <code class="text-sea">address</code>)
+        with a text reply. Greeting keywords (<code class="text-sea">Hi</code> / form link) stay on the Workflow — do not put
+        <code class="text-sea">{{form_link}}</code> here unless you intend to start a lead form.
+      </p>
+    </div>
+
+    <section class="panel p-6">
+      <h2 class="font-display text-xl font-semibold mb-4">Add keyword</h2>
+      <form method="POST" action="/admin/flow" class="space-y-4">
+        <div class="grid md:grid-cols-2 gap-4">
+          <div>
+            <label class="label" for="trigger_keyword">Keyword(s)</label>
+            <input class="field" id="trigger_keyword" name="trigger_keyword" required placeholder="brochure, pamphlet" />
+            <p class="text-xs text-ink/45 mt-1">Comma-separated. Matched case-insensitively as a whole message.</p>
+          </div>
+          <div>
+            <label class="label" for="sort_order">Sort order</label>
+            <input class="field" type="number" id="sort_order" name="sort_order" value="10" />
+          </div>
+        </div>
+        <div>
+          <label class="label" for="response_template">Reply text</label>
+          <textarea class="field font-mono text-sm" id="response_template" name="response_template" rows="4" required placeholder="Here is our brochure…&#10;https://…"></textarea>
+          <p class="text-xs text-ink/45 mt-1">Optional placeholder: <code>{{business_name}}</code>, <code>{{phone}}</code></p>
+        </div>
+        <button type="submit" class="btn btn-primary">Save keyword</button>
+      </form>
+    </section>
+
+    <section class="panel p-6">
+      <h2 class="font-display text-xl font-semibold mb-4">Saved keywords</h2>
+      <% if (!flows || !flows.length) { %>
+        <p class="text-sm text-ink/45">No custom keywords yet.</p>
+      <% } else { %>
+        <div class="space-y-6">
+          <% flows.forEach(function (f) { %>
+            <form method="POST" action="/admin/flow/<%= f.id %>" class="border-b border-ink/10 pb-6 space-y-3">
+              <div class="grid md:grid-cols-3 gap-3">
+                <div class="md:col-span-2">
+                  <label class="label">Keywords</label>
+                  <input class="field" name="trigger_keyword" value="<%= f.trigger_keyword %>" required />
+                </div>
+                <div>
+                  <label class="label">Active</label>
+                  <select class="field" name="is_active">
+                    <option value="1" <%= f.is_active ? 'selected' : '' %>>Yes</option>
+                    <option value="0" <%= !f.is_active ? 'selected' : '' %>>No</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label class="label">Reply</label>
+                <textarea class="field font-mono text-sm" name="response_template" rows="3" required><%= f.response_template %></textarea>
+              </div>
+              <input type="hidden" name="sort_order" value="<%= f.sort_order || 0 %>" />
+              <div class="flex flex-wrap gap-2">
+                <button type="submit" class="btn btn-primary">Update</button>
+                <button type="submit" name="_action" value="delete" class="btn btn-ghost text-coral" onclick="return confirm('Delete this keyword?');">Delete</button>
+              </div>
+            </form>
+          <% }) %>
+        </div>
+      <% } %>
+    </section>
   </main>
 </body>
 </html>

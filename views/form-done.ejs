@@ -26,7 +26,15 @@
           <% if (submission.insurance_type === 'Health') { %>
             <% if (extra.member_count) { %><div><span class="text-ink/50">Members:</span> <%= extra.member_count %></div><% } %>
             <% if (extra.coverage_amount) { %><div><span class="text-ink/50">Coverage:</span> <%= extra.coverage_amount %></div><% } %>
-            <% if (extra.duration_days) { %><div><span class="text-ink/50">Duration:</span> <%= extra.duration_days %> days</div><% } %>
+            <% if (extra.policy_duration) { %><div><span class="text-ink/50">Duration:</span> <%= extra.policy_duration %></div><% } %>
+            <% else if (extra.duration_days) { %><div><span class="text-ink/50">Duration:</span> <%= extra.duration_days %> days</div><% } %>
+            <% if (Array.isArray(extra.members) && extra.members.length) { %>
+              <div class="pt-2 mt-2 border-t border-ink/10">
+                <% extra.members.forEach(function (m, i) { %>
+                  <div class="text-ink/70"><%= i + 1 %>. <%= m.name || '—' %> · Age <%= m.age != null ? m.age : (m.dob || '—') %> · <%= m.gender || '—' %></div>
+                <% }) %>
+              </div>
+            <% } %>
           <% } %>
           <% if (submission.insurance_type === 'Vehicle') { %>
             <% if (extra.vehicle_model) { %><div><span class="text-ink/50">Model:</span> <%= extra.vehicle_model %></div><% } %>

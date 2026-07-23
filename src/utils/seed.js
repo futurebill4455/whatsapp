@@ -38,7 +38,7 @@ function seed() {
     chat_close_message: 'Thank you! Your conversation has been ended. Have a good day!',
     cancel_message: 'Your request has been cancelled. Send *Hi* anytime to start again.',
     already_pending_message: 'You already have a pending request. Please complete the form or reply *Yes* / *No* to your confirmation message.',
-    close_keywords: 'close,ക്ലോസ്',
+    close_keywords: 'close',
     trigger_keywords: 'hi,hello,hey,start,ഹായ്',
     relay_delay_ms: '300',
   };
@@ -73,6 +73,12 @@ function seed() {
   }
   if (Settings.get('close_keywords') === null) {
     Settings.set('close_keywords', defaults.close_keywords);
+  } else {
+    // Migrate older multi-keyword defaults → exact "close" only
+    const ck = String(Settings.get('close_keywords') || '');
+    if (/ക്ലോസ്/i.test(ck) || /^close\s*,\s*/i.test(ck.trim())) {
+      Settings.set('close_keywords', 'close');
+    }
   }
   if (Settings.get('trigger_keywords') === null) {
     Settings.set('trigger_keywords', defaults.trigger_keywords);

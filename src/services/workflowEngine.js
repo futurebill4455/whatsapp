@@ -114,6 +114,25 @@ function matchesTriggerKeywords(body, keywords) {
   );
 }
 
+/** True when a ChatFlow row is a greeting → form-link starter (not brochure/address/etc.). */
+function isFormLinkChatFlow(flow) {
+  if (!flow) return false;
+  if (String(flow.response_template || '').includes('{{form_link}}')) return true;
+  const keys = String(flow.trigger_keyword || '')
+    .split(',')
+    .map((k) => k.trim().toLowerCase())
+    .filter(Boolean);
+  const greetings = new Set([
+    'hi',
+    'hello',
+    'hey',
+    'start',
+    'ഹായ്',
+    ...getSettingsTriggerKeywords(),
+  ]);
+  return keys.some((k) => greetings.has(k));
+}
+
 class WorkflowEngine {
   constructor(whatsapp) {
     this.whatsapp = whatsapp;
@@ -205,13 +224,15 @@ class WorkflowEngine {
 
     const triggers = findTriggerNodes(active.nodes, body);
     if (!triggers.length) {
-      // Also accept Settings / ChatFlow keywords even if workflow node keywords differ
+      // Only greeting / form-link ChatFlow + Settings keywords start the form workflow.
+      // Custom keywords (brochure, address, …) are handled in whatsapp.js — do not steal them.
       const settingsKeys = getSettingsTriggerKeywords();
       const chatFlow = ChatFlow.findByKeyword(body);
-      if (!matchesTriggerKeywords(body, settingsKeys) && !chatFlow) {
+      const isFormFlow =
+        matchesTriggerKeywords(body, settingsKeys) || isFormLinkChatFlow(chatFlow);
+      if (!isFormFlow) {
         return { handled: false, reason: 'no_matching_trigger' };
       }
-      // Fall through using first trigger node in graph (or legacy if none)
       const anyTrigger = Object.values(active.nodes).find((n) => n.type === 'trigger_message');
       if (!anyTrigger) {
         return this.handleLegacyTrigger(phone, body, baseCtx);
@@ -252,7 +273,9 @@ class WorkflowEngine {
   async handleLegacyTrigger(phone, body, baseCtx) {
     const settingsKeys = getSettingsTriggerKeywords();
     const flow = ChatFlow.findByKeyword(body);
-    if (!flow && !matchesTriggerKeywords(body, settingsKeys)) {
+    const isFormFlow =
+      matchesTriggerKeywords(body, settingsKeys) || isFormLinkChatFlow(flow);
+    if (!isFormFlow) {
       return { handled: false, reason: 'no_active_workflow' };
     }
 
@@ -267,7 +290,7 @@ class WorkflowEngine {
       return { handled: true, reason: 'already_pending' };
     }
 
-    await this.sendLegacyFormLink(phone, baseCtx, flow);
+    await this.sendLegacyFormLink(phone, baseCtx, isFormLinkChatFlow(flow) ? flow : null);
     return { handled: true, reason: 'legacy_form_link' };
   }
 
