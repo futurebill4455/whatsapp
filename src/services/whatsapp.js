@@ -1499,15 +1499,129 @@ class WhatsAppService {
   }
 
   /**
-   * Prefer native WhatsApp forward (shows official "Forwarded" tag).
-   * Falls back to media download / text copy when forward is unavailable.
+   * Build candidate WhatsApp chat IDs for a bridge peer (stored id, @c.us, getNumberId).
+   */
+  async resolveBridgeDestChatIds(destPhone, preferredChatId = null) {
+    const candidates = [];
+    const push = (id) => {
+      const s = String(id || '').trim();
+      if (s && !candidates.includes(s)) candidates.push(s);
+    };
+
+    push(preferredChatId);
+
+    const digits = this.formatPhone(destPhone);
+    if (digits) {
+      push(`${digits}@c.us`);
+      try {
+        const resolved = await this.resolveOutboundChatId(digits);
+        push(resolved);
+      } catch (err) {
+        console.warn('[ChatBridge] dest resolve failed:', err.message);
+      }
+      try {
+        const numberId = await this.client.getNumberId(digits);
+        push(numberId?._serialized);
+      } catch (_) {}
+    }
+
+    return candidates;
+  }
+
+  /**
+   * True native WhatsApp forward (official "Forwarded" tag).
+   * Tries each dest chat id until one succeeds. No plain-text copy.
+   */
+  async nativeForwardToChat(message, destChatIds) {
+    this.normalizeIncomingMessageIds(message);
+    const msgId =
+      message?.id?._serialized ||
+      message?.id?.$1 ||
+      (typeof message?.id === 'string' ? message.id : null);
+
+    if (!msgId) {
+      throw new Error('Cannot native-forward: message id missing');
+    }
+    if (typeof message.forward !== 'function' && !this.client?.pupPage) {
+      throw new Error('Cannot native-forward: forward API unavailable');
+    }
+
+    let lastErr;
+    for (const destChatId of destChatIds) {
+      try {
+        // Prefer Message.forward (uses WWebJS.forwardMessage → Forwarded tag)
+        if (typeof message.forward === 'function') {
+          // Ensure id shape expected by library
+          if (message.id && !message.id._serialized && msgId) {
+            message.id._serialized = msgId;
+          }
+          const result = await message.forward(destChatId);
+          console.log(`[ChatBridge] Native forward OK → ${destChatId} result=${result}`);
+          return { ok: true, destChatId, result };
+        }
+
+        // Direct Store path (same protocol as Message.forward)
+        const result = await this.client.pupPage.evaluate(
+          async (serializedMsgId, chatId) => {
+            if (!window.WWebJS?.forwardMessage) {
+              throw new Error('WWebJS.forwardMessage missing');
+            }
+            return window.WWebJS.forwardMessage(chatId, serializedMsgId);
+          },
+          msgId,
+          destChatId
+        );
+        console.log(`[ChatBridge] Native forward (Store) OK → ${destChatId}`);
+        return { ok: true, destChatId, result };
+      } catch (err) {
+        lastErr = err;
+        console.warn(
+          `[ChatBridge] Native forward failed → ${destChatId}:`,
+          err?.message || err
+        );
+      }
+    }
+
+    throw lastErr || new Error('Native forward failed for all dest chat ids');
+  }
+
+  /**
+   * Best-effort: read the latest message id in a chat after a native forward (for quote routing).
+   */
+  async peekLatestChatMessageId(chatId) {
+    if (!this.client?.pupPage || !chatId) return null;
+    try {
+      return await this.client.pupPage.evaluate(async (id) => {
+        const chat = await window.WWebJS.getChat(id, { getAsModel: false });
+        if (!chat) return null;
+        let last = null;
+        try {
+          if (typeof chat.getLastMsg === 'function') last = chat.getLastMsg();
+        } catch (_) {}
+        if (!last && chat.msgs) {
+          const arr =
+            typeof chat.msgs.getModelsArray === 'function'
+              ? chat.msgs.getModelsArray()
+              : chat.msgs._models || [];
+          last = arr?.length ? arr[arr.length - 1] : null;
+        }
+        return last?.id?._serialized || last?.id?.toString?.() || null;
+      }, chatId);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /**
+   * Two-way session relay — native WhatsApp forward ONLY (official "Forwarded" tag).
+   * Plain text / media re-send fallbacks are intentionally disabled for the active session.
    */
   async relayMessageAcrossBridge(message, session, direction, body, hasMediaFlag = null) {
     this.normalizeIncomingMessageIds(message);
 
     const toCustomer = direction === 'desk_to_customer';
     const destPhone = toCustomer ? session.customer_phone : session.desk_phone;
-    let destChatId = toCustomer ? session.customer_chat_id : session.desk_chat_id;
+    const preferredChatId = toCustomer ? session.customer_chat_id : session.desk_chat_id;
     const code = session.session_code || String(session.id);
     const msgType = String(message.type || '').toLowerCase();
     const hasMedia =
@@ -1519,133 +1633,86 @@ class WhatsAppService {
           );
 
     console.log(
-      `[ChatBridge] #${session.id}[${code}] ${direction} type=${message.type || 'chat'} media=${hasMedia}: ${(body || '').slice(0, 60)}`
+      `[ChatBridge] #${session.id}[${code}] ${direction} NATIVE-FORWARD type=${message.type || 'chat'} media=${hasMedia}: ${(body || '').slice(0, 60)}`
     );
 
-    if (!destPhone && !destChatId) {
-      console.error('[ChatBridge] No destination phone/chatId for relay');
+    if (!destPhone && !preferredChatId) {
+      console.error('[ChatBridge] No destination phone/chatId for native forward');
       return;
     }
 
-    // Resolve dest chat id for native forward
-    if (!destChatId) {
-      try {
-        destChatId = await this.resolveOutboundChatId(destPhone);
-      } catch (err) {
-        console.warn('[ChatBridge] dest resolve failed:', err.message);
-        destChatId = `${this.formatPhone(destPhone)}@c.us`;
-      }
+    const destChatIds = await this.resolveBridgeDestChatIds(destPhone, preferredChatId);
+    if (!destChatIds.length) {
+      console.error('[ChatBridge] No dest chat id candidates for native forward');
+      return;
     }
 
     await antiBan.outboundLimiter.waitTurn();
-    // Read inbound → 5–12s jitter → typing → native Forwarded
     await sleep(antiBan.readingDelayMs(body));
     await sleep(antiBan.humanJitterMs());
 
-    // ── Native forward (Forwarded tag) ──
-    if (typeof message.forward === 'function' && destChatId) {
-      try {
-        await this.simulatePresence(destChatId, body || '[media]', {
-          recording: msgType === 'ptt' || msgType === 'audio',
-        });
-        const ok = await message.forward(destChatId);
-        console.log(`[ChatBridge] Native forward → ${destChatId} result=${ok}`);
-
-        // Customer→desk: tip with session code so desk can reply with [#CODE] if needed
-        if (!toCustomer) {
-          await sleep(antiBan.randInt(800, 1800));
-          await this.sendMessage(destPhone, `[#${code}] ↑ forwarded from customer`, {
-            chatId: destChatId,
-            skipTyping: false,
-            skipReading: true,
-            skipRateLimit: true,
-            delayMs: antiBan.randInt(2000, 4500),
-          });
-        }
-
-        ChatSessions.touch(session.id, {
-          side: toCustomer ? 'desk' : 'customer',
-          ...(toCustomer
-            ? { customer_chat_id: destChatId }
-            : { desk_chat_id: destChatId }),
-        });
-        MessageLog.add({
-          direction: 'out',
-          phone: destPhone,
-          body: `[bridge ${direction} native-forward] ${body || '[media]'}`,
-          meta: { session_id: session.id, session_code: code, direction, native: true },
-        });
-        return;
-      } catch (err) {
-        console.warn('[ChatBridge] Native forward failed, falling back:', err.message);
-      }
-    }
-
-    const prefix = toCustomer ? '' : `[#${code}] `;
-
     try {
-      let sent = null;
+      await this.simulatePresence(destChatIds[0], body || '[media]', {
+        recording: msgType === 'ptt' || msgType === 'audio',
+      });
 
-      if (hasMedia) {
-        await sleep(500);
-        const media = await this.downloadMediaWithRetry(message);
-        if (media) {
-          const caption = body
-            ? `${prefix}${body}`
-            : `${prefix}${toCustomer ? 'Sent you a file' : 'Customer sent a file'}`;
-          console.log(
-            `[ChatBridge] Forwarding media mimetype=${media.mimetype} type=${msgType} → ${destChatId || destPhone}`
-          );
-          sent = await this.sendMedia(destPhone || destChatId, media, {
-            caption,
-            chatId: destChatId || undefined,
-            sendAudioAsVoice: msgType === 'ptt',
-            sendMediaAsDocument: msgType === 'document',
-          });
-        } else {
-          console.error('[ChatBridge] downloadMedia failed — sending text fallback');
-          if (body) {
-            sent = await this.sendMessage(destPhone || destChatId, `${prefix}${body}`, {
-              chatId: destChatId || undefined,
-            });
-          } else {
-            sent = await this.sendMessage(
-              destPhone || destChatId,
-              `${prefix}(Received a file that could not be downloaded — please resend)`,
-              { chatId: destChatId || undefined }
-            );
-          }
-        }
-      } else if (body) {
-        const outboundBody = toCustomer
-          ? String(body).replace(/\[#[A-Z0-9]{3,6}\]\s*/gi, '').trim() || body
-          : `${prefix}${body}`;
-        sent = await this.sendMessage(destPhone || destChatId, outboundBody, {
-          chatId: destChatId || undefined,
-        });
+      const forwarded = await this.nativeForwardToChat(message, destChatIds);
+      const destChatId = forwarded.destChatId;
+
+      // Persist working chat id for future native forwards
+      if (toCustomer) {
+        ChatSessions.bindCustomerChatId(session.id, destChatId);
       } else {
-        console.warn('[ChatBridge] Nothing to relay (empty body, no media)');
-        return;
+        ChatSessions.bindDeskChatId(session.id, destChatId);
       }
 
-      const waId =
-        sent?.id?._serialized || sent?.id?.$1 || sent?.id?.id || null;
+      ChatSessions.touch(session.id, {
+        side: toCustomer ? 'desk' : 'customer',
+        ...(toCustomer
+          ? { customer_chat_id: destChatId }
+          : { desk_chat_id: destChatId }),
+      });
+
+      // Track forwarded message id when available (helps desk quote-routing)
+      const waId = await this.peekLatestChatMessageId(destChatId);
       if (waId) {
         ChatSessions.trackMessage(session.id, direction, waId, body);
-      }
-      if (!toCustomer && sent?._outboundChatId) {
-        ChatSessions.bindDeskChatId(session.id, sent._outboundChatId);
       }
 
       MessageLog.add({
         direction: 'out',
         phone: destPhone,
-        body: `[bridge ${direction}] ${body || '[media]'}`,
-        meta: { session_id: session.id, session_code: code, direction, wa_id: waId },
+        body: `[bridge ${direction} native-forward] ${body || '[media]'}`,
+        meta: {
+          session_id: session.id,
+          session_code: code,
+          direction,
+          native: true,
+          dest_chat_id: destChatId,
+          wa_id: waId,
+        },
       });
-      console.log(`[ChatBridge] Relay OK → ${destChatId || destPhone}`);
+      console.log(
+        `[ChatBridge] Native Forwarded tag relay OK #${session.id}[${code}] → ${destChatId}`
+      );
     } catch (err) {
-      console.error(`[ChatBridge] Relay ${direction} failed:`, err.message);
+      // Do NOT fall back to plain-text / media copy — user requires native Forwarded only
+      console.error(
+        `[ChatBridge] Native forward FAILED (${direction}) — not using text relay:`,
+        err?.message || err
+      );
+      MessageLog.add({
+        direction: 'out',
+        phone: destPhone || 'unknown',
+        body: `[bridge ${direction} native-forward-FAILED] ${body || '[media]'}`,
+        meta: {
+          session_id: session.id,
+          session_code: code,
+          direction,
+          native: false,
+          error: String(err?.message || err),
+        },
+      });
     }
   }
 
