@@ -7,6 +7,15 @@ const express = require('express');
 const session = require('express-session');
 const { Server } = require('socket.io');
 
+const { hasBaseUrl, getBaseUrl } = require('./src/config/baseUrl');
+if (!hasBaseUrl()) {
+  console.error(
+    '[Config] BASE_URL is required. Set it in .env (e.g. BASE_URL=https://your-domain.com). Form links will fail until it is set.'
+  );
+} else {
+  console.log(`[Config] BASE_URL=${getBaseUrl()}`);
+}
+
 const { seed } = require('./src/utils/seed');
 const routes = require('./src/routes');
 const whatsapp = require('./src/services/whatsapp');

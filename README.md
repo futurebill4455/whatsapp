@@ -34,7 +34,7 @@ WA_INIT_DELAY_MS=1000
 CHROMIUM_MAX_OLD_SPACE_MB=768
 ```
 
-`COMPANY_PHONE` is optional — prefer **Catalog → company desk phones**. See `.env.example`.
+`BASE_URL` is **required** (no `localhost` fallback). All form links are built from it only.
 
 ## Run locally
 

@@ -21,6 +21,7 @@ const {
   sanitizeFormLink,
   DEFAULT_FORWARD_TEMPLATE,
 } = require('../utils/leadSummary');
+const { buildFormUrl } = require('../config/baseUrl');
 
 function newToken() {
   return crypto.randomBytes(24).toString('hex');
@@ -86,10 +87,6 @@ function isYes(body) {
 
 function isNo(body) {
   return ['no', 'n', 'cancel'].includes(String(body || '').trim().toLowerCase());
-}
-
-function getBaseUrl() {
-  return (process.env.BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
 }
 
 function sleep(ms) {
@@ -288,7 +285,7 @@ class WorkflowEngine {
       } catch (_) {}
     }
 
-    const formLink = sanitizeFormLink(`${getBaseUrl()}/form/${submission.token}`);
+    const formLink = sanitizeFormLink(buildFormUrl(submission.token));
     const vars = {
       business_name: Settings.get('business_name', 'SecureLife Insurance'),
       form_link: formLink,
@@ -670,7 +667,7 @@ class WorkflowEngine {
       });
     }
 
-    const formLink = sanitizeFormLink(`${getBaseUrl()}/form/${newSub.token}`);
+    const formLink = sanitizeFormLink(buildFormUrl(newSub.token));
     await sleep(delay);
     const template =
       "No problem — let's start again.\n\nPlease refill your insurance details here:\n\n{{form_link}}";
@@ -799,7 +796,7 @@ class WorkflowEngine {
         }
         if (ctx.chatId) Submissions.setCustomerChatId(submission.token, ctx.chatId);
 
-        const formLink = sanitizeFormLink(`${getBaseUrl()}/form/${submission.token}`);
+        const formLink = sanitizeFormLink(buildFormUrl(submission.token));
         const vars = {
           ...ctx,
           business_name: Settings.get('business_name', 'SecureLife Insurance'),

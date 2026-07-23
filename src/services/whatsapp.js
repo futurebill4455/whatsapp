@@ -20,6 +20,10 @@ const {
   buildFormLinkParts,
   sanitizeFormLink,
 } = require('../utils/leadSummary');
+const {
+  getBaseUrl: requireBaseUrl,
+  buildFormUrl: requireBuildFormUrl,
+} = require('../config/baseUrl');
 
 const AUTH_PATH = path.join(process.cwd(), '.wwebjs_auth');
 const CACHE_PATH = path.join(process.cwd(), '.wwebjs_cache');
@@ -387,7 +391,11 @@ class WhatsAppService {
   }
 
   getBaseUrl() {
-    return (process.env.BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
+    return requireBaseUrl();
+  }
+
+  buildFormUrl(token) {
+    return sanitizeFormLink(requireBuildFormUrl(token));
   }
 
   formatPhone(phone) {
@@ -1659,7 +1667,7 @@ class WhatsAppService {
       console.warn('[WhatsApp] Could not arm form_submit waiter:', err.message);
     }
 
-    const formLink = sanitizeFormLink(`${this.getBaseUrl()}/form/${submission.token}`);
+    const formLink = this.buildFormUrl(submission.token);
     const business = Settings.get('business_name', 'SecureLife Insurance');
     const template =
       opts.flow?.response_template ||
