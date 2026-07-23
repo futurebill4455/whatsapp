@@ -135,6 +135,59 @@ function buildForwardMessage(submission, template) {
   return renderTemplate(template || DEFAULT_FORWARD_TEMPLATE, vars);
 }
 
+/**
+ * Strip soft hyphens / zero-width chars WhatsApp clients sometimes inject into long URLs.
+ */
+function sanitizeFormLink(url) {
+  return String(url || '')
+    .replace(/[\u00AD\u200B-\u200D\uFEFF]/g, '')
+    .trim();
+}
+
+/**
+ * Build a WhatsApp-safe form-link message.
+ * Splits around {{form_link}} so the bare URL can be sent alone (avoids WhatsApp
+ * soft-hyphenating long URLs mid-line). Prefer: intro → link → optional footer.
+ */
+function buildFormLinkParts(template, vars = {}) {
+  const link = sanitizeFormLink(vars.form_link);
+  const marker = '___FORM_LINK___';
+  const rendered = renderTemplate(String(template || ''), {
+    ...vars,
+    form_link: marker,
+  }).replace(/[\u00AD\u200B-\u200D\uFEFF]/g, '');
+
+  const idx = rendered.indexOf(marker);
+  let intro;
+  let footer = '';
+
+  if (idx === -1) {
+    intro = rendered.replace(/\n{3,}/g, '\n\n').trim() || 'Please fill out this short form:';
+  } else {
+    intro = rendered
+      .slice(0, idx)
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    footer = rendered
+      .slice(idx + marker.length)
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    if (!intro) intro = 'Please fill out this short form:';
+  }
+
+  const combined = [intro, link, footer].filter(Boolean).join('\n\n');
+  return { intro, link, footer, combined };
+}
+
+/**
+ * Single-string version when a caller cannot send two messages.
+ */
+function formatFormLinkMessage(template, vars = {}) {
+  return buildFormLinkParts(template, vars).combined;
+}
+
 module.exports = {
   parseExtra,
   formatExtraDetails,
@@ -142,6 +195,9 @@ module.exports = {
   renderTemplate,
   buildConfirmationMessage,
   buildForwardMessage,
+  sanitizeFormLink,
+  buildFormLinkParts,
+  formatFormLinkMessage,
   DEFAULT_CONFIRMATION_TEMPLATE,
   DEFAULT_FORWARD_TEMPLATE,
 };

@@ -137,7 +137,7 @@ function seed() {
     ChatFlow.create({
       trigger_keyword: 'hi,hello,hey,start,ഹായ്',
       response_template:
-        'Welcome to *{{business_name}}*! 👋\n\nTo get started with your insurance enquiry, please fill out this short form:\n{{form_link}}\n\nOur team will assist you once you submit and confirm your details.',
+        'Welcome to *{{business_name}}*! 👋\n\nTo get started with your insurance enquiry, please fill out this short form:\n\n{{form_link}}\n\nOur team will assist you once you submit and confirm your details.',
       sort_order: 1,
     });
     ChatFlow.create({
@@ -160,7 +160,7 @@ function seed() {
       ChatFlow.create({
         trigger_keyword: 'hi,hello,hey,start,ഹായ്',
         response_template:
-          'Welcome to *{{business_name}}*! 👋\n\nTo get started with your insurance enquiry, please fill out this short form:\n{{form_link}}\n\nOur team will assist you once you submit and confirm your details.',
+          'Welcome to *{{business_name}}*! 👋\n\nTo get started with your insurance enquiry, please fill out this short form:\n\n{{form_link}}\n\nOur team will assist you once you submit and confirm your details.',
         sort_order: 0,
       });
       console.log('Seeded missing greeting chat-flow trigger (hi / ഹായ്)');
@@ -218,7 +218,7 @@ function seed() {
         if (node.name === 'send_form_link' && node.data) {
           node.data.message =
             node.data.message ||
-            'Welcome to *{{business_name}}*! 👋\n\nPlease fill out your insurance details:\n{{form_link}}';
+            'Welcome to *{{business_name}}*! 👋\n\nPlease fill out your insurance details:\n\n{{form_link}}';
         }
         if (node.name === 'trigger_message' && node.data) {
           const kw = String(node.data.keywords || '').toLowerCase();

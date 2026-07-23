@@ -15,7 +15,11 @@ const {
 } = require('../models');
 const { bindEngine, newToken } = require('./workflowEngine');
 const { buildPuppeteerLaunchOptions, isRenderLike, isVpsLinux } = require('./chromiumLaunch');
-const { buildConfirmationMessage } = require('../utils/leadSummary');
+const {
+  buildConfirmationMessage,
+  buildFormLinkParts,
+  sanitizeFormLink,
+} = require('../utils/leadSummary');
 
 const AUTH_PATH = path.join(process.cwd(), '.wwebjs_auth');
 const CACHE_PATH = path.join(process.cwd(), '.wwebjs_cache');
@@ -1655,12 +1659,12 @@ class WhatsAppService {
       console.warn('[WhatsApp] Could not arm form_submit waiter:', err.message);
     }
 
-    const formLink = `${this.getBaseUrl()}/form/${submission.token}`;
+    const formLink = sanitizeFormLink(`${this.getBaseUrl()}/form/${submission.token}`);
     const business = Settings.get('business_name', 'SecureLife Insurance');
     const template =
       opts.flow?.response_template ||
-      'Welcome to *{{business_name}}*! 👋\n\nTo get started with your insurance enquiry, please fill out this short form:\n{{form_link}}\n\nOur team will assist you once you submit and confirm your details.';
-    const text = this.renderTemplate(template, {
+      'Welcome to *{{business_name}}*! 👋\n\nTo get started with your insurance enquiry, please fill out this short form:\n\n{{form_link}}\n\nOur team will assist you once you submit and confirm your details.';
+    const { intro, link, footer } = buildFormLinkParts(template, {
       business_name: business,
       form_link: formLink,
       phone,
@@ -1669,7 +1673,16 @@ class WhatsAppService {
     const delay = humanDelayMs();
     console.log(`[WhatsApp] Greeting delay ${delay}ms before form link`);
     await sleep(delay);
-    await this.sendMessage(phone, text, opts);
+    // Bare URL in its own message — WhatsApp will not mid-hyphenate it
+    await this.sendMessage(phone, intro, opts);
+    if (link) {
+      await sleep(250);
+      await this.sendMessage(phone, link, { ...opts, replyTo: undefined });
+    }
+    if (footer) {
+      await sleep(200);
+      await this.sendMessage(phone, footer, { ...opts, replyTo: undefined });
+    }
     console.log(`[WhatsApp] Greeting form link sent → ${phone}: ${formLink}`);
     return true;
   }

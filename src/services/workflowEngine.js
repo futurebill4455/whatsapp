@@ -17,6 +17,8 @@ const {
   renderTemplate,
   buildForwardMessage,
   buildConfirmationMessage,
+  buildFormLinkParts,
+  sanitizeFormLink,
   DEFAULT_FORWARD_TEMPLATE,
 } = require('../utils/leadSummary');
 
@@ -286,7 +288,7 @@ class WorkflowEngine {
       } catch (_) {}
     }
 
-    const formLink = `${getBaseUrl()}/form/${submission.token}`;
+    const formLink = sanitizeFormLink(`${getBaseUrl()}/form/${submission.token}`);
     const vars = {
       business_name: Settings.get('business_name', 'SecureLife Insurance'),
       form_link: formLink,
@@ -294,10 +296,18 @@ class WorkflowEngine {
     };
     const template =
       flow?.response_template ||
-      'Welcome to *{{business_name}}*! 👋\n\nPlease fill your insurance details here:\n{{form_link}}';
-    const text = renderTemplate(template, vars);
+      'Welcome to *{{business_name}}*! 👋\n\nPlease fill your insurance details here:\n\n{{form_link}}';
+    const { intro, link, footer } = buildFormLinkParts(template, vars);
     await sleep(humanDelayMs());
-    await this.whatsapp.sendMessage(phone, text, sendOpts(ctx));
+    await this.whatsapp.sendMessage(phone, intro, sendOpts(ctx));
+    if (link) {
+      await sleep(250);
+      await this.whatsapp.sendMessage(phone, link, sendOpts({ ...ctx, replyTo: undefined }));
+    }
+    if (footer) {
+      await sleep(200);
+      await this.whatsapp.sendMessage(phone, footer, sendOpts({ ...ctx, replyTo: undefined }));
+    }
     return submission;
   }
 
@@ -660,13 +670,21 @@ class WorkflowEngine {
       });
     }
 
-    const formLink = `${getBaseUrl()}/form/${newSub.token}`;
+    const formLink = sanitizeFormLink(`${getBaseUrl()}/form/${newSub.token}`);
     await sleep(delay);
-    const text =
-      "No problem — let's start again.\n\n" +
-      `Please refill your insurance details here:\n${formLink}`;
+    const template =
+      "No problem — let's start again.\n\nPlease refill your insurance details here:\n\n{{form_link}}";
+    const { intro, link, footer } = buildFormLinkParts(template, { form_link: formLink });
     try {
-      await this.whatsapp.sendMessage(phone, text, sendOpts(ctx));
+      await this.whatsapp.sendMessage(phone, intro, sendOpts(ctx));
+      if (link) {
+        await sleep(250);
+        await this.whatsapp.sendMessage(phone, link, sendOpts({ ...ctx, replyTo: undefined }));
+      }
+      if (footer) {
+        await sleep(200);
+        await this.whatsapp.sendMessage(phone, footer, sendOpts({ ...ctx, replyTo: undefined }));
+      }
       console.log(`[Workflow] Refill form link sent to ${phone}: ${formLink}`);
     } catch (err) {
       console.error('[Workflow] Failed to resend form link:', err.message);
@@ -781,16 +799,16 @@ class WorkflowEngine {
         }
         if (ctx.chatId) Submissions.setCustomerChatId(submission.token, ctx.chatId);
 
-        const formLink = `${getBaseUrl()}/form/${submission.token}`;
+        const formLink = sanitizeFormLink(`${getBaseUrl()}/form/${submission.token}`);
         const vars = {
           ...ctx,
           business_name: Settings.get('business_name', 'SecureLife Insurance'),
           form_link: formLink,
           phone,
         };
-        const text = renderTemplate(
+        const { intro, link, footer } = buildFormLinkParts(
           node.data.message ||
-            'Welcome to *{{business_name}}*! 👋\n\nPlease fill your insurance details here:\n{{form_link}}',
+            'Welcome to *{{business_name}}*! 👋\n\nPlease fill your insurance details here:\n\n{{form_link}}',
           vars
         );
 
@@ -799,7 +817,15 @@ class WorkflowEngine {
         await sleep(delay);
 
         try {
-          await this.whatsapp.sendMessage(phone, text, sendOpts(ctx));
+          await this.whatsapp.sendMessage(phone, intro, sendOpts(ctx));
+          if (link) {
+            await sleep(250);
+            await this.whatsapp.sendMessage(phone, link, sendOpts({ ...ctx, replyTo: undefined }));
+          }
+          if (footer) {
+            await sleep(200);
+            await this.whatsapp.sendMessage(phone, footer, sendOpts({ ...ctx, replyTo: undefined }));
+          }
           console.log(`[Workflow] Form link sent to ${phone}: ${formLink}`);
         } catch (err) {
           console.error(`[Workflow] Failed to send form link to ${phone}:`, err.message);
