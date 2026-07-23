@@ -183,6 +183,134 @@ async function humanPauseBeforeReply(inboundText, { skipReading = false, skipJit
   }
 }
 
+/** Long-message chunk threshold (chars). */
+function chunkThresholdChars() {
+  return numSetting('anti_ban_chunk_threshold', 160);
+}
+
+/** Micro-delay between conversational chunks (default 1–3s). */
+function microDelayMs() {
+  const min = numSetting('anti_ban_chunk_gap_min_ms', 1000);
+  const max = numSetting('anti_ban_chunk_gap_max_ms', 3000);
+  return randInt(Math.min(min, max), Math.max(min, max));
+}
+
+/**
+ * Extra irregularity on top of base jitter — breaks repetitive timing signatures.
+ */
+function antiPatternJitterMs() {
+  const base = humanJitterMs();
+  // Occasional longer "think", occasional shorter burst
+  const roll = Math.random();
+  if (roll < 0.15) return base + randInt(1200, 2800);
+  if (roll < 0.35) return Math.max(2500, base - randInt(400, 1800));
+  return base + randInt(0, 900);
+}
+
+function shouldChunkMessage(text, hasMedia = false) {
+  if (hasMedia) return false;
+  const t = String(text || '').trim();
+  if (!t) return false;
+  return t.length >= chunkThresholdChars();
+}
+
+/**
+ * Subtle structural variation without changing meaning —
+ * breaks identical payload fingerprints across relays.
+ */
+function lightlyVaryTextStructure(text) {
+  let t = String(text || '').replace(/\r\n/g, '\n');
+  // Normalize wild newline runs randomly to 1–2 breaks
+  t = t.replace(/\n{3,}/g, () => '\n'.repeat(randInt(1, 2)));
+  t = t.replace(/[ \t]+\n/g, '\n');
+  t = t.replace(/\n[ \t]+/g, '\n');
+  t = t.replace(/[ \t]{2,}/g, () => (Math.random() < 0.5 ? ' ' : '  '));
+  // Rarely drop a trailing space-before-punct artifact
+  t = t.replace(/ +([,.!?])/g, '$1');
+  return t.trim();
+}
+
+/**
+ * Split long text into natural conversational chunks.
+ * Prefers paragraphs → sentences → soft length cuts at word boundaries.
+ * Target sizes are randomized so chunk lengths never look mechanical.
+ */
+function splitIntoNaturalChunks(text) {
+  const raw = lightlyVaryTextStructure(text);
+  if (!raw) return [];
+
+  const softMax = randInt(110, 190);
+  const hardMax = randInt(200, 320);
+  if (raw.length <= softMax) return [raw];
+
+  const paragraphs = raw.split(/\n+/).map((p) => p.trim()).filter(Boolean);
+  const units = [];
+  for (const para of paragraphs) {
+    const sentences = para.match(/[^.!?…]+[.!?…]+|[^.!?…]+$/g) || [para];
+    for (const s of sentences) {
+      const piece = String(s || '').trim();
+      if (piece) units.push(piece);
+    }
+  }
+  if (!units.length) units.push(raw);
+
+  const chunks = [];
+  let buf = '';
+
+  const flush = () => {
+    const c = buf.trim();
+    if (c) chunks.push(c);
+    buf = '';
+  };
+
+  for (const unit of units) {
+    if (unit.length > hardMax) {
+      if (buf) flush();
+      // Hard-wrap oversized unit at word boundaries with jittered cut points
+      let rest = unit;
+      while (rest.length > hardMax) {
+        const cutAt = randInt(Math.floor(hardMax * 0.55), hardMax);
+        let idx = rest.lastIndexOf(' ', cutAt);
+        if (idx < hardMax * 0.35) idx = cutAt;
+        chunks.push(rest.slice(0, idx).trim());
+        rest = rest.slice(idx).trim();
+      }
+      if (rest) buf = rest;
+      continue;
+    }
+
+    const joined = buf ? `${buf} ${unit}` : unit;
+    // Randomly flush early so boundaries aren't identical every time
+    const earlyFlush = buf && joined.length >= softMax - randInt(0, 40) && Math.random() < 0.35;
+    if (joined.length > softMax || earlyFlush) {
+      if (buf) flush();
+      buf = unit;
+    } else {
+      buf = joined;
+    }
+  }
+  flush();
+
+  // Merge tiny trailing crumbs into previous chunk
+  if (chunks.length >= 2 && chunks[chunks.length - 1].length < 25) {
+    const last = chunks.pop();
+    chunks[chunks.length - 1] = `${chunks[chunks.length - 1]} ${last}`.trim();
+  }
+
+  return chunks.length ? chunks : [raw];
+}
+
+/**
+ * Strip bridge/system artifacts so relayed text stays clean.
+ */
+function cleanRelayText(text) {
+  return String(text || '')
+    .replace(/\[#[A-Z0-9]{3,8}\]\s*/gi, '')
+    .replace(/↑\s*forwarded from customer/gi, '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .trim();
+}
+
 class OutboundRateLimiter {
   constructor() {
     this._lastSendAt = 0;
@@ -220,5 +348,12 @@ module.exports = {
   checkSendCaps,
   getRateCaps,
   humanPauseBeforeReply,
+  chunkThresholdChars,
+  microDelayMs,
+  antiPatternJitterMs,
+  shouldChunkMessage,
+  lightlyVaryTextStructure,
+  splitIntoNaturalChunks,
+  cleanRelayText,
   outboundLimiter,
 };

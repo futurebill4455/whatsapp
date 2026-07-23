@@ -58,6 +58,9 @@ function seed() {
     anti_ban_hourly_cap: '18',
     anti_ban_daily_cap: '60',
     anti_ban_global_hourly_cap: '220',
+    anti_ban_chunk_threshold: '160',
+    anti_ban_chunk_gap_min_ms: '1000',
+    anti_ban_chunk_gap_max_ms: '3000',
   };
 
   for (const [key, value] of Object.entries(defaults)) {
@@ -119,6 +122,9 @@ function seed() {
     'anti_ban_hourly_cap',
     'anti_ban_daily_cap',
     'anti_ban_global_hourly_cap',
+    'anti_ban_chunk_threshold',
+    'anti_ban_chunk_gap_min_ms',
+    'anti_ban_chunk_gap_max_ms',
   ]) {
     if (Settings.get(key) === null && defaults[key] != null) {
       Settings.set(key, defaults[key]);

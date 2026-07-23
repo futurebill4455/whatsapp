@@ -1563,8 +1563,9 @@ class WhatsAppService {
   }
 
   /**
-   * Two-way session relay — native WhatsApp forward ONLY (official "Forwarded" tag).
-   * Plain text / media re-send fallbacks are intentionally disabled for the active session.
+   * Two-way session relay with humanized pacing:
+   * - Short text / media → native WhatsApp forward (Forwarded tag) + jitter/typing
+   * - Long text → smart conversational chunks with typing + 1–3s micro-delays
    */
   async relayMessageAcrossBridge(message, session, direction, body, hasMediaFlag = null) {
     this.normalizeIncomingMessageIds(message);
@@ -1582,34 +1583,54 @@ class WhatsAppService {
             ['image', 'video', 'document', 'ptt', 'audio', 'sticker'].includes(msgType)
           );
 
+    const cleanBody = antiBan.cleanRelayText(body);
+    const useChunks = antiBan.shouldChunkMessage(cleanBody, hasMedia);
+
     console.log(
-      `[ChatBridge] #${session.id}[${code}] ${direction} NATIVE-FORWARD type=${message.type || 'chat'} media=${hasMedia}: ${(body || '').slice(0, 60)}`
+      `[ChatBridge] #${session.id}[${code}] ${direction} mode=${
+        useChunks ? 'chunked-human' : 'native-forward'
+      } type=${message.type || 'chat'} media=${hasMedia} len=${(cleanBody || '').length}`
     );
 
     if (!destPhone && !preferredChatId) {
-      console.error('[ChatBridge] No destination phone/chatId for native forward');
+      console.error('[ChatBridge] No destination phone/chatId for relay');
       return;
     }
 
     const destChatIds = await this.resolveBridgeDestChatIds(destPhone, preferredChatId);
     if (!destChatIds.length) {
-      console.error('[ChatBridge] No dest chat id candidates for native forward');
+      console.error('[ChatBridge] No dest chat id candidates for relay');
       return;
     }
 
+    // Shared humanization: read → anti-pattern jitter (never identical timing)
     await antiBan.outboundLimiter.waitTurn();
-    await sleep(antiBan.readingDelayMs(body));
-    await sleep(antiBan.humanJitterMs());
+    await sleep(antiBan.readingDelayMs(cleanBody || body));
+    await sleep(antiBan.antiPatternJitterMs());
+
+    if (useChunks) {
+      await this.relayChunkedTextAcrossBridge({
+        session,
+        direction,
+        destPhone,
+        destChatIds,
+        code,
+        text: cleanBody,
+      });
+      return;
+    }
 
     try {
-      await this.simulatePresence(destChatIds[0], body || '[media]', {
+      await this.simulatePresence(destChatIds[0], cleanBody || '[media]', {
         recording: msgType === 'ptt' || msgType === 'audio',
       });
+
+      // Extra micro-pause so typing → forward never looks instantaneous
+      await sleep(antiBan.randInt(350, 1200));
 
       const forwarded = await this.nativeForwardToChat(message, destChatIds);
       const destChatId = forwarded.destChatId;
 
-      // Persist working chat id for future native forwards
       if (toCustomer) {
         ChatSessions.bindCustomerChatId(session.id, destChatId);
       } else {
@@ -1623,16 +1644,15 @@ class WhatsAppService {
           : { desk_chat_id: destChatId }),
       });
 
-      // Track forwarded message id when available (helps desk quote-routing)
       const waId = await this.peekLatestChatMessageId(destChatId);
       if (waId) {
-        ChatSessions.trackMessage(session.id, direction, waId, body);
+        ChatSessions.trackMessage(session.id, direction, waId, cleanBody || body);
       }
 
       MessageLog.add({
         direction: 'out',
         phone: destPhone,
-        body: `[bridge ${direction} native-forward] ${body || '[media]'}`,
+        body: `[bridge ${direction} native-forward] ${cleanBody || '[media]'}`,
         meta: {
           session_id: session.id,
           session_code: code,
@@ -1643,14 +1663,30 @@ class WhatsAppService {
         },
       });
       console.log(
-        `[ChatBridge] Native Forwarded tag relay OK #${session.id}[${code}] → ${destChatId}`
+        `[ChatBridge] Native Forwarded relay OK #${session.id}[${code}] → ${destChatId}`
       );
+
+      // Irregular cooldown after forward (anti burst signature)
+      await sleep(antiBan.randInt(250, 1100));
     } catch (err) {
-      // Do NOT fall back to plain-text / media copy — user requires native Forwarded only
       console.error(
-        `[ChatBridge] Native forward FAILED (${direction}) — not using text relay:`,
+        `[ChatBridge] Native forward FAILED (${direction}):`,
         err?.message || err
       );
+      // Long/short text fallback: chunked human send (still paced + typed)
+      if (cleanBody) {
+        console.warn('[ChatBridge] Falling back to chunked human relay');
+        await this.relayChunkedTextAcrossBridge({
+          session,
+          direction,
+          destPhone,
+          destChatIds,
+          code,
+          text: cleanBody,
+          skipInitialPace: true,
+        });
+        return;
+      }
       MessageLog.add({
         direction: 'out',
         phone: destPhone || 'unknown',
@@ -1664,6 +1700,90 @@ class WhatsAppService {
         },
       });
     }
+  }
+
+  /**
+   * Relay long text as natural chunks with typing + 1–3s micro-delays between parts.
+   */
+  async relayChunkedTextAcrossBridge({
+    session,
+    direction,
+    destPhone,
+    destChatIds,
+    code,
+    text,
+    skipInitialPace = false,
+  }) {
+    const toCustomer = direction === 'desk_to_customer';
+    const chunks = antiBan.splitIntoNaturalChunks(text);
+    if (!chunks.length) return;
+
+    let destChatId = destChatIds[0];
+    console.log(
+      `[ChatBridge] Chunking ${chunks.length} part(s) for #${session.id}[${code}] ${direction}`
+    );
+
+    if (!skipInitialPace) {
+      // Already paced by caller when coming from main relay
+    }
+
+    for (let i = 0; i < chunks.length; i++) {
+      if (i > 0) {
+        await sleep(antiBan.microDelayMs());
+        await antiBan.outboundLimiter.waitTurn();
+      }
+
+      const chunk = antiBan.lightlyVaryTextStructure(chunks[i]);
+      // Per-chunk: small pre-delay + typing (sendMessage) — not a full 5–12s again
+      const sent = await this.sendMessage(destPhone, chunk, {
+        chatId: destChatId,
+        skipReading: true,
+        delayMs: antiBan.randInt(600, 2200),
+      });
+
+      if (sent?._outboundChatId) {
+        destChatId = sent._outboundChatId;
+      }
+
+      const waId =
+        sent?.id?._serialized || sent?.id?.$1 || sent?.id?.id || null;
+      if (waId) {
+        ChatSessions.trackMessage(session.id, direction, waId, chunk);
+      }
+
+      MessageLog.add({
+        direction: 'out',
+        phone: destPhone,
+        body: `[bridge ${direction} chunk ${i + 1}/${chunks.length}] ${chunk}`,
+        meta: {
+          session_id: session.id,
+          session_code: code,
+          direction,
+          native: false,
+          chunked: true,
+          chunk_index: i + 1,
+          chunk_total: chunks.length,
+          dest_chat_id: destChatId,
+          wa_id: waId,
+        },
+      });
+    }
+
+    if (toCustomer) {
+      ChatSessions.bindCustomerChatId(session.id, destChatId);
+    } else {
+      ChatSessions.bindDeskChatId(session.id, destChatId);
+    }
+    ChatSessions.touch(session.id, {
+      side: toCustomer ? 'desk' : 'customer',
+      ...(toCustomer
+        ? { customer_chat_id: destChatId }
+        : { desk_chat_id: destChatId }),
+    });
+
+    console.log(
+      `[ChatBridge] Chunked relay OK #${session.id}[${code}] ${chunks.length} parts → ${destChatId}`
+    );
   }
 
   /**
