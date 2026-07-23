@@ -73,9 +73,9 @@ router.get('/form/:token', (req, res) => {
 
   if (submission.status === 'awaiting_confirmation') {
     return res.render('form-done', layoutLocals(req, {
-      title: 'Awaiting Confirmation',
+      title: 'Already submitted',
       submission,
-      message: 'Please reply Yes on WhatsApp to confirm your details.',
+      message: 'Your details were already submitted to our team.',
     }));
   }
 
@@ -167,15 +167,15 @@ router.post('/form/:token', async (req, res) => {
   });
 
   try {
-    await whatsapp.sendFormConfirmation(updated);
+    await whatsapp.notifyFormSubmitted(updated);
   } catch (err) {
-    console.error('Failed to send confirmation WhatsApp:', err.message);
+    console.error('Failed to forward form to desk:', err.message);
   }
 
   res.render('form-done', layoutLocals(req, {
     title: 'Submitted',
     submission: updated,
-    message: 'Thanks! Please check WhatsApp and reply Yes to confirm your details.',
+    message: 'Thanks! Your details were sent to our team. You can continue on WhatsApp if they message you.',
   }));
 });
 
@@ -272,13 +272,6 @@ router.get('/admin/access', requireAdmin, (req, res) => {
 
 router.post('/admin/access/settings', requireAdmin, (req, res) => {
   Settings.set('access_control_enabled', req.body.access_control_enabled === '1' ? '1' : '0');
-  for (const key of [
-    'access_denied_message',
-    'access_granted_message',
-    'access_wrong_code_message',
-  ]) {
-    if (req.body[key] !== undefined) Settings.set(key, req.body[key]);
-  }
   req.session.flash = { type: 'success', message: 'Access settings saved.' };
   res.redirect('/admin/access');
 });

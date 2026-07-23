@@ -38,14 +38,13 @@ function seed() {
     chat_close_message: 'Thank you! Your conversation has been ended. Have a good day!',
     cancel_message: 'Your request has been cancelled. Send *Hi* anytime to start again.',
     already_pending_message: 'You already have a pending request. Please complete the form or reply *Yes* / *No* to your confirmation message.',
-    close_keywords: 'close',
+    close_keywords: 'close,cls',
     trigger_keywords: 'hi,hello,hey,start,ഹായ്',
     relay_delay_ms: '300',
     access_control_enabled: '1',
     access_denied_message:
       'Please send your unique access code to continue.',
-    access_granted_message:
-      'Welcome *{{name}}*. Access granted. Send *Hi* to receive your form link.',
+    access_granted_message: '',
     access_wrong_code_message:
       'That access code is not valid for this number. Please check and try again.',
     anti_ban_jitter_min_ms: '5000',
@@ -92,10 +91,10 @@ function seed() {
   if (Settings.get('close_keywords') === null) {
     Settings.set('close_keywords', defaults.close_keywords);
   } else {
-    // Migrate older multi-keyword defaults → exact "close" only
-    const ck = String(Settings.get('close_keywords') || '');
-    if (/ക്ലോസ്/i.test(ck) || /^close\s*,\s*/i.test(ck.trim())) {
-      Settings.set('close_keywords', 'close');
+    // Ensure CLS is available alongside Close
+    const ck = String(Settings.get('close_keywords') || '').toLowerCase();
+    if (!ck.split(',').map((s) => s.trim()).includes('cls')) {
+      Settings.set('close_keywords', `${Settings.get('close_keywords')},cls`);
     }
   }
   if (Settings.get('trigger_keywords') === null) {
@@ -208,18 +207,17 @@ function seed() {
   if (ChatFlow.list().length === 0) {
     ChatFlow.create({
       trigger_keyword: 'hi,hello,hey,start,ഹായ്',
-      response_template:
-        'Welcome to *{{business_name}}*! 👋\n\nTo get started with your insurance enquiry, please fill out this short form:\n\n{{form_link}}\n\nOur team will assist you once you submit and confirm your details.',
+      response_template: '{{form_link}}',
       sort_order: 1,
     });
-    ChatFlow.create({
-      trigger_keyword: 'help',
-      response_template:
-        'Need help? Send *Hi* to receive your insurance form link, or contact our office during business hours.',
-      sort_order: 2,
-    });
   } else {
-    // Ensure at least one active greeting trigger includes hi / ഹായ്
+    // Strip welcome greetings from form-link flows → bare URL only
+    for (const f of ChatFlow.list()) {
+      const tpl = String(f.response_template || '');
+      if (tpl.includes('{{form_link}}') && /welcome/i.test(tpl)) {
+        ChatFlow.update(f.id, { response_template: '{{form_link}}' });
+      }
+    }
     const flows = ChatFlow.list(true);
     const hasHi = flows.some((f) =>
       String(f.trigger_keyword || '')
@@ -231,8 +229,7 @@ function seed() {
     if (!hasHi) {
       ChatFlow.create({
         trigger_keyword: 'hi,hello,hey,start,ഹായ്',
-        response_template:
-          'Welcome to *{{business_name}}*! 👋\n\nTo get started with your insurance enquiry, please fill out this short form:\n\n{{form_link}}\n\nOur team will assist you once you submit and confirm your details.',
+        response_template: '{{form_link}}',
         sort_order: 0,
       });
       console.log('Seeded missing greeting chat-flow trigger (hi / ഹായ്)');
@@ -290,7 +287,7 @@ function seed() {
         if (node.name === 'send_form_link' && node.data) {
           node.data.message =
             node.data.message ||
-            'Welcome to *{{business_name}}*! 👋\n\nPlease fill out your insurance details:\n\n{{form_link}}';
+            'Please fill out your insurance details:\n\n{{form_link}}';
         }
         if (node.name === 'trigger_message' && node.data) {
           const kw = String(node.data.keywords || '').toLowerCase();

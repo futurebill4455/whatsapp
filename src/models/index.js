@@ -995,9 +995,36 @@ const AccessUsers = {
   findByPhone(phone) {
     const digits = digitsOnly(phone);
     if (!digits) return null;
-    return db
+
+    const exact = db
       .prepare('SELECT * FROM access_users WHERE is_active = 1 AND phone = ? LIMIT 1')
       .get(digits);
+    if (exact) return exact;
+
+    // Tolerate country-code / local variants (e.g. 98XXXXXXXX vs 9198XXXXXXXX)
+    const variants = new Set([digits]);
+    if (digits.length === 10) variants.add(`91${digits}`);
+    if (digits.length > 10 && digits.startsWith('91')) variants.add(digits.slice(2));
+    if (digits.length >= 10) variants.add(digits.slice(-10));
+
+    for (const v of variants) {
+      const row = db
+        .prepare('SELECT * FROM access_users WHERE is_active = 1 AND phone = ? LIMIT 1')
+        .get(v);
+      if (row) return row;
+    }
+
+    if (digits.length >= 10) {
+      const tail = digits.slice(-10);
+      return db
+        .prepare(
+          `SELECT * FROM access_users
+           WHERE is_active = 1 AND substr(phone, -10) = ?
+           LIMIT 1`
+        )
+        .get(tail);
+    }
+    return null;
   },
 
   normalizeCode(code) {

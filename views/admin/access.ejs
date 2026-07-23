@@ -18,8 +18,9 @@
     <div>
       <h1 class="font-display text-3xl font-semibold mb-2">Authorized users</h1>
       <p class="text-ink/60 max-w-2xl">
-        Add users one by one with <strong>Name</strong>, <strong>Phone</strong>, and a <strong>Unique Access Code</strong>.
-        The form / chat flow unlocks only when that phone sends <em>their</em> assigned code, then <em>Hi</em>.
+        Add users with <strong>Name</strong>, <strong>Phone</strong>, and a <strong>Unique Access Code</strong>.
+        The bot stays <em>completely silent</em> until that phone sends its assigned code — then it sends only the form link (no welcome text).
+        Wrong codes and unknown numbers get <strong>no reply</strong>.
       </p>
     </div>
 
@@ -28,21 +29,8 @@
       <form method="POST" action="/admin/access/settings" class="space-y-4">
         <label class="flex items-center gap-2 text-sm">
           <input type="checkbox" name="access_control_enabled" value="1" <%= settings.access_control_enabled !== '0' ? 'checked' : '' %> />
-          Require Name/Phone/Code match before form &amp; live chat
+          Strict whitelist — ignore all unknown numbers and wrong codes (no reply)
         </label>
-        <div>
-          <label class="label" for="access_denied_message">Ask-for-code message (registered phone, not yet unlocked)</label>
-          <textarea class="field" id="access_denied_message" name="access_denied_message" rows="2"><%= settings.access_denied_message || '' %></textarea>
-        </div>
-        <div>
-          <label class="label" for="access_granted_message">Success after correct code</label>
-          <textarea class="field" id="access_granted_message" name="access_granted_message" rows="2"><%= settings.access_granted_message || '' %></textarea>
-          <p class="text-xs text-ink/45 mt-1">Placeholders: <code>{{name}}</code>, <code>{{phone}}</code>, <code>{{business_name}}</code></p>
-        </div>
-        <div>
-          <label class="label" for="access_wrong_code_message">Wrong code message</label>
-          <textarea class="field" id="access_wrong_code_message" name="access_wrong_code_message" rows="2"><%= settings.access_wrong_code_message || '' %></textarea>
-        </div>
         <button type="submit" class="btn btn-primary">Save settings</button>
       </form>
     </section>

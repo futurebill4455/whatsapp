@@ -247,17 +247,12 @@ class WorkflowEngine {
 
     const open = Submissions.findLatestOpen(phone);
     if (open && open.status === 'awaiting_confirmation') {
-      const replyVariations = require('./replyVariations');
-      await this.whatsapp.sendMessage(
-        phone,
-        replyVariations.pick(
-          'already_pending',
-          { phone },
-          'already_pending_message'
-        ),
-        sendOpts(baseCtx)
-      );
-      return { handled: true, reason: 'already_pending' };
+      await this.forwardLeadToDesk(open, {
+        ...baseCtx,
+        notifyCustomer: false,
+        sendDeskTip: false,
+      });
+      return { handled: true, reason: 'legacy_pending_forwarded' };
     }
 
     const run = WorkflowRuns.create({
@@ -290,17 +285,12 @@ class WorkflowEngine {
 
     const open = Submissions.findLatestOpen(phone);
     if (open && open.status === 'awaiting_confirmation') {
-      const replyVariations = require('./replyVariations');
-      await this.whatsapp.sendMessage(
-        phone,
-        replyVariations.pick(
-          'already_pending',
-          { phone },
-          'already_pending_message'
-        ),
-        sendOpts(baseCtx)
-      );
-      return { handled: true, reason: 'already_pending' };
+      await this.forwardLeadToDesk(open, {
+        ...baseCtx,
+        notifyCustomer: false,
+        sendDeskTip: false,
+      });
+      return { handled: true, reason: 'legacy_pending_forwarded' };
     }
 
     await this.sendLegacyFormLink(phone, baseCtx, isFormLinkChatFlow(flow) ? flow : null);
@@ -322,43 +312,21 @@ class WorkflowEngine {
     }
 
     const formLink = sanitizeFormLink(buildFormUrl(submission.token));
-    const vars = {
-      business_name: Settings.get('business_name', 'SecureLife Insurance'),
-      form_link: formLink,
-      phone,
-    };
-    const replyVariations = require('./replyVariations');
-    const template =
-      flow?.response_template ||
-      replyVariations.pickTemplate('form_welcome') ||
-      'Welcome to *{{business_name}}*!\n\nPlease fill your insurance details here:\n\n{{form_link}}';
-    const { intro, link, footer } = buildFormLinkParts(template, vars);
-    // Jitter / typing live inside sendMessage — no extra pre-delay here
-    await this.whatsapp.sendMessage(phone, intro, sendOpts(ctx));
-    if (link) {
-      await this.whatsapp.sendMessage(phone, link, {
-        ...sendOpts({ ...ctx, replyTo: undefined }),
-        skipReading: true,
-        delayMs: require('./antiBan').randInt(2500, 5500),
-      });
-    }
-    if (footer) {
-      await this.whatsapp.sendMessage(phone, footer, {
-        ...sendOpts({ ...ctx, replyTo: undefined }),
-        skipReading: true,
-        delayMs: require('./antiBan').randInt(2000, 4500),
-      });
-    }
+    // Bare form URL only — no welcome greeting
+    await this.whatsapp.sendMessage(phone, formLink, sendOpts(ctx));
     return submission;
   }
 
   /**
-   * Compile lead summary and send to internal desk. Never throws — logs + notifies customer.
+   * Compile lead summary and send to internal desk ONLY.
+   * Opens two-way session immediately. Customer is not notified by default.
    */
   async forwardLeadToDesk(submission, ctx = {}) {
     const phone = ctx.phone || submission.customer_phone;
     const insuranceType = submission.insurance_type;
     const company = submission.company;
+    const notifyCustomer = ctx.notifyCustomer === true;
+    const sendDeskTip = ctx.sendDeskTip === true;
 
     Submissions.markConfirmed(submission.id);
     if (ctx.chatId) {
@@ -372,15 +340,6 @@ class WorkflowEngine {
       console.error(
         `[Forward] No internal desk number configured for type="${insuranceType}" company="${company}"`
       );
-      try {
-        await this.whatsapp.sendMessage(
-          phone,
-          'Your details are confirmed, but no internal desk number is configured yet. Our team will follow up shortly.',
-          sendOpts(ctx)
-        );
-      } catch (err) {
-        console.error('[Forward] Failed to notify customer (no desk):', err.message);
-      }
       return { ok: false, reason: 'no_desk_number' };
     }
 
@@ -417,7 +376,6 @@ class WorkflowEngine {
 
       let session = null;
       try {
-        // Space out new live sessions (anti bulk-pattern)
         try {
           await sleep(require('./antiBan').sessionSpacingMs());
         } catch (_) {
@@ -432,44 +390,46 @@ class WorkflowEngine {
           company_name: company || target.label,
         });
         console.log(
-          `[ChatBridge] Session #${session.id}[${session.session_code}] opened: customer ${phone} ↔ desk ${deskPhone}`
+          `[ChatBridge] Session #${session.id}[${session.session_code}] opened (instant two-way): customer ${phone} ↔ desk ${deskPhone}`
         );
 
         const leadId = leadMsg?.id?._serialized || leadMsg?.id?.$1 || leadMsg?.id?.id;
         if (leadId) ChatSessions.trackMessage(session.id, 'system_to_desk', leadId, forwardText);
 
-        try {
-          const tip =
-            `🔗 *Live chat opened* [#${session.session_code}]\n` +
-            `Customer: ${phone} (${submission.customer_name || '—'})\n\n` +
-            `Reply by *quoting* their messages (or include [#${session.session_code}]) so replies reach the right person.`;
-          const tipMsg = await this.whatsapp.sendMessage(deskPhone, tip, {
-            chatId: deskChatId || undefined,
-          });
-          const tipId = tipMsg?.id?._serialized || tipMsg?.id?.$1 || tipMsg?.id?.id;
-          if (tipId) ChatSessions.trackMessage(session.id, 'system_to_desk', tipId, tip);
-          const tipChat = tipMsg?._outboundChatId || this.whatsapp._lastOutboundChatId;
-          if (tipChat) ChatSessions.bindDeskChatId(session.id, tipChat);
-        } catch (tipErr) {
-          console.warn('[ChatBridge] Desk tip message failed:', tipErr.message);
+        if (sendDeskTip) {
+          try {
+            const tip =
+              `Live chat opened [#${session.session_code}]\n` +
+              `Customer: ${phone} (${submission.customer_name || '—'})\n` +
+              `Quote their messages (or include [#${session.session_code}]) to reply.`;
+            const tipMsg = await this.whatsapp.sendMessage(deskPhone, tip, {
+              chatId: deskChatId || undefined,
+            });
+            const tipId = tipMsg?.id?._serialized || tipMsg?.id?.$1 || tipMsg?.id?.id;
+            if (tipId) ChatSessions.trackMessage(session.id, 'system_to_desk', tipId, tip);
+            const tipChat = tipMsg?._outboundChatId || this.whatsapp._lastOutboundChatId;
+            if (tipChat) ChatSessions.bindDeskChatId(session.id, tipChat);
+          } catch (tipErr) {
+            console.warn('[ChatBridge] Desk tip message failed:', tipErr.message);
+          }
         }
       } catch (sessErr) {
         console.error('[ChatBridge] Failed to open session:', sessErr.message);
       }
 
-      const codeHint = session?.session_code ? ` (ref [#${session.session_code}])` : '';
-      const success =
-        Settings.get('success_message') ||
-        'Thank you! Your details have been confirmed and forwarded to our team.\n\n' +
-          'You can now chat directly with the insurance desk here. Send *close* (or *ക്ലോസ്*) anytime to end the conversation.';
-      try {
-        const msg = success.toLowerCase().includes('close')
-          ? success
-          : `${success}\n\nSend *close* anytime to end the chat${codeHint}.`;
-        await this.whatsapp.sendMessage(phone, msg, sendOpts(ctx));
-      } catch (err) {
-        console.error('[Forward] Desk OK but customer success message failed:', err.message);
+      if (notifyCustomer) {
+        try {
+          await this.whatsapp.sendMessage(
+            phone,
+            Settings.get('success_message') ||
+              'Thank you! Your details have been sent to our team.',
+            sendOpts(ctx)
+          );
+        } catch (err) {
+          console.error('[Forward] Customer success message failed:', err.message);
+        }
       }
+
       return {
         ok: true,
         desk: deskPhone,
@@ -482,144 +442,39 @@ class WorkflowEngine {
         `[Forward] FAILED sending lead #${submission.id} to desk "${target.label}" (${deskPhone}):`,
         err.message
       );
-      try {
-        await this.whatsapp.sendMessage(
-          phone,
-          'Your details are confirmed. We could not reach the internal desk automatically — our admin has been notified and will follow up shortly.',
-          sendOpts(ctx)
-        );
-      } catch (notifyErr) {
-        console.error('[Forward] Also failed to notify customer after desk error:', notifyErr.message);
-      }
       return { ok: false, reason: 'send_failed', error: err.message, desk: deskPhone };
     }
   }
 
   /**
-   * After web form submit — send Yes/No confirmation (workflow waiter or Settings template).
+   * After web form submit — forward to desk + open two-way (no customer confirmation).
    */
   async notifyFormSubmitted(submission) {
     return this.handleFormSubmit(submission);
   }
 
   async handleFormSubmit(submission) {
-    const active = this.getActiveGraph();
-    if (!active) {
-      const text = buildConfirmationMessage(
-        submission,
-        Settings.get('confirmation_template')
-      );
-      try {
-        await this.whatsapp.sendMessage(submission.customer_phone, text, {
-          chatId: submission.customer_chat_id || undefined,
-        });
-      } catch (err) {
-        console.error('[Workflow] Legacy confirmation failed:', err.message);
-      }
-      return { handled: true, reason: 'legacy_confirmation' };
-    }
-
-    let waiting = null;
-    if (submission.workflow_run_id) {
-      waiting = WorkflowRuns.get(submission.workflow_run_id);
-    }
-    if (!waiting || waiting.waiting_for !== 'form_submit') {
-      waiting = WorkflowRuns.findWaitingByToken(submission.token, 'form_submit');
-    }
-    if (!waiting || waiting.waiting_for !== 'form_submit') {
-      waiting = WorkflowRuns.findWaiting(submission.customer_phone, 'form_submit');
-    }
-    if (!waiting) {
-      // No waiter — still send confirmation and arm yes_no if possible
-      const vars = buildLeadVars(submission);
-      const formNode = Object.values(active.nodes).find((n) => n.type === 'form_submit');
-      const confirmation = renderTemplate(
-        formNode?.data?.confirmation_message ||
-          Settings.get('confirmation_template') ||
-          'Hi {{name}}, please confirm your details:\n\n• Name: {{name}}\n• Insurance Type: {{insurance_type}}\n• Company: {{company}}\n{{details}}\n\n*Is this correct?* Reply *Yes* or *No*.',
-        vars
-      );
-      try {
-        await this.whatsapp.sendMessage(submission.customer_phone, confirmation, {
-          chatId: submission.customer_chat_id || undefined,
-        });
-      } catch (err) {
-        console.error('[Workflow] Confirmation (no waiter) failed:', err.message);
-      }
-
-      const yesNo = Object.values(active.nodes).find((n) => n.type === 'condition_yes_no');
-      if (yesNo) {
-        const run = WorkflowRuns.create({
-          workflow_id: active.workflow.id,
-          customer_phone: submission.customer_phone,
-          submission_token: submission.token,
-          context: {
-            phone: submission.customer_phone,
-            chatId: submission.customer_chat_id,
-            submission_token: submission.token,
-            ...vars,
-          },
-        });
-        Submissions.setWorkflowRun(submission.token, run.id);
-        WorkflowRuns.update(run.id, {
-          status: 'waiting',
-          current_node_id: yesNo.id,
-          waiting_for: 'yes_no',
-          submission_token: submission.token,
-        });
-      }
-      return { handled: true, reason: 'confirmation_without_waiter' };
-    }
-
-    const vars = buildLeadVars(submission, {
-      phone: submission.customer_phone,
-      chatId: waiting.context?.chatId,
-    });
-    const ctx = {
-      ...waiting.context,
-      ...vars,
-      submission_token: submission.token,
-      replyTo: undefined,
-    };
-
-    WorkflowRuns.update(waiting.id, {
-      status: 'running',
-      waiting_for: null,
-      context: ctx,
-      submission_token: submission.token,
-    });
-
-    const nodeId = waiting.current_node_id;
-    const node = active.nodes[nodeId];
-    if (!node) return { handled: false };
-
-    const confirmation = renderTemplate(
-      node.data.confirmation_message ||
-        Settings.get('confirmation_template') ||
-        'Hi {{name}}, please confirm your details:\n\n• Name: {{name}}\n• Insurance Type: {{insurance_type}}\n• Company: {{company}}\n{{details}}\n\n*Is this correct?* Reply *Yes* or *No*.',
-      ctx
-    );
-
     try {
-      if (confirmation) {
-        await this.whatsapp.sendMessage(submission.customer_phone, confirmation, {
-          chatId: ctx.chatId || submission.customer_chat_id,
+      const waiting =
+        WorkflowRuns.findWaitingByToken(submission.token, 'form_submit') ||
+        WorkflowRuns.findWaiting(submission.customer_phone, 'form_submit') ||
+        WorkflowRuns.findWaiting(submission.customer_phone, 'yes_no');
+      if (waiting) {
+        WorkflowRuns.update(waiting.id, {
+          status: 'completed',
+          waiting_for: null,
+          submission_token: submission.token,
         });
       }
-    } catch (err) {
-      console.error(
-        `[Workflow] Confirmation WhatsApp failed for ${submission.customer_phone} (still waiting for Yes/No):`,
-        err.message
-      );
-    }
+    } catch (_) {}
 
-    const outs = nextNodes(node, 'output_1');
-    if (!outs.length) {
-      WorkflowRuns.update(waiting.id, { status: 'completed', waiting_for: null });
-      return { handled: true };
-    }
-
-    return this.executeFrom(waiting.id, outs[0], active.nodes, ctx);
+    const result = await this.forwardLeadToDesk(submission, {
+      phone: submission.customer_phone,
+      chatId: submission.customer_chat_id || undefined,
+      notifyCustomer: false,
+      sendDeskTip: false,
+    });
+    return { handled: true, reason: 'desk_forward_instant_bridge', ...result };
   }
 
   async resumeYesNo(runRow, body, nodes, baseCtx = {}) {
@@ -718,29 +573,8 @@ class WorkflowEngine {
     }
 
     const formLink = sanitizeFormLink(buildFormUrl(newSub.token));
-    const refillPool = [
-      "No problem — let's start again.\n\nPlease refill your insurance details here:\n\n{{form_link}}",
-      'Sure, we can redo that.\n\nUse this link to submit fresh details:\n\n{{form_link}}',
-      'Understood. Please fill the form again using this link:\n\n{{form_link}}',
-    ];
-    const template = refillPool[Math.floor(Math.random() * refillPool.length)];
-    const { intro, link, footer } = buildFormLinkParts(template, { form_link: formLink });
     try {
-      await this.whatsapp.sendMessage(phone, intro, sendOpts(ctx));
-      if (link) {
-        await this.whatsapp.sendMessage(phone, link, {
-          ...sendOpts({ ...ctx, replyTo: undefined }),
-          skipReading: true,
-          delayMs: require('./antiBan').randInt(2500, 5500),
-        });
-      }
-      if (footer) {
-        await this.whatsapp.sendMessage(phone, footer, {
-          ...sendOpts({ ...ctx, replyTo: undefined }),
-          skipReading: true,
-          delayMs: require('./antiBan').randInt(2000, 4500),
-        });
-      }
+      await this.whatsapp.sendMessage(phone, formLink, sendOpts(ctx));
       console.log(`[Workflow] Refill form link sent to ${phone}: ${formLink}`);
     } catch (err) {
       console.error('[Workflow] Failed to resend form link:', err.message);
@@ -862,30 +696,10 @@ class WorkflowEngine {
           form_link: formLink,
           phone,
         };
-        const replyVariations = require('./replyVariations');
-        const { intro, link, footer } = buildFormLinkParts(
-          node.data.message ||
-            replyVariations.pickTemplate('form_welcome') ||
-            'Welcome to *{{business_name}}*!\n\nPlease fill your insurance details here:\n\n{{form_link}}',
-          vars
-        );
 
         try {
-          await this.whatsapp.sendMessage(phone, intro, sendOpts(ctx));
-          if (link) {
-            await this.whatsapp.sendMessage(phone, link, {
-              ...sendOpts({ ...ctx, replyTo: undefined }),
-              skipReading: true,
-              delayMs: require('./antiBan').randInt(2500, 5500),
-            });
-          }
-          if (footer) {
-            await this.whatsapp.sendMessage(phone, footer, {
-              ...sendOpts({ ...ctx, replyTo: undefined }),
-              skipReading: true,
-              delayMs: require('./antiBan').randInt(2000, 4500),
-            });
-          }
+          // Bare URL only — no welcome greeting text
+          await this.whatsapp.sendMessage(phone, formLink, sendOpts(ctx));
           console.log(`[Workflow] Form link sent to ${phone}: ${formLink}`);
         } catch (err) {
           console.error(`[Workflow] Failed to send form link to ${phone}:`, err.message);

@@ -82,7 +82,7 @@ function buildDefaultWorkflowGraph() {
             data: {
               label: 'Send Web Form Link',
               message:
-                'Welcome to *{{business_name}}*! 👋\n\nPlease fill out your insurance details:\n\n{{form_link}}',
+                'Please fill out your insurance details:\n\n{{form_link}}',
             },
             class: 'node-action',
             html: '',

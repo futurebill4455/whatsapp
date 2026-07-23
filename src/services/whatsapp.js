@@ -16,11 +16,7 @@ const {
 } = require('../models');
 const { bindEngine, newToken } = require('./workflowEngine');
 const { buildPuppeteerLaunchOptions, isRenderLike, isVpsLinux } = require('./chromiumLaunch');
-const {
-  buildConfirmationMessage,
-  buildFormLinkParts,
-  sanitizeFormLink,
-} = require('../utils/leadSummary');
+const { sanitizeFormLink } = require('../utils/leadSummary');
 const {
   getBaseUrl: requireBaseUrl,
   buildFormUrl: requireBuildFormUrl,
@@ -51,15 +47,15 @@ function isHardcodedGreeting(text) {
 }
 
 function getCloseKeywords() {
-  // Default: only the word "close" (case-insensitive). Admin may add more in Settings.
-  const raw = Settings.get('close_keywords') || 'close';
+  // Default: Close / CLS (case-insensitive). Admin may add more in Settings.
+  const raw = Settings.get('close_keywords') || 'close,cls';
   return String(raw)
     .split(',')
     .map((k) => k.trim().toLowerCase())
     .filter(Boolean);
 }
 
-/** Exact keyword match only — never auto-timeout; customer must send Close. */
+/** Exact keyword match — Close / CLS from either party ends the session silently. */
 function isCloseCommand(text) {
   const n = normalizeMsg(text);
   return getCloseKeywords().some((k) => n === k);
@@ -1107,7 +1103,65 @@ class WhatsAppService {
     if (!body) return;
 
     try {
-      // 2) Yes/No for pending confirmation (before workflow so recovery is immediate)
+      // 2) STRICT access gate — before any bot reply (except active bridge above).
+      // Unlock requires BOTH: phone on whitelist AND that user's unique access code.
+      // Unknown numbers / wrong codes / anything else → silent ignore (no reply).
+      const accessEnabled = Settings.get('access_control_enabled', '1') !== '0';
+      if (accessEnabled) {
+        const unlocked = AccessUsers.isUnlocked(phone);
+
+        if (!unlocked) {
+          const unlockResult = AccessUsers.tryUnlock(phone, body);
+          if (unlockResult.ok) {
+            console.log(
+              `[Access] Unlocked ${phone} (${unlockResult.user.name}) with code ${unlockResult.user.access_code}`
+            );
+            // No welcome / access-granted text — only the bare form URL
+            await this.sendFormLinkOnly(phone, {
+              chatId,
+              replyTo: message,
+              inboundText: body,
+            });
+            return;
+          }
+
+          // Legacy Yes/No only if a pending confirmation still exists (pre-migration)
+          const authorized = AccessUsers.findByPhone(phone);
+          if (authorized && (isYesReply(body) || isNoReply(body))) {
+            const pending = Submissions.findPendingConfirmation(phone);
+            if (pending && isYesReply(body)) {
+              await this.confirmAndForward(pending, {
+                chatId,
+                replyTo: message,
+                inboundText: body,
+              });
+              return;
+            }
+            if (pending && isNoReply(body)) {
+              // Re-issue bare form link only
+              await this.sendFormLinkOnly(phone, {
+                chatId,
+                replyTo: message,
+                inboundText: body,
+                forceNew: true,
+              });
+              try {
+                Submissions.cancel?.(pending.id);
+              } catch (_) {}
+              return;
+            }
+          }
+
+          console.log(
+            `[Access] Silent ignore from ${phone} (reason=${unlockResult.reason}${
+              authorized ? ', registered-not-unlocked' : ', unknown'
+            })`
+          );
+          return;
+        }
+      }
+
+      // 3) Yes/No for pending confirmation (unlocked users)
       if (isYesReply(body)) {
         const pending = Submissions.findPendingConfirmation(phone);
         if (pending) {
@@ -1133,7 +1187,7 @@ class WhatsAppService {
         }
       }
 
-      // 2.3) Working hours — pause new automation outside daytime (bridge + Yes/No already handled)
+      // 4) Working hours — pause new automation outside daytime
       if (!antiBan.isWithinWorkingHours()) {
         console.log(`[AntiBan] Outside working hours — ignoring automation from ${phone}`);
         if (Settings.get('anti_ban_after_hours_reply', '0') === '1') {
@@ -1151,84 +1205,7 @@ class WhatsAppService {
         return;
       }
 
-      // 2.4) Access gate — phone + assigned unique code required to unlock form / main flow
-      const accessEnabled = Settings.get('access_control_enabled', '1') !== '0';
-      if (accessEnabled) {
-        const alreadyUnlocked = AccessUsers.isUnlocked(phone);
-        const looksLikeCode = /^[A-Za-z0-9_-]{4,32}$/.test(body);
-
-        // Only treat code-like messages as unlock attempts until this phone is unlocked
-        if (looksLikeCode && !alreadyUnlocked) {
-          const result = AccessUsers.tryUnlock(phone, body);
-          if (result.ok) {
-            console.log(
-              `[Access] Unlocked ${phone} (${result.user.name}) with code ${result.user.access_code}`
-            );
-            await this.sendMessage(
-              phone,
-              replyVariations.pick(
-                'access_granted',
-                {
-                  name: result.user.name,
-                  phone,
-                  business_name: Settings.get('business_name', 'Insurance Bot'),
-                },
-                'access_granted_message'
-              ),
-              { chatId, replyTo: message, inboundText: body }
-            );
-            return;
-          }
-
-          // Registered phone but wrong code → polite deny; unknown phone → ignore
-          if (result.reason === 'wrong_code') {
-            await this.sendMessage(
-              phone,
-              replyVariations.pick(
-                'access_wrong_code',
-                { name: result.user?.name || '', phone },
-                'access_wrong_code_message'
-              ),
-              { chatId, replyTo: message, inboundText: body }
-            );
-            return;
-          }
-          console.log(`[Access] Ignored code attempt from unknown ${phone}`);
-          return;
-        }
-
-        const wantsForm =
-          isHardcodedGreeting(body) ||
-          (() => {
-            const f = ChatFlow.findByKeyword(body);
-            return f && isFormLinkChatFlow(f);
-          })();
-
-        if (wantsForm && !alreadyUnlocked) {
-          const registered = AccessUsers.findByPhone(phone);
-          if (!registered) {
-            console.log(`[Access] Ignoring Hi from unregistered ${phone}`);
-            return;
-          }
-          console.log(`[Access] ${phone} registered but not unlocked yet`);
-          await this.sendMessage(
-            phone,
-            replyVariations.pick(
-              'access_denied',
-              {
-                name: registered.name,
-                phone,
-                business_name: Settings.get('business_name', 'Insurance Bot'),
-              },
-              'access_denied_message'
-            ),
-            { chatId, replyTo: message, inboundText: body }
-          );
-          return;
-        }
-      }
-
-      // 2.5) Custom admin keywords (brochure, address, …) — never starts form flow
+      // 5) Custom admin keywords (brochure, address, …) — unlocked users only
       const keywordFlow = ChatFlow.findByKeyword(body);
       if (keywordFlow && !isFormLinkChatFlow(keywordFlow) && !isHardcodedGreeting(body)) {
         const business = Settings.get('business_name', 'SecureLife Insurance');
@@ -1245,7 +1222,7 @@ class WhatsAppService {
         return;
       }
 
-      // 3) Active Drawflow workflow (or Settings/ChatFlow fallback inside engine)
+      // 6) Active Drawflow workflow (or Settings/ChatFlow fallback inside engine)
       const result = await this.engine.handleIncomingMessage({
         phone,
         body,
@@ -1261,7 +1238,7 @@ class WhatsAppService {
       if (result?.handled) return;
       if (result?.reason === 'unmatched_reply' && !isHardcodedGreeting(body)) return;
 
-      // 4) Greeting ChatFlow / Hi → form link (default flow untouched)
+      // 7) Greeting ChatFlow / Hi → form link
       const flow = ChatFlow.findByKeyword(body);
       if ((flow && isFormLinkChatFlow(flow)) || isHardcodedGreeting(body)) {
         console.log('[WhatsApp] ChatFlow / greeting form-link for:', body);
@@ -1276,6 +1253,10 @@ class WhatsAppService {
       console.log('[WhatsApp] No trigger matched for:', JSON.stringify(body));
     } catch (err) {
       console.error('[WhatsApp] Flow execution error:', err?.message || err);
+      // Never leak error replies to unauthorized numbers
+      if (Settings.get('access_control_enabled', '1') !== '0' && !AccessUsers.isUnlocked(phone)) {
+        return;
+      }
       try {
         await this.sendMessage(
           phone,
@@ -1327,18 +1308,7 @@ class WhatsAppService {
       deskSessions = ChatSessions.listActiveByDesk(digits);
     }
     if (deskSessions.length > 0) {
-      if (body && isCloseCommand(body)) {
-        console.log('[ChatBridge] Ignoring close from desk — customer must close');
-        try {
-          await this.sendMessage(
-            digits,
-            'ℹ️ Only the *customer* can end a chat by sending *close*. Please *reply to* their message (or include their [#CODE]).',
-            { chatId, replyTo: message }
-          );
-        } catch (_) {}
-        return true;
-      }
-
+      // Resolve which customer session this desk message belongs to
       let quotedWaId = null;
       try {
         if (message.hasQuotedMsg) {
@@ -1357,14 +1327,21 @@ class WhatsAppService {
         body,
         chatId,
       });
-
-      // If resolve used phone-only and failed, fall back to deskSessions[0]
       const session = resolved.session || deskSessions[0];
       if (!session) {
         console.warn('[ChatBridge] Desk message with no resolvable session', {
           phone: digits,
           chatId,
           hasMedia,
+        });
+        return true;
+      }
+
+      if (body && isCloseCommand(body)) {
+        await this.closeChatSession(session, {
+          closedBy: 'desk',
+          replyTo: message,
+          chatId,
         });
         return true;
       }
@@ -1430,42 +1407,15 @@ class WhatsAppService {
     return matched;
   }
 
+  /**
+   * Silent session close — no notifications to customer or desk.
+   * Either party may close with Close / CLS.
+   */
   async closeChatSession(session, { closedBy = 'customer', replyTo, chatId } = {}) {
-    if (closedBy !== 'customer') {
-      console.warn('[ChatBridge] closeChatSession blocked — not customer');
-      return;
-    }
-
     ChatSessions.close(session.id);
     console.log(
-      `[ChatBridge] Session #${session.id} [${session.session_code}] closed by customer ${session.customer_phone}`
+      `[ChatBridge] Session #${session.id} [${session.session_code}] closed by ${closedBy} (silent)`
     );
-
-    const thanks = replyVariations.pick(
-      'chat_close',
-      { phone: session.customer_phone },
-      'chat_close_message'
-    );
-
-    try {
-      await this.sendMessage(session.customer_phone, thanks, {
-        chatId: session.customer_chat_id || chatId,
-        replyTo,
-        inboundText: 'close',
-      });
-    } catch (err) {
-      console.error('[ChatBridge] Failed to send close message to customer:', err.message);
-    }
-
-    try {
-      await this.sendMessage(
-        session.desk_phone,
-        `ℹ️ Customer chat [#${session.session_code || session.id}] (${session.customer_phone}) has ended.`,
-        { chatId: session.desk_chat_id || undefined }
-      );
-    } catch (err) {
-      console.warn('[ChatBridge] Desk close notify skipped:', err.message);
-    }
   }
 
   /**
@@ -1946,27 +1896,29 @@ class WhatsAppService {
   }
 
   /**
-   * Always-available greeting reply (ChatFlow template or default).
+   * Send only the bare form URL — no welcome / greeting text.
    */
-  async sendGreetingFormLink(phone, opts = {}) {
+  async sendFormLinkOnly(phone, opts = {}) {
     const existing = Submissions.findLatestOpen(phone);
     if (existing && existing.status === 'awaiting_confirmation') {
-      await this.sendMessage(
-        phone,
-        Settings.get('already_pending_message') ||
-          'You already have a pending request. Reply *Yes* / *No* to confirm.',
-        opts
-      );
+      // Legacy pending confirmations → push straight to desk + open two-way
+      await this.confirmAndForward(existing, {
+        chatId: opts.chatId,
+        replyTo: opts.replyTo,
+        inboundText: opts.inboundText,
+      });
       return true;
     }
 
-    const submission =
-      existing && existing.status === 'awaiting_form'
+    let submission =
+      !opts.forceNew && existing && existing.status === 'awaiting_form'
         ? existing
-        : Submissions.create({ token: makeToken(), customer_phone: phone });
+        : null;
+    if (!submission) {
+      submission = Submissions.create({ token: makeToken(), customer_phone: phone });
+    }
     if (opts.chatId) Submissions.setCustomerChatId(submission.token, opts.chatId);
 
-    // Arm workflow waiter for form_submit if possible
     try {
       const active = this.engine.getActiveGraph();
       if (active) {
@@ -1992,56 +1944,29 @@ class WhatsAppService {
       console.warn('[WhatsApp] Could not arm form_submit waiter:', err.message);
     }
 
-    const formLink = this.buildFormUrl(submission.token);
-    const business = Settings.get('business_name', 'SecureLife Insurance');
-    const template =
-      opts.flow?.response_template ||
-      'Welcome to *{{business_name}}*! 👋\n\nTo get started with your insurance enquiry, please fill out this short form:\n\n{{form_link}}\n\nOur team will assist you once you submit and confirm your details.';
-    const { intro, link, footer } = buildFormLinkParts(template, {
-      business_name: business,
-      form_link: formLink,
-      phone,
+    const formLink = sanitizeFormLink(this.buildFormUrl(submission.token));
+    console.log(`[WhatsApp] Bare form link → ${phone}: ${formLink}`);
+    await this.sendMessage(phone, formLink, {
+      chatId: opts.chatId,
+      replyTo: opts.replyTo,
+      inboundText: opts.inboundText,
     });
-
-    const delay = humanDelayMs();
-    console.log(`[WhatsApp] Greeting delay ${delay}ms before form link`);
-    await sleep(delay);
-    // Bare URL in its own message — WhatsApp will not mid-hyphenate it
-    await this.sendMessage(phone, intro, opts);
-    if (link) {
-      await sleep(250);
-      await this.sendMessage(phone, link, { ...opts, replyTo: undefined });
-    }
-    if (footer) {
-      await sleep(200);
-      await this.sendMessage(phone, footer, { ...opts, replyTo: undefined });
-    }
-    console.log(`[WhatsApp] Greeting form link sent → ${phone}: ${formLink}`);
     return true;
   }
 
-  async sendFormConfirmation(submission) {
-    if (Workflows.getActive()) {
-      const result = await this.engine.handleFormSubmit(submission);
-      if (result.handled) return;
-    }
-
-    const text = buildConfirmationMessage(
-      submission,
-      Settings.get('confirmation_template')
-    );
-    try {
-      await this.sendMessage(submission.customer_phone, text, {
-        chatId: submission.customer_chat_id || undefined,
-      });
-    } catch (err) {
-      console.error('[WhatsApp] Legacy confirmation send failed:', err.message);
-    }
+  /** Alias — welcome greeting removed; bare link only. */
+  async sendGreetingFormLink(phone, opts = {}) {
+    return this.sendFormLinkOnly(phone, opts);
   }
 
   /**
-   * HTTP form submit hook — load by token and send Yes/No confirmation.
+   * After web form submit: lead goes to desk ONLY + instant two-way session.
+   * Never echoes submission details back to the customer.
    */
+  async sendFormConfirmation(submission) {
+    return this.notifyFormSubmitted(submission);
+  }
+
   async notifyFormSubmitted(tokenOrSubmission) {
     const submission =
       typeof tokenOrSubmission === 'string'
@@ -2051,17 +1976,23 @@ class WhatsAppService {
       console.warn('[WhatsApp] notifyFormSubmitted: submission not found');
       return false;
     }
-    if (submission.status !== 'awaiting_confirmation') {
-      console.warn(
-        `[WhatsApp] notifyFormSubmitted: unexpected status ${submission.status}`
-      );
+
+    try {
+      const result = await this.engine.forwardLeadToDesk(submission, {
+        phone: submission.customer_phone,
+        chatId: submission.customer_chat_id || undefined,
+        notifyCustomer: false,
+        sendDeskTip: false,
+      });
+      console.log('[WhatsApp] Form → desk forward result:', result);
+      return !!result?.ok;
+    } catch (err) {
+      console.error('[WhatsApp] Form → desk forward failed:', err.message);
+      return false;
     }
-    await this.sendFormConfirmation(submission);
-    return true;
   }
 
   async confirmAndForward(submission, opts = {}) {
-    // Complete any stuck yes_no waiter so it does not linger
     try {
       const waiting = WorkflowRuns.findWaiting(submission.customer_phone, 'yes_no');
       if (waiting) {
@@ -2075,8 +2006,11 @@ class WhatsAppService {
 
     await this.engine.forwardLeadToDesk(submission, {
       phone: submission.customer_phone,
-      chatId: opts.chatId,
+      chatId: opts.chatId || submission.customer_chat_id,
       replyTo: opts.replyTo,
+      inboundText: opts.inboundText,
+      notifyCustomer: false,
+      sendDeskTip: false,
     });
   }
 }

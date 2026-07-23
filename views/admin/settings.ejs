@@ -45,8 +45,8 @@
         </div>
         <div>
           <label class="label" for="close_keywords">Close keywords</label>
-          <input class="field" id="close_keywords" name="close_keywords" value="<%= settings.close_keywords || 'close' %>" placeholder="close" />
-          <p class="text-xs text-ink/45 mt-1">Exact match only (case-insensitive). Live chats never auto-timeout — customer must send this word.</p>
+          <input class="field" id="close_keywords" name="close_keywords" value="<%= settings.close_keywords || 'close,cls' %>" placeholder="close,cls" />
+          <p class="text-xs text-ink/45 mt-1">Exact match (case-insensitive). Customer or company can send these to end the chat silently — no close notification is sent.</p>
         </div>
       </div>
 
