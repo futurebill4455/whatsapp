@@ -78,6 +78,7 @@ function sendOpts(ctx) {
   return {
     chatId: ctx.chatId || undefined,
     replyTo: ctx.replyTo || undefined,
+    inboundText: ctx.inboundText || ctx.body || undefined,
   };
 }
 
@@ -246,10 +247,14 @@ class WorkflowEngine {
 
     const open = Submissions.findLatestOpen(phone);
     if (open && open.status === 'awaiting_confirmation') {
+      const replyVariations = require('./replyVariations');
       await this.whatsapp.sendMessage(
         phone,
-        Settings.get('already_pending_message') ||
-          'You already have a pending request. Reply Yes / No to confirm.',
+        replyVariations.pick(
+          'already_pending',
+          { phone },
+          'already_pending_message'
+        ),
         sendOpts(baseCtx)
       );
       return { handled: true, reason: 'already_pending' };
@@ -285,10 +290,14 @@ class WorkflowEngine {
 
     const open = Submissions.findLatestOpen(phone);
     if (open && open.status === 'awaiting_confirmation') {
+      const replyVariations = require('./replyVariations');
       await this.whatsapp.sendMessage(
         phone,
-        Settings.get('already_pending_message') ||
-          'You already have a pending request. Reply Yes / No to confirm.',
+        replyVariations.pick(
+          'already_pending',
+          { phone },
+          'already_pending_message'
+        ),
         sendOpts(baseCtx)
       );
       return { handled: true, reason: 'already_pending' };
@@ -318,19 +327,27 @@ class WorkflowEngine {
       form_link: formLink,
       phone,
     };
+    const replyVariations = require('./replyVariations');
     const template =
       flow?.response_template ||
-      'Welcome to *{{business_name}}*! 👋\n\nPlease fill your insurance details here:\n\n{{form_link}}';
+      replyVariations.pickTemplate('form_welcome') ||
+      'Welcome to *{{business_name}}*!\n\nPlease fill your insurance details here:\n\n{{form_link}}';
     const { intro, link, footer } = buildFormLinkParts(template, vars);
-    await sleep(humanDelayMs());
+    // Jitter / typing live inside sendMessage — no extra pre-delay here
     await this.whatsapp.sendMessage(phone, intro, sendOpts(ctx));
     if (link) {
-      await sleep(250);
-      await this.whatsapp.sendMessage(phone, link, sendOpts({ ...ctx, replyTo: undefined }));
+      await this.whatsapp.sendMessage(phone, link, {
+        ...sendOpts({ ...ctx, replyTo: undefined }),
+        skipReading: true,
+        delayMs: require('./antiBan').randInt(2500, 5500),
+      });
     }
     if (footer) {
-      await sleep(200);
-      await this.whatsapp.sendMessage(phone, footer, sendOpts({ ...ctx, replyTo: undefined }));
+      await this.whatsapp.sendMessage(phone, footer, {
+        ...sendOpts({ ...ctx, replyTo: undefined }),
+        skipReading: true,
+        delayMs: require('./antiBan').randInt(2000, 4500),
+      });
     }
     return submission;
   }
@@ -701,19 +718,28 @@ class WorkflowEngine {
     }
 
     const formLink = sanitizeFormLink(buildFormUrl(newSub.token));
-    await sleep(delay);
-    const template =
-      "No problem — let's start again.\n\nPlease refill your insurance details here:\n\n{{form_link}}";
+    const refillPool = [
+      "No problem — let's start again.\n\nPlease refill your insurance details here:\n\n{{form_link}}",
+      'Sure, we can redo that.\n\nUse this link to submit fresh details:\n\n{{form_link}}',
+      'Understood. Please fill the form again using this link:\n\n{{form_link}}',
+    ];
+    const template = refillPool[Math.floor(Math.random() * refillPool.length)];
     const { intro, link, footer } = buildFormLinkParts(template, { form_link: formLink });
     try {
       await this.whatsapp.sendMessage(phone, intro, sendOpts(ctx));
       if (link) {
-        await sleep(250);
-        await this.whatsapp.sendMessage(phone, link, sendOpts({ ...ctx, replyTo: undefined }));
+        await this.whatsapp.sendMessage(phone, link, {
+          ...sendOpts({ ...ctx, replyTo: undefined }),
+          skipReading: true,
+          delayMs: require('./antiBan').randInt(2500, 5500),
+        });
       }
       if (footer) {
-        await sleep(200);
-        await this.whatsapp.sendMessage(phone, footer, sendOpts({ ...ctx, replyTo: undefined }));
+        await this.whatsapp.sendMessage(phone, footer, {
+          ...sendOpts({ ...ctx, replyTo: undefined }),
+          skipReading: true,
+          delayMs: require('./antiBan').randInt(2000, 4500),
+        });
       }
       console.log(`[Workflow] Refill form link sent to ${phone}: ${formLink}`);
     } catch (err) {
@@ -836,25 +862,29 @@ class WorkflowEngine {
           form_link: formLink,
           phone,
         };
+        const replyVariations = require('./replyVariations');
         const { intro, link, footer } = buildFormLinkParts(
           node.data.message ||
-            'Welcome to *{{business_name}}*! 👋\n\nPlease fill your insurance details here:\n\n{{form_link}}',
+            replyVariations.pickTemplate('form_welcome') ||
+            'Welcome to *{{business_name}}*!\n\nPlease fill your insurance details here:\n\n{{form_link}}',
           vars
         );
-
-        const delay = humanDelayMs();
-        console.log(`[Workflow] Human delay ${delay}ms before form link → ${phone}`);
-        await sleep(delay);
 
         try {
           await this.whatsapp.sendMessage(phone, intro, sendOpts(ctx));
           if (link) {
-            await sleep(250);
-            await this.whatsapp.sendMessage(phone, link, sendOpts({ ...ctx, replyTo: undefined }));
+            await this.whatsapp.sendMessage(phone, link, {
+              ...sendOpts({ ...ctx, replyTo: undefined }),
+              skipReading: true,
+              delayMs: require('./antiBan').randInt(2500, 5500),
+            });
           }
           if (footer) {
-            await sleep(200);
-            await this.whatsapp.sendMessage(phone, footer, sendOpts({ ...ctx, replyTo: undefined }));
+            await this.whatsapp.sendMessage(phone, footer, {
+              ...sendOpts({ ...ctx, replyTo: undefined }),
+              skipReading: true,
+              delayMs: require('./antiBan').randInt(2000, 4500),
+            });
           }
           console.log(`[Workflow] Form link sent to ${phone}: ${formLink}`);
         } catch (err) {

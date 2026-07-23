@@ -658,6 +658,32 @@ const MessageLog = {
       'SELECT * FROM message_log ORDER BY created_at DESC LIMIT ?'
     ).all(limit);
   },
+
+  /**
+   * Count outbound messages since a SQLite datetime modifier (e.g. '-1 hour').
+   * Pass phone=null for global outbound volume.
+   */
+  countOutboundSince(phone, sinceModifier = '-1 hour') {
+    const mod = String(sinceModifier || '-1 hour').replace(/[^a-z0-9 +\-]/gi, '');
+    const digits = phone != null ? String(phone).replace(/\D/g, '') : '';
+    if (digits) {
+      return db
+        .prepare(
+          `SELECT COUNT(*) AS c FROM message_log
+           WHERE direction = 'out'
+             AND phone = ?
+             AND created_at >= datetime('now', ?)`
+        )
+        .get(digits, mod).c;
+    }
+    return db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM message_log
+         WHERE direction = 'out'
+           AND created_at >= datetime('now', ?)`
+      )
+      .get(mod).c;
+  },
 };
 
 const Admins = {

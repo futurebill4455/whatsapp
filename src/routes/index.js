@@ -234,11 +234,22 @@ router.post('/admin/settings', requireAdmin, (req, res) => {
     'trigger_keywords',
     'close_keywords',
     'relay_delay_ms',
+    'anti_ban_jitter_min_ms',
+    'anti_ban_jitter_max_ms',
+    'anti_ban_min_gap_ms',
+    'anti_ban_hours_start',
+    'anti_ban_hours_end',
+    'anti_ban_timezone',
+    'anti_ban_hourly_cap',
+    'anti_ban_daily_cap',
+    'anti_ban_global_hourly_cap',
   ];
   const payload = {};
   for (const key of allowed) {
     if (req.body[key] !== undefined) payload[key] = req.body[key];
   }
+  payload.anti_ban_hours_enabled = req.body.anti_ban_hours_enabled === '1' ? '1' : '0';
+  payload.anti_ban_after_hours_reply = req.body.anti_ban_after_hours_reply === '1' ? '1' : '0';
   Settings.setMany(payload);
   req.session.flash = { type: 'success', message: 'Settings saved.' };
   res.redirect('/admin/settings');

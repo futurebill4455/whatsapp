@@ -26,6 +26,7 @@ const {
   buildFormUrl: requireBuildFormUrl,
 } = require('../config/baseUrl');
 const antiBan = require('./antiBan');
+const replyVariations = require('./replyVariations');
 
 const AUTH_PATH = path.join(process.cwd(), '.wwebjs_auth');
 const CACHE_PATH = path.join(process.cwd(), '.wwebjs_cache');
@@ -730,8 +731,8 @@ class WhatsAppService {
     this._msgQueue = this._msgQueue
       .then(async () => {
         try {
-          // Space out burst arrivals so we never fire rapid sequential replies
-          await sleep(antiBan.randInt(400, 1200));
+          // Space out burst arrivals (not full reply jitter — that happens on send)
+          await sleep(antiBan.randInt(500, 1800));
           await this.handleIncomingMessage(message);
         } catch (err) {
           console.error(
@@ -740,7 +741,7 @@ class WhatsAppService {
           );
         } finally {
           this._msgQueueDepth = Math.max(0, this._msgQueueDepth - 1);
-          await sleep(antiBan.humanJitterMs());
+          await sleep(antiBan.sessionSpacingMs());
         }
       })
       .catch(() => {
@@ -888,7 +889,7 @@ class WhatsAppService {
   }
 
   /**
-   * Queued send with human jitter + typing indicator (anti-ban).
+   * Queued send with human jitter (5–12s) + typing indicator + volume caps.
    */
   async sendMessage(to, body, options = {}) {
     if (!this.client) {
@@ -899,17 +900,31 @@ class WhatsAppService {
     }
 
     const run = async () => {
+      const logPhone = this.formatPhone(to) || String(to || '').replace(/@.+$/, '');
+
+      if (!options.skipRateLimit) {
+        const caps = antiBan.checkSendCaps(logPhone);
+        if (!caps.ok) {
+          console.warn(
+            `[AntiBan] Blocked send to ${logPhone}: ${caps.reason} (${caps.count}/${caps.cap})`
+          );
+          return null;
+        }
+      }
+
       await antiBan.outboundLimiter.waitTurn();
 
       const text = String(body || '');
       if (!text) return null;
 
-      // Always apply randomized human delay (3–7s) unless explicitly zeroed
+      // Reading simulation (inbound length) then 5–12s jitter — eliminates instant replies
+      if (options.inboundText && !options.skipReading) {
+        await sleep(antiBan.readingDelayMs(options.inboundText));
+      }
       const delayMs =
         options.delayMs != null ? Number(options.delayMs) : antiBan.humanJitterMs();
       if (delayMs > 0) await sleep(delayMs);
 
-      const logPhone = this.formatPhone(to) || String(to || '').replace(/@.+$/, '');
       const presenceChat =
         options.chatId ||
         options.replyTo?.from ||
@@ -968,7 +983,7 @@ class WhatsAppService {
                 if (!options.skipTyping) {
                   try {
                     await chat.sendStateTyping();
-                    await sleep(Math.min(2000, antiBan.typingDurationMs(text) / 2));
+                    await sleep(Math.min(2500, antiBan.typingDurationMs(text) / 2));
                   } catch (_) {}
                 }
                 const result = await chat.sendMessage(text);
@@ -1096,7 +1111,11 @@ class WhatsAppService {
       if (isYesReply(body)) {
         const pending = Submissions.findPendingConfirmation(phone);
         if (pending) {
-          await this.confirmAndForward(pending, { chatId, replyTo: message });
+          await this.confirmAndForward(pending, {
+            chatId,
+            replyTo: message,
+            inboundText: body,
+          });
           return;
         }
       }
@@ -1108,9 +1127,28 @@ class WhatsAppService {
             phone,
             chatId,
             replyTo: message,
+            inboundText: body,
           });
           return;
         }
+      }
+
+      // 2.3) Working hours — pause new automation outside daytime (bridge + Yes/No already handled)
+      if (!antiBan.isWithinWorkingHours()) {
+        console.log(`[AntiBan] Outside working hours — ignoring automation from ${phone}`);
+        if (Settings.get('anti_ban_after_hours_reply', '0') === '1') {
+          await this.sendMessage(
+            phone,
+            replyVariations.pick('after_hours', { phone }),
+            {
+              chatId,
+              replyTo: message,
+              inboundText: body,
+              delayMs: antiBan.randInt(4000, 8000),
+            }
+          );
+        }
+        return;
       }
 
       // 2.4) Access gate — phone + assigned unique code required to unlock form / main flow
@@ -1126,17 +1164,18 @@ class WhatsAppService {
             console.log(
               `[Access] Unlocked ${phone} (${result.user.name}) with code ${result.user.access_code}`
             );
-            const granted =
-              Settings.get('access_granted_message') ||
-              `Welcome *{{name}}*. Access granted. Send *Hi* to receive your form link.`;
             await this.sendMessage(
               phone,
-              this.renderTemplate(granted, {
-                name: result.user.name,
-                phone,
-                business_name: Settings.get('business_name', 'Insurance Bot'),
-              }),
-              { chatId, replyTo: message }
+              replyVariations.pick(
+                'access_granted',
+                {
+                  name: result.user.name,
+                  phone,
+                  business_name: Settings.get('business_name', 'Insurance Bot'),
+                },
+                'access_granted_message'
+              ),
+              { chatId, replyTo: message, inboundText: body }
             );
             return;
           }
@@ -1145,9 +1184,12 @@ class WhatsAppService {
           if (result.reason === 'wrong_code') {
             await this.sendMessage(
               phone,
-              Settings.get('access_wrong_code_message') ||
-                'That access code is not valid for this number. Please check and try again.',
-              { chatId, replyTo: message }
+              replyVariations.pick(
+                'access_wrong_code',
+                { name: result.user?.name || '', phone },
+                'access_wrong_code_message'
+              ),
+              { chatId, replyTo: message, inboundText: body }
             );
             return;
           }
@@ -1171,9 +1213,16 @@ class WhatsAppService {
           console.log(`[Access] ${phone} registered but not unlocked yet`);
           await this.sendMessage(
             phone,
-            Settings.get('access_denied_message') ||
-              `Hi *${registered.name}*. Please send your unique access code to continue.`,
-            { chatId, replyTo: message }
+            replyVariations.pick(
+              'access_denied',
+              {
+                name: registered.name,
+                phone,
+                business_name: Settings.get('business_name', 'Insurance Bot'),
+              },
+              'access_denied_message'
+            ),
+            { chatId, replyTo: message, inboundText: body }
           );
           return;
         }
@@ -1182,14 +1231,17 @@ class WhatsAppService {
       // 2.5) Custom admin keywords (brochure, address, …) — never starts form flow
       const keywordFlow = ChatFlow.findByKeyword(body);
       if (keywordFlow && !isFormLinkChatFlow(keywordFlow) && !isHardcodedGreeting(body)) {
-        // Optional: require unlock for keyword replies too — keep public for now
         const business = Settings.get('business_name', 'SecureLife Insurance');
         const text = this.renderTemplate(keywordFlow.response_template, {
           business_name: business,
           phone,
         });
         console.log(`[WhatsApp] Custom keyword reply for: ${body}`);
-        await this.sendMessage(phone, text, { chatId, replyTo: message });
+        await this.sendMessage(phone, text, {
+          chatId,
+          replyTo: message,
+          inboundText: body,
+        });
         return;
       }
 
@@ -1199,6 +1251,7 @@ class WhatsAppService {
         body,
         chatId,
         replyTo: message,
+        inboundText: body,
       });
       console.log(
         '[WhatsApp] Workflow result:',
@@ -1388,14 +1441,17 @@ class WhatsAppService {
       `[ChatBridge] Session #${session.id} [${session.session_code}] closed by customer ${session.customer_phone}`
     );
 
-    const thanks =
-      Settings.get('chat_close_message') ||
-      'Thank you! Your conversation has been ended. Have a good day!';
+    const thanks = replyVariations.pick(
+      'chat_close',
+      { phone: session.customer_phone },
+      'chat_close_message'
+    );
 
     try {
       await this.sendMessage(session.customer_phone, thanks, {
         chatId: session.customer_chat_id || chatId,
         replyTo,
+        inboundText: 'close',
       });
     } catch (err) {
       console.error('[ChatBridge] Failed to send close message to customer:', err.message);
@@ -1482,6 +1538,8 @@ class WhatsAppService {
     }
 
     await antiBan.outboundLimiter.waitTurn();
+    // Read inbound → 5–12s jitter → typing → native Forwarded
+    await sleep(antiBan.readingDelayMs(body));
     await sleep(antiBan.humanJitterMs());
 
     // ── Native forward (Forwarded tag) ──
@@ -1499,7 +1557,9 @@ class WhatsAppService {
           await this.sendMessage(destPhone, `[#${code}] ↑ forwarded from customer`, {
             chatId: destChatId,
             skipTyping: false,
-            delayMs: antiBan.randInt(500, 1500),
+            skipReading: true,
+            skipRateLimit: true,
+            delayMs: antiBan.randInt(2000, 4500),
           });
         }
 

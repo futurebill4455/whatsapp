@@ -132,10 +132,10 @@
       .row { grid-template-columns: 1fr; }
     }
 
-    /* Stack age + gender cleanly — avoid select overflow/overlap */
+    // Stack age + gender tabs cleanly — avoid overlap
     .member-meta {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: 1fr 1.4fr;
       gap: 0.85rem 1rem;
       align-items: start;
     }
@@ -156,6 +156,51 @@
       display: block;
       position: relative;
       z-index: 1;
+    }
+
+    .gender-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.5rem;
+      width: 100%;
+    }
+
+    .gender-tabs label {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0;
+      padding: 0.65rem 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: 0.45rem;
+      background: #fff;
+      cursor: pointer;
+      font-size: 0.9rem;
+      font-weight: 600;
+      text-transform: none;
+      letter-spacing: 0;
+      color: var(--ink);
+      transition: border-color 0.15s, background 0.15s, color 0.15s;
+      user-select: none;
+    }
+
+    .gender-tabs input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+      width: 0;
+      height: 0;
+    }
+
+    .gender-tabs label:has(input:checked) {
+      border-color: var(--sea);
+      background: rgba(13, 115, 119, 0.1);
+      color: var(--sea-d);
+      box-shadow: 0 0 0 2px rgba(13, 115, 119, 0.15);
+    }
+
+    .gender-tabs label:hover {
+      border-color: rgba(13, 115, 119, 0.45);
     }
 
     .member-card + .member-card {
@@ -472,11 +517,10 @@
             '</div>' +
             '<div class="field-group">' +
               '<label>Gender</label>' +
-              '<select name="member_gender_' + i + '" required>' +
-                '<option value="">Select…</option>' +
-                '<option value="Male">Male</option>' +
-                '<option value="Female">Female</option>' +
-              '</select>' +
+              '<div class="gender-tabs">' +
+                '<label><input type="radio" name="member_gender_' + i + '" value="Male" required /> Male</label>' +
+                '<label><input type="radio" name="member_gender_' + i + '" value="Female" /> Female</label>' +
+              '</div>' +
             '</div>' +
           '</div>';
         container.appendChild(card);

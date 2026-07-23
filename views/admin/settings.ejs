@@ -56,6 +56,64 @@
         <p class="text-xs text-ink/45 mt-1">Optional pause before forwarding customer ↔ desk messages (helps on low-RAM VPS).</p>
       </div>
 
+      <fieldset class="border border-ink/10 rounded-lg p-4 space-y-4">
+        <legend class="font-display text-lg font-semibold px-1">Anti-ban &amp; humanization</legend>
+        <p class="text-sm text-ink/55">Reading delay + typing indicator + 5–12s jitter on replies. Working hours pause new automation (live chats still relay).</p>
+
+        <div class="grid md:grid-cols-3 gap-4">
+          <div>
+            <label class="label" for="anti_ban_jitter_min_ms">Jitter min (ms)</label>
+            <input class="field" type="number" min="1000" step="100" id="anti_ban_jitter_min_ms" name="anti_ban_jitter_min_ms" value="<%= settings.anti_ban_jitter_min_ms || '5000' %>" />
+          </div>
+          <div>
+            <label class="label" for="anti_ban_jitter_max_ms">Jitter max (ms)</label>
+            <input class="field" type="number" min="1000" step="100" id="anti_ban_jitter_max_ms" name="anti_ban_jitter_max_ms" value="<%= settings.anti_ban_jitter_max_ms || '12000' %>" />
+          </div>
+          <div>
+            <label class="label" for="anti_ban_min_gap_ms">Min gap between sends (ms)</label>
+            <input class="field" type="number" min="500" step="100" id="anti_ban_min_gap_ms" name="anti_ban_min_gap_ms" value="<%= settings.anti_ban_min_gap_ms || '4000' %>" />
+          </div>
+        </div>
+
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" name="anti_ban_hours_enabled" value="1" <%= settings.anti_ban_hours_enabled !== '0' ? 'checked' : '' %> />
+          Restrict automation to working hours
+        </label>
+        <div class="grid md:grid-cols-3 gap-4">
+          <div>
+            <label class="label" for="anti_ban_hours_start">Hours start (0–23)</label>
+            <input class="field" type="number" min="0" max="23" id="anti_ban_hours_start" name="anti_ban_hours_start" value="<%= settings.anti_ban_hours_start || '9' %>" />
+          </div>
+          <div>
+            <label class="label" for="anti_ban_hours_end">Hours end (0–23)</label>
+            <input class="field" type="number" min="0" max="23" id="anti_ban_hours_end" name="anti_ban_hours_end" value="<%= settings.anti_ban_hours_end || '21' %>" />
+          </div>
+          <div>
+            <label class="label" for="anti_ban_timezone">Timezone</label>
+            <input class="field" id="anti_ban_timezone" name="anti_ban_timezone" value="<%= settings.anti_ban_timezone || 'Asia/Kolkata' %>" placeholder="Asia/Kolkata" />
+          </div>
+        </div>
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" name="anti_ban_after_hours_reply" value="1" <%= settings.anti_ban_after_hours_reply === '1' ? 'checked' : '' %> />
+          Send a polite after-hours notice (otherwise stay silent)
+        </label>
+
+        <div class="grid md:grid-cols-3 gap-4">
+          <div>
+            <label class="label" for="anti_ban_hourly_cap">Per-user hourly cap</label>
+            <input class="field" type="number" min="1" id="anti_ban_hourly_cap" name="anti_ban_hourly_cap" value="<%= settings.anti_ban_hourly_cap || '18' %>" />
+          </div>
+          <div>
+            <label class="label" for="anti_ban_daily_cap">Per-user daily cap</label>
+            <input class="field" type="number" min="1" id="anti_ban_daily_cap" name="anti_ban_daily_cap" value="<%= settings.anti_ban_daily_cap || '60' %>" />
+          </div>
+          <div>
+            <label class="label" for="anti_ban_global_hourly_cap">Global hourly cap</label>
+            <input class="field" type="number" min="1" id="anti_ban_global_hourly_cap" name="anti_ban_global_hourly_cap" value="<%= settings.anti_ban_global_hourly_cap || '220' %>" />
+          </div>
+        </div>
+      </fieldset>
+
       <div>
         <label class="label" for="confirmation_template">Confirmation WhatsApp message</label>
         <textarea class="field font-mono text-sm" id="confirmation_template" name="confirmation_template" rows="6"><%= settings.confirmation_template || '' %></textarea>

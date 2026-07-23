@@ -48,9 +48,17 @@ function seed() {
       'Welcome *{{name}}*. Access granted. Send *Hi* to receive your form link.',
     access_wrong_code_message:
       'That access code is not valid for this number. Please check and try again.',
-    anti_ban_jitter_min_ms: '3000',
-    anti_ban_jitter_max_ms: '7000',
-    anti_ban_min_gap_ms: '3500',
+    anti_ban_jitter_min_ms: '5000',
+    anti_ban_jitter_max_ms: '12000',
+    anti_ban_min_gap_ms: '4000',
+    anti_ban_hours_enabled: '1',
+    anti_ban_hours_start: '9',
+    anti_ban_hours_end: '21',
+    anti_ban_timezone: 'Asia/Kolkata',
+    anti_ban_after_hours_reply: '0',
+    anti_ban_hourly_cap: '18',
+    anti_ban_daily_cap: '60',
+    anti_ban_global_hourly_cap: '220',
   };
 
   for (const [key, value] of Object.entries(defaults)) {
@@ -104,10 +112,31 @@ function seed() {
     'anti_ban_jitter_min_ms',
     'anti_ban_jitter_max_ms',
     'anti_ban_min_gap_ms',
+    'anti_ban_hours_enabled',
+    'anti_ban_hours_start',
+    'anti_ban_hours_end',
+    'anti_ban_timezone',
+    'anti_ban_after_hours_reply',
+    'anti_ban_hourly_cap',
+    'anti_ban_daily_cap',
+    'anti_ban_global_hourly_cap',
   ]) {
     if (Settings.get(key) === null && defaults[key] != null) {
       Settings.set(key, defaults[key]);
     }
+  }
+
+  // Migrate legacy 3–7s jitter → enterprise 5–12s
+  const jMin = Number(Settings.get('anti_ban_jitter_min_ms'));
+  const jMax = Number(Settings.get('anti_ban_jitter_max_ms'));
+  if (Number.isFinite(jMin) && jMin < 5000) {
+    Settings.set('anti_ban_jitter_min_ms', '5000');
+  }
+  if (Number.isFinite(jMax) && jMax < 12000) {
+    Settings.set('anti_ban_jitter_max_ms', '12000');
+  }
+  if (Settings.get('anti_ban_min_gap_ms') === '3500') {
+    Settings.set('anti_ban_min_gap_ms', '4000');
   }
 
   try {
