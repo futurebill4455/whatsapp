@@ -136,21 +136,41 @@ function buildForwardMessage(submission, template) {
 }
 
 /**
- * Strip soft hyphens / zero-width chars WhatsApp clients sometimes inject into long URLs.
+ * Strip soft hyphens / zero-width chars and ensure an http(s):// scheme
+ * so WhatsApp can auto-link the URL.
  */
 function sanitizeFormLink(url) {
-  return String(url || '')
+  let s = String(url || '')
     .replace(/[\u00AD\u200B-\u200D\uFEFF]/g, '')
+    .replace(/^<|>$/g, '')
     .trim();
+  if (!s) return '';
+  if (!/^https?:\/\//i.test(s)) {
+    s = `http://${s}`;
+  }
+  return s.replace(/\/+$/, '');
+}
+
+/**
+ * Format a URL so WhatsApp renders it as a tappable blue link.
+ * Angle brackets keep it as one token; bare URL on the next line covers clients
+ * that only auto-link plain http(s) text (WhatsApp has no [text](url) markdown).
+ */
+function formatWhatsAppClickableLink(url) {
+  const href = sanitizeFormLink(url);
+  if (!href) return '';
+  return `<${href}>\n${href}`;
 }
 
 /**
  * Build a WhatsApp-safe form-link message.
- * Splits around {{form_link}} so the bare URL can be sent alone (avoids WhatsApp
+ * Splits around {{form_link}} so the URL can be sent alone (avoids WhatsApp
  * soft-hyphenating long URLs mid-line). Prefer: intro → link → optional footer.
+ * `link` is angle-bracket wrapped for clickable rendering; `linkUrl` is bare href.
  */
 function buildFormLinkParts(template, vars = {}) {
-  const link = sanitizeFormLink(vars.form_link);
+  const linkUrl = sanitizeFormLink(vars.form_link);
+  const link = formatWhatsAppClickableLink(linkUrl);
   const marker = '___FORM_LINK___';
   const rendered = renderTemplate(String(template || ''), {
     ...vars,
@@ -178,7 +198,7 @@ function buildFormLinkParts(template, vars = {}) {
   }
 
   const combined = [intro, link, footer].filter(Boolean).join('\n\n');
-  return { intro, link, footer, combined };
+  return { intro, link, linkUrl, footer, combined };
 }
 
 /**
@@ -196,6 +216,7 @@ module.exports = {
   buildConfirmationMessage,
   buildForwardMessage,
   sanitizeFormLink,
+  formatWhatsAppClickableLink,
   buildFormLinkParts,
   formatFormLinkMessage,
   DEFAULT_CONFIRMATION_TEMPLATE,
