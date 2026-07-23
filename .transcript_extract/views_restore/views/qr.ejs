@@ -4,7 +4,27 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title><%= title %> · <%= businessName %></title>
-  <%- include('partials/styles') %>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            ink: '#0f1f2e', mist: '#e8eef3', sea: '#0d7377', seaDark: '#095456',
+            sand: '#f7f4ef', coral: '#c45c26',
+          },
+          fontFamily: {
+            display: ['"Fraunces"', 'Georgia', 'serif'],
+            sans: ['"DM Sans"', 'system-ui', 'sans-serif'],
+          },
+        },
+      },
+    };
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/app.css" />
 </head>
 <body class="font-sans text-ink bg-sand min-h-screen antialiased">
   <%- include('partials/nav') %>
@@ -19,10 +39,10 @@
   <main class="max-w-5xl mx-auto px-4 py-10">
     <div class="grid lg:grid-cols-2 gap-10 items-start animate-in">
       <section>
-        <p class="text-sea font-semibold text-sm tracking-wide uppercase mb-2">Insurance desk</p>
-        <h1 class="font-display text-4xl font-semibold leading-tight mb-4">Link WhatsApp</h1>
+        <p class="text-sea font-semibold text-sm tracking-wide uppercase mb-2">Connection</p>
+        <h1 class="font-display text-4xl font-semibold leading-tight mb-4">Link WhatsApp to run your insurance desk</h1>
         <p class="text-ink/70 text-lg mb-8 max-w-md">
-          Scan once to connect the insurance bot. Customers send <em>Hi</em>, get a form link, confirm on WhatsApp, then chat with the company desk until they type <em>close</em>.
+          Scan once. The backend keeps the session alive with LocalAuth so automation continues even after you close this page.
         </p>
 
         <div class="panel p-5 space-y-4">
@@ -45,42 +65,32 @@
           <ol class="text-sm text-ink/70 space-y-2 list-decimal list-inside">
             <li>Open WhatsApp on your phone</li>
             <li>Go to <strong>Settings → Linked devices → Link a device</strong></li>
-            <li>Scan the <strong>latest</strong> QR within ~20 seconds of it appearing</li>
+            <li>Scan the QR code shown here</li>
           </ol>
 
           <div class="flex flex-wrap gap-2 pt-2">
             <a href="/admin/login" class="btn btn-ink">Open Admin Panel</a>
             <a href="/admin" class="btn btn-ghost">Dashboard</a>
-            <form method="POST" action="/whatsapp/reset-session" onsubmit="return confirm('Clear WhatsApp session and generate a fresh QR?');">
-              <button type="submit" class="btn btn-ghost text-coral">Reset session</button>
-            </form>
           </div>
-
-          <p class="text-xs text-ink/45 pt-2">
-            If WhatsApp says “Could not link device”, click <strong>Reset session</strong>, wait for a new QR, then scan immediately.
-          </p>
         </div>
       </section>
 
       <section class="panel p-6 flex flex-col items-center justify-center min-h-[360px]">
         <div id="qr-wrap" class="<%= status.ready ? 'hidden' : '' %> text-center">
           <% if (status.qr) { %>
-            <img id="wa-qr" src="<%= status.qr %>" alt="WhatsApp QR Code" class="mx-auto rounded-lg border border-ink/10 w-72 h-72 bg-white" />
-            <div id="qr-placeholder" class="hidden w-72 h-72 mx-auto rounded-lg border border-dashed border-ink/20 flex items-center justify-center text-ink/40 text-sm">
-              Generating QR…
-            </div>
+            <img id="wa-qr" src="<%= status.qr %>" alt="WhatsApp QR Code" class="mx-auto rounded-lg border border-ink/10 w-64 h-64 bg-white" />
           <% } else { %>
-            <img id="wa-qr" src="" alt="WhatsApp QR Code" class="mx-auto rounded-lg border border-ink/10 w-72 h-72 bg-white hidden" />
-            <div id="qr-placeholder" class="w-72 h-72 mx-auto rounded-lg border border-dashed border-ink/20 flex items-center justify-center text-ink/40 text-sm">
+            <img id="wa-qr" src="" alt="WhatsApp QR Code" class="mx-auto rounded-lg border border-ink/10 w-64 h-64 bg-white hidden" />
+            <div id="qr-placeholder" class="w-64 h-64 mx-auto rounded-lg border border-dashed border-ink/20 flex items-center justify-center text-ink/40 text-sm">
               Generating QR…
             </div>
           <% } %>
-          <p class="mt-4 text-sm text-ink/55">QR auto-refreshes. Always scan the newest image — old codes fail to link.</p>
+          <p class="mt-4 text-sm text-ink/55">QR refreshes automatically when WhatsApp issues a new code.</p>
         </div>
         <div id="ready-wrap" class="<%= status.ready ? '' : 'hidden' %> text-center">
           <div class="w-20 h-20 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-3xl mx-auto mb-4">✓</div>
           <h2 class="font-display text-2xl font-semibold mb-2">WhatsApp is live</h2>
-          <p class="text-ink/65 max-w-xs mx-auto">Bot is ready. Customers send <em>Hi</em> for a form link; after <em>Yes</em> they chat with the insurance desk until <em>close</em>.</p>
+          <p class="text-ink/65 max-w-xs mx-auto">Background automation is running. Customers can message <em>Hi</em> to receive the form link.</p>
         </div>
       </section>
     </div>
@@ -95,9 +105,32 @@
       qrWrapSelector: '#qr-wrap',
       infoSelector: '#wa-info',
       dotSelector: '#wa-dot',
-      placeholderSelector: '#qr-placeholder',
-      readySelector: '#ready-wrap',
     });
+
+    (function () {
+      var socket = io();
+      socket.on('whatsapp:qr', function (payload) {
+        var img = document.getElementById('wa-qr');
+        var ph = document.getElementById('qr-placeholder');
+        var wrap = document.getElementById('qr-wrap');
+        var ready = document.getElementById('ready-wrap');
+        if (img && payload.qr) {
+          img.src = payload.qr;
+          img.classList.remove('hidden');
+          if (ph) ph.classList.add('hidden');
+        }
+        if (wrap) wrap.classList.remove('hidden');
+        if (ready) ready.classList.add('hidden');
+      });
+      socket.on('whatsapp:status', function (data) {
+        var wrap = document.getElementById('qr-wrap');
+        var ready = document.getElementById('ready-wrap');
+        if (data.ready) {
+          if (wrap) wrap.classList.add('hidden');
+          if (ready) ready.classList.remove('hidden');
+        }
+      });
+    })();
   </script>
 </body>
 </html>

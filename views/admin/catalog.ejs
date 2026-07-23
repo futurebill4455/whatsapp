@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('../partials/styles') %>
+</head>
+<body class="font-sans text-ink bg-sand min-h-screen antialiased">
+  <%- include('../partials/nav') %>
+  <% if (flash) { %>
+    <div class="max-w-6xl mx-auto px-4 pt-4">
+      <div class="rounded-lg px-4 py-3 text-sm <%= flash.type === 'error' ? 'bg-red-50 text-red-800 border border-red-200' : 'bg-emerald-50 text-emerald-800 border border-emerald-200' %>"><%= flash.message %></div>
+    </div>
+  <% } %>
+
+  <main class="max-w-6xl mx-auto px-4 py-8 space-y-10 animate-in">
+    <div>
+      <h1 class="font-display text-3xl font-semibold mb-2">Insurance catalog</h1>
+      <p class="text-ink/60">Manage types, companies (with desk phones), and fallback internal WhatsApp numbers.</p>
+    </div>
+
+    <section class="space-y-4">
+      <h2 class="font-display text-xl font-semibold">Insurance types</h2>
+      <form method="POST" action="/admin/types" class="panel p-4 flex flex-wrap gap-3 items-end">
+        <div class="flex-1 min-w-[160px]">
+          <label class="label">Name</label>
+          <input class="field" name="name" placeholder="Health" required />
+        </div>
+        <div class="w-28">
+          <label class="label">Sort</label>
+          <input class="field" type="number" name="sort_order" value="0" />
+        </div>
+        <button class="btn btn-primary" type="submit">Add type</button>
+      </form>
+      <div class="space-y-3">
+        <% types.forEach(function (t) { %>
+          <form method="POST" action="/admin/types/<%= t.id %>" class="panel p-4 flex flex-wrap gap-3 items-end">
+            <div class="flex-1 min-w-[160px]">
+              <label class="label">Name</label>
+              <input class="field" name="name" value="<%= t.name %>" />
+            </div>
+            <div class="w-28">
+              <label class="label">Sort</label>
+              <input class="field" type="number" name="sort_order" value="<%= t.sort_order %>" />
+            </div>
+            <label class="text-sm flex items-center gap-2 pb-2">
+              <input type="checkbox" name="is_active" value="1" <%= t.is_active ? 'checked' : '' %> /> Active
+            </label>
+            <button class="btn btn-primary" type="submit">Save</button>
+            <button class="btn btn-ghost text-coral" type="submit" name="_action" value="delete" onclick="return confirm('Delete type?')">Delete</button>
+          </form>
+        <% }) %>
+      </div>
+    </section>
+
+    <section class="space-y-4">
+      <h2 class="font-display text-xl font-semibold">Companies</h2>
+      <p class="text-sm text-ink/55">Set each company’s <strong>desk WhatsApp number</strong> (country code, no +). Confirmed leads forward there; desk replies relay back to the customer.</p>
+      <form method="POST" action="/admin/companies" class="panel p-4 grid md:grid-cols-5 gap-3 items-end">
+        <div>
+          <label class="label">Name</label>
+          <input class="field" name="name" required placeholder="Star Health" />
+        </div>
+        <div>
+          <label class="label">Type</label>
+          <select class="field" name="insurance_type_id">
+            <option value="">Any / All</option>
+            <% types.forEach(function (t) { %>
+              <option value="<%= t.id %>"><%= t.name %></option>
+            <% }) %>
+          </select>
+        </div>
+        <div>
+          <label class="label">Desk WhatsApp</label>
+          <input class="field" name="desk_phone" placeholder="919876543210" />
+        </div>
+        <div>
+          <label class="label">Sort</label>
+          <input class="field" type="number" name="sort_order" value="0" />
+        </div>
+        <button class="btn btn-primary" type="submit">Add company</button>
+      </form>
+      <div class="space-y-3">
+        <% companies.forEach(function (c) { %>
+          <form method="POST" action="/admin/companies/<%= c.id %>" class="panel p-4 grid md:grid-cols-6 gap-3 items-end">
+            <div>
+              <label class="label">Name</label>
+              <input class="field" name="name" value="<%= c.name %>" />
+            </div>
+            <div>
+              <label class="label">Type</label>
+              <select class="field" name="insurance_type_id">
+                <option value="">Any / All</option>
+                <% types.forEach(function (t) { %>
+                  <option value="<%= t.id %>" <%= c.insurance_type_id === t.id ? 'selected' : '' %>><%= t.name %></option>
+                <% }) %>
+              </select>
+            </div>
+            <div>
+              <label class="label">Desk WhatsApp</label>
+              <input class="field" name="desk_phone" value="<%= c.desk_phone || '' %>" placeholder="919876543210" />
+            </div>
+            <div>
+              <label class="label">Sort</label>
+              <input class="field" type="number" name="sort_order" value="<%= c.sort_order %>" />
+            </div>
+            <label class="text-sm flex items-center gap-2 pb-2">
+              <input type="checkbox" name="is_active" value="1" <%= c.is_active ? 'checked' : '' %> /> Active
+            </label>
+            <div class="flex gap-2">
+              <button class="btn btn-primary" type="submit">Save</button>
+              <button class="btn btn-ghost text-coral" type="submit" name="_action" value="delete" onclick="return confirm('Delete company?')">Del</button>
+            </div>
+          </form>
+        <% }) %>
+      </div>
+    </section>
+
+    <section class="space-y-4">
+      <h2 class="font-display text-xl font-semibold">Internal WhatsApp numbers</h2>
+      <p class="text-sm text-ink/55">Fallback desks when a company has no <code>desk_phone</code>. Format: country code + digits, e.g. <code>919876543210</code>.</p>
+      <form method="POST" action="/admin/numbers" class="panel p-4 grid md:grid-cols-5 gap-3 items-end">
+        <div>
+          <label class="label">Label</label>
+          <input class="field" name="label" placeholder="Health Desk" required />
+        </div>
+        <div>
+          <label class="label">Phone</label>
+          <input class="field" name="phone" placeholder="919999999999" required />
+        </div>
+        <div>
+          <label class="label">Type routing</label>
+          <select class="field" name="insurance_type_id">
+            <option value="">Default / Any</option>
+            <% types.forEach(function (t) { %>
+              <option value="<%= t.id %>"><%= t.name %></option>
+            <% }) %>
+          </select>
+        </div>
+        <label class="text-sm flex items-center gap-2 pb-2">
+          <input type="checkbox" name="is_default" value="1" /> Default desk
+        </label>
+        <button class="btn btn-primary" type="submit">Add number</button>
+      </form>
+      <div class="space-y-3">
+        <% numbers.forEach(function (n) { %>
+          <form method="POST" action="/admin/numbers/<%= n.id %>" class="panel p-4 grid md:grid-cols-6 gap-3 items-end">
+            <div>
+              <label class="label">Label</label>
+              <input class="field" name="label" value="<%= n.label %>" />
+            </div>
+            <div>
+              <label class="label">Phone</label>
+              <input class="field" name="phone" value="<%= n.phone %>" />
+            </div>
+            <div>
+              <label class="label">Type</label>
+              <select class="field" name="insurance_type_id">
+                <option value="">Default / Any</option>
+                <% types.forEach(function (t) { %>
+                  <option value="<%= t.id %>" <%= n.insurance_type_id === t.id ? 'selected' : '' %>><%= t.name %></option>
+                <% }) %>
+              </select>
+            </div>
+            <label class="text-sm flex items-center gap-2 pb-2">
+              <input type="checkbox" name="is_default" value="1" <%= n.is_default ? 'checked' : '' %> /> Default
+            </label>
+            <label class="text-sm flex items-center gap-2 pb-2">
+              <input type="checkbox" name="is_active" value="1" <%= n.is_active ? 'checked' : '' %> /> Active
+            </label>
+            <div class="flex gap-2">
+              <button class="btn btn-primary" type="submit">Save</button>
+              <button class="btn btn-ghost text-coral" type="submit" name="_action" value="delete" onclick="return confirm('Delete number?')">Del</button>
+            </div>
+          </form>
+        <% }) %>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

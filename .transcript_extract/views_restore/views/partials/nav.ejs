@@ -1,14 +1,13 @@
 <header class="border-b border-ink/10 bg-white/70 backdrop-blur sticky top-0 z-40">
-  <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+  <div class="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
     <a href="/" class="font-display text-lg font-semibold tracking-tight text-ink hover:text-sea transition">
       <%= businessName || 'Insurance Bot' %>
     </a>
-    <nav class="flex items-center gap-1 text-sm flex-wrap justify-end">
-      <a href="/" class="px-3 py-1.5 rounded-md hover:bg-mist text-ink/80">QR</a>
+    <nav class="flex items-center gap-1 text-sm">
+      <a href="/" class="px-3 py-1.5 rounded-md hover:bg-mist text-ink/80">QR Connect</a>
       <% if (typeof admin !== 'undefined' && admin) { %>
         <a href="/admin" class="px-3 py-1.5 rounded-md hover:bg-mist text-ink/80">Dashboard</a>
-        <a href="/admin/workflow" class="px-3 py-1.5 rounded-md hover:bg-mist text-ink/80">Workflow</a>
-        <a href="/admin/form-builder" class="px-3 py-1.5 rounded-md hover:bg-mist text-ink/80">Form Builder</a>
+        <a href="/admin/flow" class="px-3 py-1.5 rounded-md hover:bg-mist text-ink/80">Chat Flow</a>
         <a href="/admin/catalog" class="px-3 py-1.5 rounded-md hover:bg-mist text-ink/80">Catalog</a>
         <a href="/admin/settings" class="px-3 py-1.5 rounded-md hover:bg-mist text-ink/80">Settings</a>
         <a href="/admin/submissions" class="px-3 py-1.5 rounded-md hover:bg-mist text-ink/80">Leads</a>

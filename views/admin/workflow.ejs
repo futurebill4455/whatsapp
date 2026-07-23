@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/drawflow@0.0.60/dist/drawflow.min.css" />
+  <link rel="stylesheet" href="/css/workflow.css" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet" />
+</head>
+<body class="wf-body">
+  <header class="wf-topbar">
+    <div class="wf-brand">
+      <a href="/admin" class="wf-back">← Admin</a>
+      <div>
+        <h1 id="wf-title"><%= workflow.name %></h1>
+        <p class="wf-sub">Visual automation · drag nodes · connect ports · Save to SQLite</p>
+      </div>
+    </div>
+    <div class="wf-actions">
+      <span id="wf-status" class="wf-pill <%= workflow.is_active ? 'live' : '' %>">
+        <%= workflow.is_active ? 'Active' : 'Inactive' %>
+      </span>
+      <button type="button" class="wf-btn ghost" id="btn-reset">Reset default</button>
+      <button type="button" class="wf-btn ghost" id="btn-activate">Set active</button>
+      <button type="button" class="wf-btn primary" id="btn-save">Save workflow</button>
+    </div>
+  </header>
+
+  <div class="wf-layout">
+    <aside class="wf-palette">
+      <h2>Nodes</h2>
+      <p class="wf-hint">Drag onto the canvas, then connect output → input.</p>
+      <div class="wf-palette-list" id="palette">
+        <% Object.keys(nodeMeta).forEach(function (key) {
+          const m = nodeMeta[key];
+        %>
+          <div class="wf-palette-item" draggable="true" data-node="<%= key %>" style="--accent: <%= m.color %>">
+            <span class="dot"></span>
+            <div>
+              <strong><%= m.title %></strong>
+              <small><%= m.category %> · <%= m.outputs %> out</small>
+            </div>
+          </div>
+        <% }) %>
+      </div>
+      <div class="wf-legend">
+        <div><span class="lg trigger"></span> Trigger</div>
+        <div><span class="lg action"></span> Action</div>
+        <div><span class="lg event"></span> Event / Wait</div>
+        <div><span class="lg condition"></span> Condition</div>
+      </div>
+    </aside>
+
+    <main class="wf-canvas-wrap">
+      <div id="drawflow"></div>
+      <div class="wf-canvas-hint">Scroll to zoom · drag empty space to pan · drag from a port to connect</div>
+    </main>
+
+    <aside class="wf-inspector" id="inspector">
+      <h2>Node settings</h2>
+      <p class="wf-hint" id="inspector-empty">Select a node on the canvas to edit its properties.</p>
+      <form id="inspector-form" class="hidden">
+        <input type="hidden" id="insp-id" />
+        <label>Type</label>
+        <input id="insp-type" class="wf-input" readonly />
+        <label>Label</label>
+        <input id="insp-label" class="wf-input" />
+        <div id="insp-fields"></div>
+        <button type="button" class="wf-btn primary full" id="insp-apply">Apply to node</button>
+        <button type="button" class="wf-btn danger full" id="insp-delete">Delete node</button>
+      </form>
+    </aside>
+  </div>
+
+  <script>
+    window.__WORKFLOW__ = <%- JSON.stringify({
+      id: workflow.id,
+      name: workflow.name,
+      graph: workflow.graph,
+      is_active: workflow.is_active,
+      nodeMeta: nodeMeta,
+    }) %>;
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/drawflow@0.0.60/dist/drawflow.min.js"></script>
+  <script src="/js/workflow-builder.js"></script>
+</body>
+</html>

@@ -4,7 +4,24 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title><%= title %> · <%= businessName %></title>
-  <%- include('../partials/styles') %>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            ink: '#0f1f2e', mist: '#e8eef3', sea: '#0d7377', sand: '#f7f4ef', coral: '#c45c26',
+          },
+          fontFamily: {
+            display: ['"Fraunces"', 'Georgia', 'serif'],
+            sans: ['"DM Sans"', 'system-ui', 'sans-serif'],
+          },
+        },
+      },
+    };
+  </script>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/app.css" />
 </head>
 <body class="font-sans text-ink bg-sand min-h-screen antialiased">
   <%- include('../partials/nav') %>
@@ -15,17 +32,8 @@
   <% } %>
 
   <main class="max-w-4xl mx-auto px-4 py-8 animate-in">
-    <h1 class="font-display text-3xl font-semibold mb-2">Settings</h1>
-    <p class="text-ink/60 mb-8">
-      Message templates and bot behaviour. Placeholders:
-      <code class="text-sea">{{name}}</code>,
-      <code class="text-sea">{{insurance_type}}</code>,
-      <code class="text-sea">{{company}}</code>,
-      <code class="text-sea">{{phone}}</code>,
-      <code class="text-sea">{{details}}</code>,
-      <code class="text-sea">{{form_link}}</code>,
-      <code class="text-sea">{{business_name}}</code>.
-    </p>
+    <h1 class="font-display text-3xl font-semibold mb-2">Message templates</h1>
+    <p class="text-ink/60 mb-8">Use placeholders like <code class="text-sea">{{name}}</code>, <code class="text-sea">{{insurance_type}}</code>, <code class="text-sea">{{company}}</code>, <code class="text-sea">{{phone}}</code>, <code class="text-sea">{{form_link}}</code>, <code class="text-sea">{{business_name}}</code>.</p>
 
     <form method="POST" action="/admin/settings" class="panel p-6 space-y-5">
       <div>
@@ -36,26 +44,6 @@
         <label class="label" for="form_intro">Form intro text</label>
         <textarea class="field" id="form_intro" name="form_intro" rows="2"><%= settings.form_intro || '' %></textarea>
       </div>
-
-      <div class="grid md:grid-cols-2 gap-5">
-        <div>
-          <label class="label" for="trigger_keywords">Trigger keywords</label>
-          <input class="field" id="trigger_keywords" name="trigger_keywords" value="<%= settings.trigger_keywords || '' %>" placeholder="hi,hello,hey,start" />
-          <p class="text-xs text-ink/45 mt-1">Comma-separated. Starts the form-link flow.</p>
-        </div>
-        <div>
-          <label class="label" for="close_keywords">Close keywords</label>
-          <input class="field" id="close_keywords" name="close_keywords" value="<%= settings.close_keywords || '' %>" placeholder="close,stop,end" />
-          <p class="text-xs text-ink/45 mt-1">Ends a live desk chat.</p>
-        </div>
-      </div>
-
-      <div>
-        <label class="label" for="relay_delay_ms">Relay delay (ms)</label>
-        <input class="field max-w-xs" type="number" min="0" step="50" id="relay_delay_ms" name="relay_delay_ms" value="<%= settings.relay_delay_ms || '0' %>" />
-        <p class="text-xs text-ink/45 mt-1">Optional pause before forwarding customer ↔ desk messages (helps on low-RAM VPS).</p>
-      </div>
-
       <div>
         <label class="label" for="confirmation_template">Confirmation WhatsApp message</label>
         <textarea class="field font-mono text-sm" id="confirmation_template" name="confirmation_template" rows="6"><%= settings.confirmation_template || '' %></textarea>
@@ -67,10 +55,6 @@
       <div>
         <label class="label" for="success_message">Success reply after Yes</label>
         <textarea class="field" id="success_message" name="success_message" rows="3"><%= settings.success_message || '' %></textarea>
-      </div>
-      <div>
-        <label class="label" for="chat_close_message">Chat close message</label>
-        <textarea class="field" id="chat_close_message" name="chat_close_message" rows="2"><%= settings.chat_close_message || '' %></textarea>
       </div>
       <div>
         <label class="label" for="cancel_message">Cancel reply after No</label>

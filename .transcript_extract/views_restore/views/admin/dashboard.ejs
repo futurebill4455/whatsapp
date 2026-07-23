@@ -4,7 +4,25 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title><%= title %> · <%= businessName %></title>
-  <%- include('../partials/styles') %>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            ink: '#0f1f2e', mist: '#e8eef3', sea: '#0d7377', seaDark: '#095456',
+            sand: '#f7f4ef', coral: '#c45c26',
+          },
+          fontFamily: {
+            display: ['"Fraunces"', 'Georgia', 'serif'],
+            sans: ['"DM Sans"', 'system-ui', 'sans-serif'],
+          },
+        },
+      },
+    };
+  </script>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/app.css" />
 </head>
 <body class="font-sans text-ink bg-sand min-h-screen antialiased">
   <%- include('../partials/nav') %>
@@ -18,16 +36,12 @@
     <div class="flex flex-wrap items-end justify-between gap-4">
       <div>
         <h1 class="font-display text-3xl font-semibold">Dashboard</h1>
-        <p class="text-ink/60">Welcome, <%= admin %> · <%= typeof activeChats !== 'undefined' ? activeChats : 0 %> live chat<%= (activeChats || 0) === 1 ? '' : 's' %></p>
+        <p class="text-ink/60">Welcome, <%= admin %></p>
       </div>
-      <div class="flex flex-wrap gap-2">
+      <div class="flex gap-2">
         <a href="/" class="btn btn-ghost">QR Page</a>
-        <a href="/admin/workflow" class="btn btn-ghost">Workflow</a>
         <form method="POST" action="/admin/whatsapp/logout">
           <button class="btn btn-ghost text-coral" type="submit">Relink WhatsApp</button>
-        </form>
-        <form method="POST" action="/admin/whatsapp/reset-session" onsubmit="return confirm('Wipe WhatsApp auth files and restart linking?');">
-          <button class="btn btn-ghost text-coral" type="submit">Reset WA auth</button>
         </form>
       </div>
     </div>
@@ -62,9 +76,7 @@
           </div>
         </div>
       </div>
-      <div class="text-sm text-ink/55">
-        Active desk chats: <strong class="text-ink"><%= typeof activeChats !== 'undefined' ? activeChats : 0 %></strong>
-      </div>
+      <a href="/" class="btn btn-primary">Open QR Connect</a>
     </div>
 
     <div class="grid lg:grid-cols-2 gap-6">

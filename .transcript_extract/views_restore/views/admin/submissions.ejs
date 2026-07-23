@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            ink: '#0f1f2e', mist: '#e8eef3', sea: '#0d7377', sand: '#f7f4ef', coral: '#c45c26',
+          },
+          fontFamily: {
+            display: ['"Fraunces"', 'Georgia', 'serif'],
+            sans: ['"DM Sans"', 'system-ui', 'sans-serif'],
+          },
+        },
+      },
+    };
+  </script>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body class="font-sans text-ink bg-sand min-h-screen antialiased">
+  <%- include('../partials/nav') %>
+  <main class="max-w-6xl mx-auto px-4 py-8 animate-in">
+    <h1 class="font-display text-3xl font-semibold mb-6">Submissions</h1>
+    <div class="panel p-0 overflow-hidden">
+      <div class="table-wrap">
+        <table class="data">
+          <thead>
+            <tr>
+              <th>Created</th>
+              <th>Customer</th>
+              <th>Details</th>
+              <th>Status</th>
+              <th>Forwarded to</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% if (!submissions.length) { %>
+              <tr><td colspan="5" class="text-ink/45 p-6">No leads yet. When customers message Hi and complete the form, they appear here.</td></tr>
+            <% } %>
+            <% submissions.forEach(function (s) { %>
+              <tr>
+                <td class="whitespace-nowrap text-xs text-ink/55"><%= s.created_at %></td>
+                <td>
+                  <div class="font-medium"><%= s.customer_name || '—' %></div>
+                  <div class="text-xs text-ink/45">+<%= s.customer_phone %></div>
+                </td>
+                <td>
+                  <div><%= s.insurance_type || '—' %></div>
+                  <div class="text-xs text-ink/55"><%= s.company || '' %></div>
+                </td>
+                <td><span class="badge badge-<%= s.status %>"><%= s.status.replace(/_/g, ' ') %></span></td>
+                <td class="text-sm"><%= s.forwarded_to ? '+' + s.forwarded_to : '—' %></td>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

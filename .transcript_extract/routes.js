@@ -124,15 +124,6 @@ router.post('/form/:token', async (req, res) => {
     const memberCount = Math.min(5, Math.max(1, parseInt(req.body.member_count) || 1));
     extra_data.member_count = memberCount;
     extra_data.coverage_amount = String(req.body.coverage_amount || '').trim() || 'Not specified';
-    const durationRaw = String(req.body.duration_days || '').trim();
-    if (durationRaw) {
-      const durationDays = parseInt(durationRaw, 10);
-      if (!Number.isFinite(durationDays) || durationDays < 1) {
-        req.session.flash = { type: 'error', message: 'Please enter a valid policy duration in days.' };
-        return res.redirect(`/form/${req.params.token}`);
-      }
-      extra_data.duration_days = durationDays;
-    }
     const members = [];
     for (let i = 1; i <= memberCount; i++) {
       members.push({
@@ -229,9 +220,6 @@ router.post('/admin/settings', requireAdmin, (req, res) => {
     'chat_close_message',
     'cancel_message',
     'already_pending_message',
-    'trigger_keywords',
-    'close_keywords',
-    'relay_delay_ms',
   ];
   const payload = {};
   for (const key of allowed) {

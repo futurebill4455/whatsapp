@@ -1,19 +1,35 @@
 /**
- * Render / serverless Chromium launch for whatsapp-web.js.
- * Uses puppeteer-core + @sparticuz/chromium (no full Puppeteer Chrome download).
+ * Chromium / Chrome launch options for whatsapp-web.js (puppeteer-core).
+ *
+ * Priority:
+ *  1. Render / Lambda / USE_SPARTICUZ_CHROMIUM=1 → @sparticuz/chromium
+ *  2. System Chrome/Chromium (preferred on 2GB Linux VPS + local Windows/macOS)
+ *  3. Sparticuz fallback when no system browser is found
+ *
+ * Tuned for ~2GB VPS (not free-tier starvation): heap 768MB, multi-process Chrome,
+ * faster protocol timeouts than serverless.
  */
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-function isRenderLike() {
+/** True only when we must use the Sparticuz serverless binary */
+function forceSparticuz() {
   return (
     process.env.USE_SPARTICUZ_CHROMIUM === '1' ||
     !!process.env.RENDER ||
     !!process.env.AWS_LAMBDA_FUNCTION_NAME ||
-    !!process.env.AWS_EXECUTION_ENV ||
-    process.platform === 'linux'
+    !!process.env.AWS_EXECUTION_ENV
   );
+}
+
+/** Back-compat alias used by WhatsApp service logs */
+function isRenderLike() {
+  return forceSparticuz();
+}
+
+function isVpsLinux() {
+  return process.platform === 'linux' && !forceSparticuz();
 }
 
 function getChromium() {
@@ -22,11 +38,12 @@ function getChromium() {
 }
 
 /**
- * Sparticuz serverless args + a few WhatsApp/Render-safe extras.
- * Keep this lean — too many flags can hang headless-shell on free tier.
+ * @param {string[]} chromiumArgs
+ * @param {{ mode?: 'system' | 'sparticuz' }} opts
  */
-function buildArgs(chromiumArgs = []) {
-  const heapMb = Number(process.env.CHROMIUM_MAX_OLD_SPACE_MB) || 384;
+function buildArgs(chromiumArgs = [], opts = {}) {
+  const mode = opts.mode || 'sparticuz';
+  const heapMb = Number(process.env.CHROMIUM_MAX_OLD_SPACE_MB) || 768;
   const base = Array.isArray(chromiumArgs) ? [...chromiumArgs] : [];
 
   const extras = [
@@ -48,8 +65,15 @@ function buildArgs(chromiumArgs = []) {
     '--window-size=800,600',
   ];
 
-  // single-process is already in chromium.args on Sparticuz; ensure it stays
-  const allowSingle = process.env.PUPPETEER_NO_SINGLE_PROCESS !== '1';
+  // System Chrome on Linux VPS: multi-process is more stable; opt-in with PUPPETEER_SINGLE_PROCESS=1
+  // Sparticuz / Render: single-process stays default unless PUPPETEER_NO_SINGLE_PROCESS=1
+  let allowSingle = false;
+  if (mode === 'system') {
+    allowSingle = process.env.PUPPETEER_SINGLE_PROCESS === '1';
+  } else {
+    allowSingle = process.env.PUPPETEER_NO_SINGLE_PROCESS !== '1';
+  }
+
   if (allowSingle && !base.includes('--single-process') && !extras.includes('--single-process')) {
     extras.push('--single-process');
   }
@@ -58,9 +82,7 @@ function buildArgs(chromiumArgs = []) {
   const seen = new Set();
   for (const a of [...base, ...extras]) {
     if (!a) continue;
-    // Launch options set headless separately
     if (String(a).startsWith('--headless')) continue;
-    // Prefer our heap cap
     if (String(a).startsWith('--js-flags') && seen.has('js-flags')) continue;
     const key = String(a).startsWith('--js-flags') ? 'js-flags' : a;
     if (seen.has(key)) continue;
@@ -87,88 +109,37 @@ function findSystemChrome() {
           'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
           'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
         ]
-      : [
-          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-          '/usr/bin/google-chrome-stable',
-          '/usr/bin/google-chrome',
-          '/usr/bin/chromium',
-          '/usr/bin/chromium-browser',
-        ];
+      : process.platform === 'darwin'
+        ? [
+            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+            '/Applications/Chromium.app/Contents/MacOS/Chromium',
+          ]
+        : [
+            '/usr/bin/google-chrome-stable',
+            '/usr/bin/google-chrome',
+            '/usr/bin/chromium',
+            '/usr/bin/chromium-browser',
+            '/snap/bin/chromium',
+          ];
 
   return candidates.filter(Boolean).find((p) => fs.existsSync(p)) || null;
 }
 
-/**
- * Options passed to whatsapp-web.js → puppeteer-core.launch().
- */
-async function buildPuppeteerLaunchOptions() {
-  // Ensure puppeteer-core resolves (shim may map require('puppeteer') → core)
-  require('puppeteer-core');
-
-  const renderLike = isRenderLike();
+function systemLaunchOptions(executablePath) {
+  const protocolTimeout = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT) || 180000;
+  const timeout = Number(process.env.PUPPETEER_TIMEOUT) || 120000;
   console.log(
-    `[Chromium] Platform=${process.platform} renderLike=${renderLike} tmp=${os.tmpdir()}`
+    `[Chromium] System Chrome (${isVpsLinux() ? 'Linux VPS' : process.platform}): ${executablePath}` +
+      ` heap=${Number(process.env.CHROMIUM_MAX_OLD_SPACE_MB) || 768}MB` +
+      ` single-process=${process.env.PUPPETEER_SINGLE_PROCESS === '1' ? 'yes' : 'no'}`
   );
-
-  // Local Windows/macOS: system Chrome is more reliable for WhatsApp Web UI
-  if (!renderLike) {
-    const system = findSystemChrome();
-    if (system) {
-      console.log('[Chromium] Using system Chrome:', system);
-      return {
-        headless: process.env.PUPPETEER_HEADLESS === 'false' ? false : true,
-        executablePath: system,
-        args: buildArgs([]),
-        defaultViewport: { width: 800, height: 600, deviceScaleFactor: 1 },
-        protocolTimeout: Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT) || 300000,
-        timeout: Number(process.env.PUPPETEER_TIMEOUT) || 180000,
-        ignoreHTTPSErrors: true,
-        handleSIGINT: false,
-        handleSIGTERM: false,
-        handleSIGHUP: false,
-      };
-    }
-  }
-
-  const chromium = getChromium();
-
-  // Critical for free-tier RAM: skip SwiftShader / WebGL extraction
-  try {
-    chromium.setGraphicsMode = false;
-  } catch (_) {}
-
-  console.log('[Chromium] Inflating @sparticuz/chromium binary (first boot can take ~30–90s)…');
-  const started = Date.now();
-  const executablePath = await chromium.executablePath();
-  console.log(
-    `[Chromium] Ready in ${Date.now() - started}ms → ${executablePath}`
-  );
-
-  if (!executablePath || !fs.existsSync(executablePath)) {
-    throw new Error(
-      `@sparticuz/chromium executable missing after inflate: ${executablePath || '(empty)'}`
-    );
-  }
-
-  const args = buildArgs(chromium.args || []);
-  // Sparticuz chrome-headless-shell requires headless: 'shell' (or true on older APIs)
-  let headless = 'shell';
-  if (process.env.PUPPETEER_HEADLESS === 'false') headless = false;
-  else if (process.env.PUPPETEER_HEADLESS === 'true') headless = true;
-  else if (process.env.PUPPETEER_HEADLESS === 'shell') headless = 'shell';
-
-  console.log(
-    `[Chromium] Launching puppeteer-core headless=${headless} args=${args.length}`
-  );
-
   return {
-    headless,
+    headless: process.env.PUPPETEER_HEADLESS === 'false' ? false : true,
     executablePath,
-    args,
+    args: buildArgs([], { mode: 'system' }),
     defaultViewport: { width: 800, height: 600, deviceScaleFactor: 1 },
-    // Long timeouts: free-tier CPU is slow during WA Web sync
-    protocolTimeout: Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT) || 600000,
-    timeout: Number(process.env.PUPPETEER_TIMEOUT) || 300000,
+    protocolTimeout,
+    timeout,
     ignoreHTTPSErrors: true,
     handleSIGINT: false,
     handleSIGTERM: false,
@@ -176,7 +147,83 @@ async function buildPuppeteerLaunchOptions() {
   };
 }
 
+async function sparticuzLaunchOptions() {
+  const chromium = getChromium();
+
+  try {
+    chromium.setGraphicsMode = false;
+  } catch (_) {}
+
+  console.log('[Chromium] Inflating @sparticuz/chromium binary (first boot can take ~30–90s)…');
+  const started = Date.now();
+  const executablePath = await chromium.executablePath();
+  console.log(`[Chromium] Ready in ${Date.now() - started}ms → ${executablePath}`);
+
+  if (!executablePath || !fs.existsSync(executablePath)) {
+    throw new Error(
+      `@sparticuz/chromium executable missing after inflate: ${executablePath || '(empty)'}`
+    );
+  }
+
+  const args = buildArgs(chromium.args || [], { mode: 'sparticuz' });
+  let headless = 'shell';
+  if (process.env.PUPPETEER_HEADLESS === 'false') headless = false;
+  else if (process.env.PUPPETEER_HEADLESS === 'true') headless = true;
+  else if (process.env.PUPPETEER_HEADLESS === 'shell') headless = 'shell';
+
+  // Serverless / free-tier needs longer timeouts; still allow env override
+  const protocolTimeout = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT) || 600000;
+  const timeout = Number(process.env.PUPPETEER_TIMEOUT) || 300000;
+
+  console.log(
+    `[Chromium] Launching Sparticuz headless=${headless} args=${args.length} heap=${Number(process.env.CHROMIUM_MAX_OLD_SPACE_MB) || 768}MB`
+  );
+
+  return {
+    headless,
+    executablePath,
+    args,
+    defaultViewport: { width: 800, height: 600, deviceScaleFactor: 1 },
+    protocolTimeout,
+    timeout,
+    ignoreHTTPSErrors: true,
+    handleSIGINT: false,
+    handleSIGTERM: false,
+    handleSIGHUP: false,
+  };
+}
+
+/**
+ * Options passed to whatsapp-web.js → puppeteer-core.launch().
+ */
+async function buildPuppeteerLaunchOptions() {
+  require('puppeteer-core');
+
+  const forced = forceSparticuz();
+  console.log(
+    `[Chromium] Platform=${process.platform} forceSparticuz=${forced} tmp=${os.tmpdir()}`
+  );
+
+  if (forced) {
+    return sparticuzLaunchOptions();
+  }
+
+  // Prefer system Chrome/Chromium on Linux VPS and local desktops
+  const system = findSystemChrome();
+  if (system) {
+    return systemLaunchOptions(system);
+  }
+
+  console.warn(
+    '[Chromium] No system Chrome/Chromium found — falling back to @sparticuz/chromium'
+  );
+  return sparticuzLaunchOptions();
+}
+
 module.exports = {
   isRenderLike,
+  forceSparticuz,
+  isVpsLinux,
+  findSystemChrome,
   buildPuppeteerLaunchOptions,
 };

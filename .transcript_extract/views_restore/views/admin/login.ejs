@@ -4,16 +4,32 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title><%= title %> · <%= businessName %></title>
-  <%- include('../partials/styles') %>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            ink: '#0f1f2e', mist: '#e8eef3', sea: '#0d7377', seaDark: '#095456',
+            sand: '#f7f4ef', coral: '#c45c26',
+          },
+          fontFamily: {
+            display: ['"Fraunces"', 'Georgia', 'serif'],
+            sans: ['"DM Sans"', 'system-ui', 'sans-serif'],
+          },
+        },
+      },
+    };
+  </script>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/app.css" />
 </head>
 <body class="font-sans text-ink bg-sand min-h-screen antialiased">
   <%- include('../partials/nav') %>
   <main class="max-w-md mx-auto px-4 py-16 animate-in">
     <div class="panel p-8">
       <h1 class="font-display text-3xl font-semibold mb-2">Admin Login</h1>
-      <p class="text-ink/60 text-sm mb-6">
-        Full insurance desk admin — workflow, form builder, catalog, settings, and leads.
-      </p>
+      <p class="text-ink/60 text-sm mb-6">Manage chat flow, catalog, and WhatsApp desk numbers.</p>
 
       <% if (typeof error !== 'undefined' && error) { %>
         <div class="mb-4 rounded-lg px-4 py-3 text-sm bg-red-50 text-red-800 border border-red-200"><%= error %></div>

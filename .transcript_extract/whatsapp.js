@@ -1,8 +1,8 @@
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
+const { v4: uuidv4 } = require('uuid');
 const {
   Settings,
   Submissions,
@@ -11,11 +11,9 @@ const {
   WorkflowRuns,
   InternalNumbers,
   ChatSessions,
-  ChatFlow,
 } = require('../models');
-const { bindEngine, newToken } = require('./workflowEngine');
-const { buildPuppeteerLaunchOptions, isRenderLike, isVpsLinux } = require('./chromiumLaunch');
-const { buildConfirmationMessage } = require('../utils/leadSummary');
+const { WorkflowEngine } = require('./workflowEngine');
+const { buildPuppeteerLaunchOptions, isRenderLike } = require('./chromiumLaunch');
 
 const AUTH_PATH = path.join(process.cwd(), '.wwebjs_auth');
 const CACHE_PATH = path.join(process.cwd(), '.wwebjs_cache');
@@ -24,6 +22,7 @@ const WHATSAPP_WEB_URL = 'https://web.whatsapp.com/';
 
 /** Always-on greetings — work even if Admin Panel / DB triggers are misconfigured */
 const HARDCODED_GREETINGS = ['hi', 'hello', 'hey', 'start', 'ഹായ്'];
+const CLOSE_KEYWORDS = ['close', 'ക്ലോസ്'];
 
 function normalizeMsg(text) {
   return String(text || '')
@@ -39,33 +38,9 @@ function isHardcodedGreeting(text) {
   );
 }
 
-function getCloseKeywords() {
-  const raw = Settings.get('close_keywords') || 'close,ക്ലോസ്';
-  return String(raw)
-    .split(',')
-    .map((k) => k.trim().toLowerCase())
-    .filter(Boolean);
-}
-
 function isCloseCommand(text) {
   const n = normalizeMsg(text);
-  return getCloseKeywords().some((k) => n === k || n.startsWith(`${k} `));
-}
-
-function isYesReply(text) {
-  return ['yes', 'y', 'confirm', 'ok', 'okay'].includes(normalizeMsg(text));
-}
-
-function isNoReply(text) {
-  return ['no', 'n', 'cancel'].includes(normalizeMsg(text));
-}
-
-function makeToken() {
-  try {
-    return newToken();
-  } catch (_) {
-    return crypto.randomBytes(24).toString('hex');
-  }
+  return CLOSE_KEYWORDS.some((k) => n === k.toLowerCase());
 }
 
 function humanDelayMs() {
@@ -278,7 +253,7 @@ class WhatsAppService {
     this._seenCleanupTimer = null;
     this._boundMessageHandler = null;
     this._boundMessageCreateHandler = null;
-    this.engine = bindEngine(this);
+    this.engine = new WorkflowEngine(this);
     this.loadingPercent = null;
     this.loadingMessage = null;
     this._loadingWatchdog = null;
@@ -481,9 +456,9 @@ class WhatsAppService {
 
       const launchOpts = await buildPuppeteerLaunchOptions();
       console.log(
-        '[WhatsApp] Launching browser via puppeteer-core' +
+        '[WhatsApp] Launching browser via puppeteer-core + @sparticuz/chromium' +
           ` headless=${launchOpts.headless} executablePath=${launchOpts.executablePath} (attempt ${this._initAttempt})` +
-          (isRenderLike() ? ' [Render/serverless]' : isVpsLinux() ? ' [Linux VPS]' : '')
+          (isRenderLike() ? ' [Render/serverless]' : '')
       );
 
       const cacheDir = path.join(process.cwd(), '.wwebjs_cache');
@@ -677,10 +652,10 @@ class WhatsAppService {
   }
 
   /**
-   * Serial inbound queue — keeps Chromium memory stable on ~2GB VPS.
+   * Process inbound messages one-at-a-time to stay within free-tier CPU/RAM.
    */
   enqueueIncomingMessage(message, source = 'message') {
-    const maxDepth = Number(process.env.WA_MSG_QUEUE_MAX) || 80;
+    const maxDepth = Number(process.env.WA_MSG_QUEUE_MAX) || 40;
     if (this._msgQueueDepth >= maxDepth) {
       console.warn(
         `[WhatsApp] Dropping message (queue full ${this._msgQueueDepth}/${maxDepth}) from ${message?.from || '?'}`
@@ -701,7 +676,7 @@ class WhatsAppService {
         } finally {
           this._msgQueueDepth = Math.max(0, this._msgQueueDepth - 1);
           // Yield event loop so HTTP/Socket.IO stay responsive on tiny instances
-          await sleep(Number(process.env.WA_MSG_YIELD_MS) || 30);
+          await sleep(Number(process.env.WA_MSG_YIELD_MS) || 50);
         }
       })
       .catch(() => {
@@ -729,8 +704,8 @@ class WhatsAppService {
 
   _pruneSeenIds() {
     const now = Date.now();
-    const ttl = Number(process.env.WA_SEEN_TTL_MS) || 120000;
-    const max = Number(process.env.WA_SEEN_MAX) || 400;
+    const ttl = Number(process.env.WA_SEEN_TTL_MS) || 90000;
+    const max = Number(process.env.WA_SEEN_MAX) || 200;
     for (const [k, ts] of this._seenMsgIds) {
       if (now - ts > ttl) this._seenMsgIds.delete(k);
     }
@@ -752,7 +727,7 @@ class WhatsAppService {
     const now = Date.now();
     if (this._seenMsgIds.has(id)) return true;
     this._seenMsgIds.set(id, now);
-    if (this._seenMsgIds.size > 500) this._pruneSeenIds();
+    if (this._seenMsgIds.size > 250) this._pruneSeenIds();
     return false;
   }
 
@@ -830,7 +805,6 @@ class WhatsAppService {
 
   /**
    * Queued send. For inbound turns, ALWAYS prefer msg.reply / inbound chatId (LID-safe).
-   * Optional delay from Settings.relay_delay_ms (or options.delayMs).
    */
   async sendMessage(to, body, options = {}) {
     if (!this.client) {
@@ -843,12 +817,6 @@ class WhatsAppService {
     const run = async () => {
       const text = String(body || '');
       if (!text) return null;
-
-      const delayMs =
-        options.delayMs != null
-          ? Number(options.delayMs)
-          : Number(Settings.get('relay_delay_ms') || 0);
-      if (delayMs > 0) await sleep(delayMs);
 
       const logPhone = this.formatPhone(to) || String(to || '').replace(/@.+$/, '');
 
@@ -1007,7 +975,7 @@ class WhatsAppService {
       console.warn('[WhatsApp] MessageLog failed:', err.message);
     }
 
-    // 1) Two-way chat bridge (customer ↔ desk) — highest priority
+    // ── Two-way chat bridge (customer ↔ desk) — highest priority after logging ──
     try {
       const bridged = await this.handleChatBridge(message, phone, chatId, body);
       if (bridged) return;
@@ -1017,56 +985,48 @@ class WhatsAppService {
 
     if (!body) return;
 
+    const payload = { phone, body, chatId, replyTo: message };
+
     try {
-      // 2) Yes/No for pending confirmation (before workflow so recovery is immediate)
-      if (isYesReply(body)) {
+      if (Workflows.getActive()) {
+        const result = await this.engine.handleIncomingMessage(payload);
+        console.log(
+          '[WhatsApp] Workflow result:',
+          result?.reason || (result?.handled ? 'handled' : 'unhandled'),
+          result?.waiting || ''
+        );
+        if (result?.handled) return;
+        if (result?.reason === 'unmatched_reply' && !isHardcodedGreeting(body)) return;
+      }
+
+      // Yes/No recovery without active waiter
+      const lower = normalizeMsg(body);
+      if (['yes', 'y', 'confirm', 'ok', 'okay'].includes(lower)) {
         const pending = Submissions.findPendingConfirmation(phone);
         if (pending) {
           await this.confirmAndForward(pending, { chatId, replyTo: message });
           return;
         }
       }
-      if (isNoReply(body)) {
+      if (['no', 'n', 'cancel'].includes(lower)) {
         const pending = Submissions.findPendingConfirmation(phone);
         if (pending) {
-          const nodes = this.engine.getActiveGraph()?.nodes || {};
-          await this.engine.resendFormAfterDecline(pending, nodes, {
-            phone,
-            chatId,
-            replyTo: message,
-          });
+          await this.engine.resendFormAfterDecline(
+            pending,
+            this.engine.getActiveGraph()?.nodes || {},
+            { phone, chatId, replyTo: message }
+          );
           return;
         }
       }
 
-      // 3) Active Drawflow workflow (or Settings/ChatFlow fallback inside engine)
-      const result = await this.engine.handleIncomingMessage({
-        phone,
-        body,
-        chatId,
-        replyTo: message,
-      });
-      console.log(
-        '[WhatsApp] Workflow result:',
-        result?.reason || (result?.handled ? 'handled' : 'unhandled'),
-        result?.waiting || ''
-      );
-      if (result?.handled) return;
-      if (result?.reason === 'unmatched_reply' && !isHardcodedGreeting(body)) return;
-
-      // 4) ChatFlow greeting → form link (and hardcoded Hi safety net)
-      const flow = ChatFlow.findByKeyword(body);
-      if (flow || isHardcodedGreeting(body)) {
-        console.log('[WhatsApp] ChatFlow / greeting fallback for:', body);
-        await this.sendGreetingFormLink(phone, {
-          chatId,
-          replyTo: message,
-          flow: flow || null,
-        });
-        return;
+      // Safety net: Hi / ഹായ് always get a form link
+      if (isHardcodedGreeting(body)) {
+        console.log('[WhatsApp] Hardcoded greeting fallback for:', body);
+        await this.sendGreetingFormLink(phone, { chatId, replyTo: message });
+      } else {
+        console.log('[WhatsApp] No trigger matched for:', JSON.stringify(body));
       }
-
-      console.log('[WhatsApp] No trigger matched for:', JSON.stringify(body));
     } catch (err) {
       console.error('[WhatsApp] Flow execution error:', err?.message || err);
       try {
@@ -1114,11 +1074,8 @@ class WhatsAppService {
       return true;
     }
 
-    // ── Desk side (phone OR @lid chat id OR catalog desk) ──
+    // ── Desk side (phone OR @lid chat id) ──
     let deskSessions = await this.resolveDeskSessionsForInbound(digits, chatId);
-    if (!deskSessions.length && InternalNumbers.isDeskPhone(digits)) {
-      deskSessions = ChatSessions.listActiveByDesk(digits);
-    }
     if (deskSessions.length > 0) {
       if (body && isCloseCommand(body)) {
         console.log('[ChatBridge] Ignoring close from desk — customer must close');
@@ -1297,6 +1254,7 @@ class WhatsAppService {
     const toCustomer = direction === 'desk_to_customer';
     const destPhone = toCustomer ? session.customer_phone : session.desk_phone;
     const destChatId = toCustomer ? session.customer_chat_id : session.desk_chat_id;
+    const company = session.company_name || 'insurer';
     const code = session.session_code || String(session.id);
     const msgType = String(message.type || '').toLowerCase();
     const hasMedia =
@@ -1317,8 +1275,8 @@ class WhatsAppService {
     }
 
     const prefix = toCustomer
-      ? ''
-      : `[#${code}] `;
+      ? `📩 *${company}*\n\n`
+      : `💬 *Customer* [#${code}]\n📞 ${session.customer_phone}\n\n`;
 
     try {
       let sent = null;
@@ -1355,10 +1313,7 @@ class WhatsAppService {
           }
         }
       } else if (body) {
-        const outboundBody = toCustomer
-          ? String(body).replace(/\[#[A-Z0-9]{3,6}\]\s*/gi, '').trim() || body
-          : `${prefix}${body}`;
-        sent = await this.sendMessage(destPhone || destChatId, outboundBody, {
+        sent = await this.sendMessage(destPhone || destChatId, `${prefix}${body}`, {
           chatId: destChatId || undefined,
         });
       } else {
@@ -1609,7 +1564,7 @@ class WhatsAppService {
   }
 
   /**
-   * Always-available greeting reply (ChatFlow template or default).
+   * Always-available greeting reply (does not depend on Admin Panel keywords).
    */
   async sendGreetingFormLink(phone, opts = {}) {
     const existing = Submissions.findLatestOpen(phone);
@@ -1626,7 +1581,7 @@ class WhatsAppService {
     const submission =
       existing && existing.status === 'awaiting_form'
         ? existing
-        : Submissions.create({ token: makeToken(), customer_phone: phone });
+        : Submissions.create({ token: uuidv4(), customer_phone: phone });
     if (opts.chatId) Submissions.setCustomerChatId(submission.token, opts.chatId);
 
     // Arm workflow waiter for form_submit if possible
@@ -1657,14 +1612,10 @@ class WhatsAppService {
 
     const formLink = `${this.getBaseUrl()}/form/${submission.token}`;
     const business = Settings.get('business_name', 'SecureLife Insurance');
-    const template =
-      opts.flow?.response_template ||
-      'Welcome to *{{business_name}}*! 👋\n\nTo get started with your insurance enquiry, please fill out this short form:\n{{form_link}}\n\nOur team will assist you once you submit and confirm your details.';
-    const text = this.renderTemplate(template, {
-      business_name: business,
-      form_link: formLink,
-      phone,
-    });
+    const text =
+      `Welcome to *${business}*! 👋\n\n` +
+      `To get started with your insurance enquiry, please fill out this short form:\n${formLink}\n\n` +
+      `Our team will assist you once you submit and confirm your details.`;
 
     const delay = humanDelayMs();
     console.log(`[WhatsApp] Greeting delay ${delay}ms before form link`);
@@ -1680,53 +1631,18 @@ class WhatsAppService {
       if (result.handled) return;
     }
 
-    const text = buildConfirmationMessage(
-      submission,
-      Settings.get('confirmation_template')
-    );
+    const { buildLeadVars, renderTemplate } = require('../utils/leadSummary');
+    const vars = buildLeadVars(submission);
+    const template = Settings.get('confirmation_template');
+    const text = renderTemplate(template, vars);
     try {
-      await this.sendMessage(submission.customer_phone, text, {
-        chatId: submission.customer_chat_id || undefined,
-      });
+      await this.sendMessage(submission.customer_phone, text);
     } catch (err) {
       console.error('[WhatsApp] Legacy confirmation send failed:', err.message);
     }
   }
 
-  /**
-   * HTTP form submit hook — load by token and send Yes/No confirmation.
-   */
-  async notifyFormSubmitted(tokenOrSubmission) {
-    const submission =
-      typeof tokenOrSubmission === 'string'
-        ? Submissions.getByToken(tokenOrSubmission)
-        : tokenOrSubmission;
-    if (!submission) {
-      console.warn('[WhatsApp] notifyFormSubmitted: submission not found');
-      return false;
-    }
-    if (submission.status !== 'awaiting_confirmation') {
-      console.warn(
-        `[WhatsApp] notifyFormSubmitted: unexpected status ${submission.status}`
-      );
-    }
-    await this.sendFormConfirmation(submission);
-    return true;
-  }
-
   async confirmAndForward(submission, opts = {}) {
-    // Complete any stuck yes_no waiter so it does not linger
-    try {
-      const waiting = WorkflowRuns.findWaiting(submission.customer_phone, 'yes_no');
-      if (waiting) {
-        WorkflowRuns.update(waiting.id, {
-          status: 'completed',
-          waiting_for: null,
-          submission_token: submission.token,
-        });
-      }
-    } catch (_) {}
-
     await this.engine.forwardLeadToDesk(submission, {
       phone: submission.customer_phone,
       chatId: opts.chatId,

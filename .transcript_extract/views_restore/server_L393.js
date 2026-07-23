@@ -27,8 +27,9 @@ app.set('views', path.join(__dirname, 'views'));
 app.set('trust proxy', 1);
 
 app.use(express.urlencoded({ extended: true }));
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json());
 
+// Serve /public at site root so /css/*.css and /js/*.js resolve in production
 if (!fs.existsSync(PUBLIC_DIR)) {
   console.error('[Static] Missing public directory:', PUBLIC_DIR);
 } else {
@@ -55,6 +56,7 @@ app.use(
   })
 );
 
+// Explicit CSS mount (belt-and-suspenders for Render reverse proxies)
 app.use(
   '/css',
   express.static(CSS_DIR, {
@@ -94,6 +96,7 @@ app.use((req, res, next) => {
   next();
 });
 
+// Liveness — Render / proxies can hit this without loading WhatsApp
 app.get('/healthz', (_req, res) => {
   res.status(200).type('text').send('ok');
 });
@@ -119,6 +122,7 @@ function sendErrorPage(res, status, title, message) {
 }
 
 app.use((req, res) => {
+  // Avoid EJS render failures cascading into 502 for missing assets
   if (req.path.startsWith('/css/') || req.path.startsWith('/js/') || req.path.startsWith('/vendor/')) {
     return res.status(404).type('text').send(`Not found: ${req.path}`);
   }
@@ -130,7 +134,7 @@ app.use((req, res) => {
       admin: req.session?.adminUsername || null,
       flash: null,
     });
-  } catch (_) {
+  } catch (err) {
     return sendErrorPage(res, 404, 'Not Found', 'Page not found.');
   }
 });
@@ -156,24 +160,15 @@ whatsapp.attachSocket(io);
 
 server.listen(PORT, HOST, () => {
   console.log(`Server running at http://${HOST}:${PORT}`);
-  console.log(`Admin: http://${HOST}:${PORT}/admin/login`);
-  console.log(`[Static] CSS URLs: /css/tailwind.css  /css/app.css  /css/workflow.css`);
-
-  const isRender = Boolean(process.env.RENDER);
-  const defaultDelay = isRender ? 3000 : process.env.NODE_ENV === 'production' ? 1000 : 0;
-  const delayMs = process.env.WA_INIT_DELAY_MS !== undefined
-    ? Number(process.env.WA_INIT_DELAY_MS)
-    : defaultDelay;
-
-  console.log(`[WhatsApp] Scheduling client init in ${delayMs}ms`);
-  setTimeout(() => {
-    whatsapp.init().catch((err) => {
-      console.error('Failed to start WhatsApp client:', err);
-    });
-  }, Number.isFinite(delayMs) ? delayMs : defaultDelay);
+  console.log(`Admin panel: http://${HOST}:${PORT}/admin/login`);
+  console.log(`[Static] CSS URLs: /css/tailwind.css  /css/app.css`);
+  // Start WhatsApp after HTTP is accepting connections (avoids Render 502 during boot)
+  whatsapp.init().catch((err) => {
+    console.error('Failed to start WhatsApp client:', err);
+  });
 });
 
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   console.log('\nShutting down...');
   process.exit(0);
 });

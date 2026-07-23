@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('../partials/styles') %>
+</head>
+<body class="font-sans text-ink bg-sand min-h-screen antialiased">
+  <%- include('../partials/nav') %>
+  <main class="max-w-lg mx-auto px-4 py-16 animate-in">
+    <div class="panel p-8 text-center">
+      <h1 class="font-display text-2xl font-semibold mb-3">Chat Flow moved</h1>
+      <p class="text-ink/70 mb-6">
+        Legacy keyword chat flow is replaced by the visual <strong>Workflow</strong> builder.
+        Triggers, form links, Yes/No confirmation, and desk forwarding are edited on the canvas.
+      </p>
+      <a href="/admin/workflow" class="btn btn-primary">Open Workflow Builder</a>
+    </div>
+  </main>
+</body>
+</html>

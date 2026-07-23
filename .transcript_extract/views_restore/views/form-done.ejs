@@ -12,21 +12,17 @@
       <div class="w-16 h-16 rounded-full bg-sea/10 text-sea flex items-center justify-center text-2xl mx-auto mb-4">✓</div>
       <h1 class="font-display text-2xl font-semibold mb-3"><%= title %></h1>
       <p class="text-ink/70 mb-6"><%= message %></p>
-      <% if (typeof submission !== 'undefined' && submission && submission.customer_name) {
+      <% if (submission && submission.customer_name) {
         let extra = {};
-        try {
-          if (typeof submission.extra_data === 'object' && submission.extra_data) extra = submission.extra_data;
-          else if (submission.extra_data) extra = JSON.parse(submission.extra_data);
-        } catch (e) { extra = {}; }
+        try { extra = submission.extra_data ? JSON.parse(submission.extra_data) : {}; } catch (e) { extra = {}; }
       %>
         <div class="text-left text-sm bg-mist/60 rounded-lg p-4 space-y-1">
           <div><span class="text-ink/50">Name:</span> <%= submission.customer_name %></div>
           <div><span class="text-ink/50">Type:</span> <%= submission.insurance_type %></div>
           <div><span class="text-ink/50">Company:</span> <%= submission.company %></div>
           <% if (submission.insurance_type === 'Health') { %>
-            <% if (extra.member_count) { %><div><span class="text-ink/50">Members:</span> <%= extra.member_count %></div><% } %>
-            <% if (extra.coverage_amount) { %><div><span class="text-ink/50">Coverage:</span> <%= extra.coverage_amount %></div><% } %>
-            <% if (extra.duration_days) { %><div><span class="text-ink/50">Duration:</span> <%= extra.duration_days %> days</div><% } %>
+            <% if (extra.age) { %><div><span class="text-ink/50">Age:</span> <%= extra.age %></div><% } %>
+            <% if (extra.existing_illnesses) { %><div><span class="text-ink/50">Illnesses:</span> <%= extra.existing_illnesses %></div><% } %>
           <% } %>
           <% if (submission.insurance_type === 'Vehicle') { %>
             <% if (extra.vehicle_model) { %><div><span class="text-ink/50">Model:</span> <%= extra.vehicle_model %></div><% } %>
