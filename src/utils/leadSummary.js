@@ -136,13 +136,14 @@ function buildForwardMessage(submission, template) {
 }
 
 /**
- * Strip soft hyphens / zero-width chars and ensure an http(s):// scheme
- * so WhatsApp can auto-link the URL.
+ * Clean a form URL for WhatsApp: bare http(s)://… only.
+ * Strips soft hyphens, zero-width chars, and any angle brackets — WhatsApp
+ * auto-links plain URLs when they stand alone (own message / newline).
  */
 function sanitizeFormLink(url) {
   let s = String(url || '')
     .replace(/[\u00AD\u200B-\u200D\uFEFF]/g, '')
-    .replace(/^<|>$/g, '')
+    .replace(/[<>]/g, '')
     .trim();
   if (!s) return '';
   if (!/^https?:\/\//i.test(s)) {
@@ -152,18 +153,16 @@ function sanitizeFormLink(url) {
 }
 
 /**
- * Format a URL for WhatsApp: one clean bare http(s) link (no angle brackets, no duplicate).
- * Sent alone in its own message so WhatsApp can auto-link it.
+ * Single clean bare URL for WhatsApp (no brackets, no duplicate lines).
  */
 function formatWhatsAppClickableLink(url) {
   return sanitizeFormLink(url);
 }
 
 /**
- * Build a WhatsApp-safe form-link message.
- * Splits around {{form_link}} so the URL can be sent alone (avoids WhatsApp
- * soft-hyphenating long URLs mid-line). Prefer: intro → link → optional footer.
- * `link` / `linkUrl` are the same clean bare http(s) URL (no brackets, no duplicate).
+ * Split a template around {{form_link}} so the URL is sent alone.
+ * Prefer: intro message → bare URL message → optional footer.
+ * `link` and `linkUrl` are the same clean bare http(s) URL.
  */
 function buildFormLinkParts(template, vars = {}) {
   const linkUrl = sanitizeFormLink(vars.form_link);
