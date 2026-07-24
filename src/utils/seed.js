@@ -32,7 +32,7 @@ function seed() {
     anti_ban_jitter_min_ms: '4000',
     anti_ban_jitter_max_ms: '30000',
     anti_ban_min_gap_ms: '4000',
-    anti_ban_hours_enabled: '1',
+    anti_ban_hours_enabled: '0',
     anti_ban_hours_start: '9',
     anti_ban_hours_end: '21',
     anti_ban_timezone: 'Asia/Kolkata',

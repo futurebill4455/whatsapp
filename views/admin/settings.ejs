@@ -109,8 +109,8 @@
         </div>
         <label class="flex items-center gap-2 text-sm font-semibold">
           <input type="checkbox" name="anti_ban_hours_enabled" value="1"
-            <%= String(settings.anti_ban_hours_enabled || '1') === '1' ? 'checked' : '' %> />
-          Enforce working hours
+            <%= String(settings.anti_ban_hours_enabled || '0') === '1' ? 'checked' : '' %> />
+          Enforce working hours (currently ignored — bot is 24/7)
         </label>
       </section>
 

@@ -101,33 +101,9 @@ function sessionSpacingMs() {
   return nextVariableDelayMs();
 }
 
-function isWithinWorkingHours(now = new Date()) {
-  if (Settings.get('anti_ban_hours_enabled', '1') === '0') return true;
-  const tz = Settings.get('anti_ban_timezone') || 'Asia/Kolkata';
-  const start = numSetting('anti_ban_hours_start', 9);
-  const end = numSetting('anti_ban_hours_end', 21);
-  let hour = 12;
-  let minute = 0;
-  try {
-    const parts = new Intl.DateTimeFormat('en-GB', {
-      timeZone: tz,
-      hour: 'numeric',
-      minute: 'numeric',
-      hour12: false,
-    }).formatToParts(now);
-    hour = Number(parts.find((p) => p.type === 'hour')?.value ?? 12);
-    minute = Number(parts.find((p) => p.type === 'minute')?.value ?? 0);
-    if (hour === 24) hour = 0;
-  } catch (_) {
-    hour = now.getHours();
-    minute = now.getMinutes();
-  }
-  const mins = hour * 60 + minute;
-  const startM = Math.max(0, Math.min(24, start)) * 60;
-  const endM = Math.max(0, Math.min(24, end)) * 60;
-  if (startM === endM) return true;
-  if (startM < endM) return mins >= startM && mins < endM;
-  return mins >= startM || mins < endM;
+function isWithinWorkingHours(_now = new Date()) {
+  // Working-hours gate disabled — bot responds 24/7
+  return true;
 }
 
 function checkSendCaps(phone) {

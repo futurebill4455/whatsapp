@@ -458,13 +458,7 @@ class WhatsAppService {
       return;
     }
 
-    // 2) Working hours — silent outside hours (bridge already handled)
-    if (!antiBan.isWithinWorkingHours()) {
-      console.log(`[WhatsApp] Outside working hours — silent (${phone})`);
-      return;
-    }
-
-    // 3) Workflow engine (access-code gated)
+    // 2) Workflow engine (access-code gated) — responds 24/7
     try {
       await this.engine.handleIncomingMessage({
         phone,
@@ -807,7 +801,7 @@ class WhatsAppService {
   }
 
   /**
-   * Outbound text with working hours, rate caps, unique jitter, typing.
+   * Outbound text with rate caps, unique jitter, typing (24/7 — no hours gate).
    */
   async sendMessage(phoneOrChat, text, options = {}) {
     if (!this.client || !this.ready) {
@@ -819,11 +813,7 @@ class WhatsAppService {
       throw new Error('Empty message');
     }
 
-    if (!options.skipWorkingHours && !antiBan.isWithinWorkingHours()) {
-      const err = new Error('outside_working_hours');
-      err.code = 'outside_working_hours';
-      throw err;
-    }
+    if (!this.client) throw new Error('WhatsApp client not ready');
 
     const digits = this.formatPhone(
       String(phoneOrChat || '').includes('@')
@@ -904,9 +894,12 @@ class WhatsAppService {
         : phoneOrChat
     );
 
-    if (!options.skipWorkingHours && !antiBan.isWithinWorkingHours()) {
-      throw new Error('outside_working_hours');
-    }
+    if (!this.client) throw new Error('WhatsApp client not ready');
+    const digits = this.formatPhone(
+      String(phoneOrChat || '').includes('@')
+        ? String(phoneOrChat).replace(/@.+$/, '')
+        : phoneOrChat
+    );
 
     await antiBan.outboundLimiter.waitTurn();
 
