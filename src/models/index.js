@@ -372,19 +372,43 @@ const Submissions = {
   },
 
   findPendingConfirmation(phone) {
-    return db.prepare(`
-      SELECT * FROM submissions
-      WHERE customer_phone = ? AND status = 'awaiting_confirmation'
-      ORDER BY updated_at DESC LIMIT 1
-    `).get(phone);
+    const digits = digitsOnly(phone);
+    const row = db
+      .prepare(
+        `SELECT * FROM submissions
+         WHERE customer_phone = ? AND status = 'awaiting_confirmation'
+         ORDER BY updated_at DESC LIMIT 1`
+      )
+      .get(digits);
+    if (row) return row;
+    const recent = db
+      .prepare(
+        `SELECT * FROM submissions
+         WHERE status = 'awaiting_confirmation'
+         ORDER BY updated_at DESC LIMIT 40`
+      )
+      .all();
+    return recent.find((r) => phonesMatch(r.customer_phone, phone)) || null;
   },
 
   findLatestOpen(phone) {
-    return db.prepare(`
-      SELECT * FROM submissions
-      WHERE customer_phone = ? AND status IN ('awaiting_form', 'awaiting_confirmation')
-      ORDER BY updated_at DESC LIMIT 1
-    `).get(phone);
+    const digits = digitsOnly(phone);
+    const row = db
+      .prepare(
+        `SELECT * FROM submissions
+         WHERE customer_phone = ? AND status IN ('awaiting_form', 'awaiting_confirmation')
+         ORDER BY updated_at DESC LIMIT 1`
+      )
+      .get(digits);
+    if (row) return row;
+    const recent = db
+      .prepare(
+        `SELECT * FROM submissions
+         WHERE status IN ('awaiting_form', 'awaiting_confirmation')
+         ORDER BY updated_at DESC LIMIT 40`
+      )
+      .all();
+    return recent.find((r) => phonesMatch(r.customer_phone, phone)) || null;
   },
 
   list({ status = null, limit = 100 } = {}) {
@@ -770,11 +794,16 @@ const ChatSessions = {
   findActiveByCustomer(phone) {
     const digits = String(phone || '').replace(/\D/g, '');
     if (!digits) return null;
-    return db.prepare(`
+    const exact = db.prepare(`
       SELECT * FROM chat_sessions
       WHERE status = 'active' AND customer_phone = ?
       ORDER BY opened_at DESC LIMIT 1
     `).get(digits);
+    if (exact) return exact;
+    const active = db.prepare(`
+      SELECT * FROM chat_sessions WHERE status = 'active' ORDER BY opened_at DESC LIMIT 50
+    `).all();
+    return active.find((s) => phonesMatch(s.customer_phone, phone)) || null;
   },
 
   listActiveByDesk(phone) {
@@ -1067,16 +1096,32 @@ const AccessUsers = {
       .toUpperCase();
   },
 
-  /** True when this phone already verified their own code. */
+  /** True when this phone is Active (code verified). */
   isUnlocked(phone) {
     const user = this.findByPhone(phone);
-    return !!(user && user.verified_at);
+    if (!user) return false;
+    if (user.status === 'active') return true;
+    return !!(user.verified_at);
+  },
+
+  isWaitingForCode(phone) {
+    const user = this.findByPhone(phone);
+    if (!user || !user.is_active) return false;
+    if (user.status === 'active') return false;
+    return !user.verified_at;
+  },
+
+  displayStatus(user) {
+    if (!user) return 'unknown';
+    if (!user.is_active) return 'inactive';
+    if (user.status === 'active' || user.verified_at) return 'active';
+    return 'waiting_code';
   },
 
   /**
    * Verify inbound message as access code for this phone.
-   * Runs independently of any workflow builder.
-   * Returns { ok, user, reason }.
+   * DB-only — no workflow builder involvement.
+   * waiting_code → active on success.
    */
   tryUnlock(phone, codeInput) {
     const code = this.normalizeCode(codeInput);
@@ -1085,8 +1130,12 @@ const AccessUsers = {
     }
 
     const user = this.findByPhone(phone);
-    if (!user) {
+    if (!user || !user.is_active) {
       return { ok: false, reason: 'unknown_phone' };
+    }
+
+    if (user.status === 'active' || user.verified_at) {
+      return { ok: true, user, reason: 'already_active' };
     }
 
     if (this.normalizeCode(user.access_code) !== code) {
@@ -1095,7 +1144,9 @@ const AccessUsers = {
 
     db.prepare(
       `UPDATE access_users
-       SET verified_at = datetime('now'), updated_at = datetime('now')
+       SET status = 'active',
+           verified_at = datetime('now'),
+           updated_at = datetime('now')
        WHERE id = ?`
     ).run(user.id);
 
@@ -1110,12 +1161,12 @@ const AccessUsers = {
     if (!digits) throw new Error('Phone number is required');
     if (!code || code.length < 4) throw new Error('Access code must be at least 4 characters');
 
-    // Prefer storing with country code when admin enters 10-digit IN mobile
     if (digits.length === 10) digits = `91${digits}`;
 
     const result = db
       .prepare(
-        `INSERT INTO access_users (name, phone, access_code) VALUES (?, ?, ?)`
+        `INSERT INTO access_users (name, phone, access_code, status)
+         VALUES (?, ?, ?, 'waiting_code')`
       )
       .run(displayName, digits, code);
     return this.get(result.lastInsertRowid);
@@ -1143,6 +1194,7 @@ const AccessUsers = {
            access_code = ?,
            is_active = COALESCE(?, is_active),
            verified_at = CASE WHEN ? = 1 THEN NULL ELSE verified_at END,
+           status = CASE WHEN ? = 1 THEN 'waiting_code' ELSE status END,
            updated_at = datetime('now')
        WHERE id = ?`
     ).run(
@@ -1150,6 +1202,7 @@ const AccessUsers = {
       digits,
       code,
       is_active ?? null,
+      clear_verified ? 1 : 0,
       clear_verified ? 1 : 0,
       id
     );
@@ -1160,13 +1213,21 @@ const AccessUsers = {
     const user = this.findByPhone(phone);
     if (user) {
       db.prepare(
-        `UPDATE access_users SET verified_at = NULL, updated_at = datetime('now') WHERE id = ?`
+        `UPDATE access_users
+         SET verified_at = NULL,
+             status = 'waiting_code',
+             updated_at = datetime('now')
+         WHERE id = ?`
       ).run(user.id);
       return;
     }
     const digits = digitsOnly(phone);
     db.prepare(
-      `UPDATE access_users SET verified_at = NULL, updated_at = datetime('now') WHERE phone = ?`
+      `UPDATE access_users
+       SET verified_at = NULL,
+           status = 'waiting_code',
+           updated_at = datetime('now')
+       WHERE phone = ?`
     ).run(digits);
   },
 

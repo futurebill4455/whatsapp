@@ -7,11 +7,8 @@ const {
   Settings,
   Submissions,
   MessageLog,
-  Workflows,
-  WorkflowRuns,
   InternalNumbers,
   ChatSessions,
-  ChatFlow,
   AccessUsers,
 } = require('../models');
 const { bindEngine, newToken } = require('./workflowEngine');
@@ -59,36 +56,6 @@ function getCloseKeywords() {
 function isCloseCommand(text) {
   const n = normalizeMsg(text);
   return getCloseKeywords().some((k) => n === k);
-}
-
-/**
- * ChatFlow rows that start the insurance form link (greetings).
- * Custom info keywords (brochure, address, …) return false.
- */
-function isFormLinkChatFlow(flow) {
-  if (!flow) return false;
-  const tpl = String(flow.response_template || '');
-  if (tpl.includes('{{form_link}}')) return true;
-  const keys = String(flow.trigger_keyword || '')
-    .split(',')
-    .map((k) => k.trim().toLowerCase())
-    .filter(Boolean);
-  const greetings = new Set([
-    ...HARDCODED_GREETINGS.map((g) => g.toLowerCase()),
-    ...String(Settings.get('trigger_keywords') || 'hi,hello,hey,start,ഹായ്')
-      .split(',')
-      .map((k) => k.trim().toLowerCase())
-      .filter(Boolean),
-  ]);
-  return keys.some((k) => greetings.has(k));
-}
-
-function isYesReply(text) {
-  return ['yes', 'y', 'confirm', 'ok', 'okay'].includes(normalizeMsg(text));
-}
-
-function isNoReply(text) {
-  return ['no', 'n', 'cancel'].includes(normalizeMsg(text));
 }
 
 function makeToken() {
@@ -1160,170 +1127,68 @@ class WhatsAppService {
     if (!body) return;
 
     try {
-      // 2) CORE access gate — independent of Drawflow / visual workflow builder.
-      // Flexible phone match + unique ACCESS_CODE → unlock → bare form URL (anti-ban paced).
-      const accessEnabled = Settings.get('access_control_enabled', '1') !== '0';
-      if (accessEnabled) {
-        const unlocked = AccessUsers.isUnlocked(phone);
+      // ═══════════════════════════════════════════════════════════════
+      // DB-ONLY access path — no visual workflow builder involvement.
+      // ═══════════════════════════════════════════════════════════════
+      const user = AccessUsers.findByPhone(phone);
 
-        if (!unlocked) {
-          const unlockResult = AccessUsers.tryUnlock(phone, body);
-          if (unlockResult.ok) {
-            const canonicalPhone = unlockResult.user.phone || phone;
-            console.log(
-              `[Access] Unlocked inbound=${phone} matched=${canonicalPhone} ` +
-                `(${unlockResult.user.name}) code=${unlockResult.user.access_code} — sending form URL (no workflow dependency)`
-            );
-            // Status flips Waiting for code → Unlocked via verified_at; send bare URL only
-            await this.sendFormLinkOnly(canonicalPhone, {
-              chatId,
-              replyTo: message,
-              inboundText: body,
-            });
-            return;
-          }
-
-          // Legacy Yes/No only if a pending confirmation still exists (pre-migration)
-          const authorized = AccessUsers.findByPhone(phone);
-          if (authorized && (isYesReply(body) || isNoReply(body))) {
-            const pending =
-              Submissions.findPendingConfirmation(authorized.phone) ||
-              Submissions.findPendingConfirmation(phone);
-            if (pending && isYesReply(body)) {
-              await this.confirmAndForward(pending, {
-                chatId,
-                replyTo: message,
-                inboundText: body,
-              });
-              return;
-            }
-            if (pending && isNoReply(body)) {
-              await this.sendFormLinkOnly(authorized.phone || phone, {
-                chatId,
-                replyTo: message,
-                inboundText: body,
-                forceNew: true,
-              });
-              try {
-                Submissions.cancel?.(pending.id);
-              } catch (_) {}
-              return;
-            }
-          }
-
-          console.log(
-            `[Access] Silent ignore from ${phone} (reason=${unlockResult.reason}${
-              authorized ? ', registered-not-unlocked' : ', unknown'
-            })`
-          );
-          return;
-        }
-      }
-
-      // 3) Yes/No for pending confirmation (unlocked users)
-      if (isYesReply(body)) {
-        const pending = Submissions.findPendingConfirmation(phone);
-        if (pending) {
-          await this.confirmAndForward(pending, {
-            chatId,
-            replyTo: message,
-            inboundText: body,
-          });
-          return;
-        }
-      }
-      if (isNoReply(body)) {
-        const pending = Submissions.findPendingConfirmation(phone);
-        if (pending) {
-          const nodes = this.engine.getActiveGraph()?.nodes || {};
-          await this.engine.resendFormAfterDecline(pending, nodes, {
-            phone,
-            chatId,
-            replyTo: message,
-            inboundText: body,
-          });
-          return;
-        }
-      }
-
-      // 4) Working hours — pause new automation outside daytime
-      if (!antiBan.isWithinWorkingHours()) {
-        console.log(`[AntiBan] Outside working hours — ignoring automation from ${phone}`);
-        if (Settings.get('anti_ban_after_hours_reply', '0') === '1') {
-          await this.sendMessage(
-            phone,
-            replyVariations.pick('after_hours', { phone }),
-            {
-              chatId,
-              replyTo: message,
-              inboundText: body,
-            }
-          );
-        }
+      // Unauthorized number → complete silence
+      if (!user || !user.is_active) {
+        console.log(`[Access] Silent ignore unauthorized ${phone}`);
         return;
       }
 
-      // 5) Custom admin keywords (brochure, address, …) — unlocked users only
-      const keywordFlow = ChatFlow.findByKeyword(body);
-      if (keywordFlow && !isFormLinkChatFlow(keywordFlow) && !isHardcodedGreeting(body)) {
-        const business = Settings.get('business_name', 'SecureLife Insurance');
-        const text = this.renderTemplate(keywordFlow.response_template, {
-          business_name: business,
-          phone,
-        });
-        console.log(`[WhatsApp] Custom keyword reply for: ${body}`);
-        await this.sendMessage(phone, text, {
+      const status = AccessUsers.displayStatus(user);
+      const canonicalPhone = user.phone || phone;
+
+      // Waiting for code → only ACCESS_CODE unlocks; wrong/other text → silence
+      if (status === 'waiting_code') {
+        const unlockResult = AccessUsers.tryUnlock(phone, body);
+        if (!unlockResult.ok) {
+          console.log(
+            `[Access] Silent ignore ${phone} waiting_code reason=${unlockResult.reason}`
+          );
+          return;
+        }
+
+        console.log(
+          `[Access] ${canonicalPhone} (${user.name}) → Active — bare form URL (DB-only)`
+        );
+        await this.sendFormLinkOnly(canonicalPhone, {
           chatId,
           replyTo: message,
           inboundText: body,
         });
+        // Two-way relay arms after form submit (desk known); Active users are eligible now
         return;
       }
 
-      // 6) Active Drawflow workflow (or Settings/ChatFlow fallback inside engine)
-      const result = await this.engine.handleIncomingMessage({
-        phone,
-        body,
-        chatId,
-        replyTo: message,
-        inboundText: body,
-      });
-      console.log(
-        '[WhatsApp] Workflow result:',
-        result?.reason || (result?.handled ? 'handled' : 'unhandled'),
-        result?.waiting || ''
-      );
-      if (result?.handled) return;
-      if (result?.reason === 'unmatched_reply' && !isHardcodedGreeting(body)) return;
+      // Active user — DB helpers only (silence until form submit opens bridge)
+      if (status === 'active') {
+        if (isCloseCommand(body)) {
+          // No open bridge session → silence (bridge handler already covered active chats)
+          return;
+        }
 
-      // 7) Greeting ChatFlow / Hi → form link
-      const flow = ChatFlow.findByKeyword(body);
-      if ((flow && isFormLinkChatFlow(flow)) || isHardcodedGreeting(body)) {
-        console.log('[WhatsApp] ChatFlow / greeting form-link for:', body);
-        await this.sendGreetingFormLink(phone, {
-          chatId,
-          replyTo: message,
-          flow: flow && isFormLinkChatFlow(flow) ? flow : null,
-        });
+        // Optional: resend bare form link on Hi (still no workflow)
+        if (isHardcodedGreeting(body)) {
+          await this.sendFormLinkOnly(canonicalPhone, {
+            chatId,
+            replyTo: message,
+            inboundText: body,
+          });
+          return;
+        }
+
+        // Ignore all other chatter until form submit opens two-way bridge
+        console.log(`[Access] Active ${canonicalPhone} — no bot reply for: ${body.slice(0, 40)}`);
         return;
       }
 
-      console.log('[WhatsApp] No trigger matched for:', JSON.stringify(body));
+      console.log(`[Access] Silent ignore ${phone} status=${status}`);
     } catch (err) {
-      console.error('[WhatsApp] Flow execution error:', err?.message || err);
-      // Never leak error replies to unauthorized numbers
-      if (Settings.get('access_control_enabled', '1') !== '0' && !AccessUsers.isUnlocked(phone)) {
-        return;
-      }
-      try {
-        await this.sendMessage(
-          phone,
-          'Sorry — something went wrong on our side. Please send *Hi* again in a moment.',
-          { chatId, replyTo: message }
-        );
-      } catch (sendErr) {
-        console.error('[WhatsApp] Error-reply also failed:', sendErr.message);
-      }
+      console.error('[WhatsApp] Access handler error:', err?.message || err);
+      // Never reply on errors for gated traffic
     }
   }
 
@@ -2077,20 +1942,10 @@ class WhatsAppService {
   }
 
   /**
-   * Core form-link delivery — no welcome text, no workflow-builder dependency.
-   * Uses chatId/replyTo so LID peers still receive the URL after whitelist unlock.
+   * Bare form URL only — pure DB + anti-ban send. No workflow builder.
    */
   async sendFormLinkOnly(phone, opts = {}) {
     const existing = Submissions.findLatestOpen(phone);
-    if (existing && existing.status === 'awaiting_confirmation') {
-      await this.confirmAndForward(existing, {
-        chatId: opts.chatId,
-        replyTo: opts.replyTo,
-        inboundText: opts.inboundText,
-      });
-      return true;
-    }
-
     let submission =
       !opts.forceNew && existing && existing.status === 'awaiting_form'
         ? existing
@@ -2104,36 +1959,11 @@ class WhatsAppService {
       } catch (_) {}
     }
 
-    // Optional: arm workflow waiter IF a graph exists — never required for unlock/form URL
-    try {
-      const active = this.engine?.getActiveGraph?.();
-      if (active) {
-        const formNode = Object.values(active.nodes || {}).find((n) => n.type === 'form_submit');
-        if (formNode) {
-          const run = WorkflowRuns.create({
-            workflow_id: active.workflow.id,
-            customer_phone: phone,
-            submission_token: submission.token,
-            context: { phone, chatId: opts.chatId },
-          });
-          Submissions.setWorkflowRun(submission.token, run.id);
-          WorkflowRuns.update(run.id, {
-            status: 'waiting',
-            current_node_id: formNode.id,
-            waiting_for: 'form_submit',
-            submission_token: submission.token,
-            context: { phone, chatId: opts.chatId },
-          });
-        }
-      }
-    } catch (err) {
-      console.warn('[WhatsApp] Workflow arm skipped (form link still sent):', err.message);
-    }
-
     const formLink = sanitizeFormLink(this.buildFormUrl(submission.token));
-    console.log(`[WhatsApp] Bare form link → ${phone} (chatId=${opts.chatId || 'n/a'}): ${formLink}`);
+    console.log(
+      `[WhatsApp] DB form link → ${phone} chatId=${opts.chatId || 'n/a'}: ${formLink}`
+    );
 
-    // Anti-ban jitter + typing live inside sendMessage; prefer inbound chatId/reply
     await this.sendMessage(phone, formLink, {
       chatId: opts.chatId,
       replyTo: opts.replyTo,
@@ -2142,14 +1972,14 @@ class WhatsAppService {
     return true;
   }
 
-  /** Alias — welcome greeting removed; bare link only. */
+  /** @deprecated alias */
   async sendGreetingFormLink(phone, opts = {}) {
     return this.sendFormLinkOnly(phone, opts);
   }
 
   /**
-   * After web form submit: lead goes to desk ONLY + instant two-way session.
-   * Never echoes submission details back to the customer.
+   * After web form submit: desk-only lead + instant native two-way relay.
+   * Does not use the visual workflow builder for routing.
    */
   async sendFormConfirmation(submission) {
     return this.notifyFormSubmitted(submission);
@@ -2165,14 +1995,22 @@ class WhatsAppService {
       return false;
     }
 
+    if (!AccessUsers.isUnlocked(submission.customer_phone)) {
+      console.warn(
+        `[WhatsApp] Form submit ignored — ${submission.customer_phone} not Active in access_users`
+      );
+      return false;
+    }
+
     try {
-      const result = await this.engine.forwardLeadToDesk(submission, {
+      const { forwardLeadToDesk } = require('./workflowEngine');
+      const result = await forwardLeadToDesk(submission, {
         phone: submission.customer_phone,
         chatId: submission.customer_chat_id || undefined,
         notifyCustomer: false,
         sendDeskTip: false,
       });
-      console.log('[WhatsApp] Form → desk forward result:', result);
+      console.log('[WhatsApp] Form → desk + two-way session:', result);
       return !!result?.ok;
     } catch (err) {
       console.error('[WhatsApp] Form → desk forward failed:', err.message);
@@ -2181,18 +2019,8 @@ class WhatsAppService {
   }
 
   async confirmAndForward(submission, opts = {}) {
-    try {
-      const waiting = WorkflowRuns.findWaiting(submission.customer_phone, 'yes_no');
-      if (waiting) {
-        WorkflowRuns.update(waiting.id, {
-          status: 'completed',
-          waiting_for: null,
-          submission_token: submission.token,
-        });
-      }
-    } catch (_) {}
-
-    await this.engine.forwardLeadToDesk(submission, {
+    const { forwardLeadToDesk } = require('./workflowEngine');
+    await forwardLeadToDesk(submission, {
       phone: submission.customer_phone,
       chatId: opts.chatId || submission.customer_chat_id,
       replyTo: opts.replyTo,

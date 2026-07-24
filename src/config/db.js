@@ -169,6 +169,7 @@ function initSchema() {
       phone TEXT NOT NULL UNIQUE,
       access_code TEXT NOT NULL UNIQUE,
       is_active INTEGER DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'waiting_code',
       verified_at TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
@@ -196,6 +197,21 @@ function initSchema() {
   } catch (_) {}
   try {
     db.exec(`ALTER TABLE chat_sessions ADD COLUMN last_desk_msg_at TEXT`);
+  } catch (_) {}
+  try {
+    db.exec(`ALTER TABLE access_users ADD COLUMN status TEXT NOT NULL DEFAULT 'waiting_code'`);
+  } catch (_) {}
+  try {
+    db.exec(`
+      UPDATE access_users
+      SET status = 'active'
+      WHERE verified_at IS NOT NULL AND TRIM(verified_at) != ''
+    `);
+    db.exec(`
+      UPDATE access_users
+      SET status = 'waiting_code'
+      WHERE verified_at IS NULL OR TRIM(COALESCE(verified_at, '')) = ''
+    `);
   } catch (_) {}
 
   // Indexes after migrations so existing DBs get new columns first
