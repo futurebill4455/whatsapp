@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('../partials/styles') %>
+</head>
+<body class="font-sans text-ink page-bg min-h-screen antialiased">
+  <%- include('../partials/nav') %>
+
+  <main class="max-w-3xl mx-auto px-4 py-8 space-y-8 animate-in">
+    <div>
+      <p class="text-sm font-semibold uppercase tracking-wider text-sea mb-1">Configuration</p>
+      <h1 class="font-display text-3xl font-bold">Settings</h1>
+      <p class="text-ink/55 mt-1 text-sm">Business identity, message templates, and anti-ban pacing.</p>
+    </div>
+
+    <% if (typeof flash !== 'undefined' && flash) { %>
+      <div class="rounded-2xl px-4 py-3 text-sm font-medium border <%= flash.type === 'error' ? 'bg-coral/10 text-coral border-coral/20' : 'bg-sea/10 text-sea border-sea/20' %>">
+        <%= flash.message %>
+      </div>
+    <% } %>
+
+    <form method="post" action="/admin/settings" class="space-y-6">
+      <section class="panel p-5 md:p-6 space-y-4">
+        <h2 class="font-display text-lg font-semibold">Business</h2>
+        <div>
+          <label class="label">Business name</label>
+          <input class="field" name="business_name" value="<%= settings.business_name || '' %>" />
+        </div>
+        <div>
+          <label class="label">Close keywords (comma-separated)</label>
+          <input class="field" name="close_keywords" value="<%= settings.close_keywords || 'close,cls' %>" />
+        </div>
+        <div>
+          <label class="label">Form intro</label>
+          <textarea class="field" name="form_intro" rows="3"><%= settings.form_intro || '' %></textarea>
+        </div>
+        <div>
+          <label class="label">Success message</label>
+          <textarea class="field" name="success_message" rows="3"><%= settings.success_message || '' %></textarea>
+        </div>
+      </section>
+
+      <section class="panel p-5 md:p-6 space-y-4">
+        <h2 class="font-display text-lg font-semibold">Templates</h2>
+        <div>
+          <label class="label">Forward template</label>
+          <textarea class="field font-mono text-xs" name="forward_template" rows="6"><%= settings.forward_template || '' %></textarea>
+        </div>
+        <div>
+          <label class="label">Chat close message</label>
+          <textarea class="field" name="chat_close_message" rows="2"><%= settings.chat_close_message || '' %></textarea>
+        </div>
+        <div>
+          <label class="label">Company close notify</label>
+          <textarea class="field" name="company_close_notify_message" rows="2"><%= settings.company_close_notify_message || '' %></textarea>
+        </div>
+        <div>
+          <label class="label">Access denied</label>
+          <textarea class="field" name="access_denied_message" rows="2"><%= settings.access_denied_message || '' %></textarea>
+        </div>
+        <div>
+          <label class="label">Wrong access code</label>
+          <textarea class="field" name="access_wrong_code_message" rows="2"><%= settings.access_wrong_code_message || '' %></textarea>
+        </div>
+        <div>
+          <label class="label">Access granted</label>
+          <textarea class="field" name="access_granted_message" rows="2"><%= settings.access_granted_message || '' %></textarea>
+        </div>
+      </section>
+
+      <section class="panel p-5 md:p-6 space-y-4 bg-gradient-to-br from-amber/5 via-white to-sea/5">
+        <div class="flex items-center gap-2">
+          <span class="chip bg-amber/15 text-amber">Anti-ban</span>
+          <h2 class="font-display text-lg font-semibold">Humanization</h2>
+        </div>
+        <div class="grid sm:grid-cols-2 gap-3">
+          <div>
+            <label class="label">Jitter min (ms)</label>
+            <input class="field" type="number" name="anti_ban_jitter_min_ms" min="2000" max="30000"
+                   value="<%= settings.anti_ban_jitter_min_ms || 4000 %>" />
+          </div>
+          <div>
+            <label class="label">Jitter max (ms) — up to 30000</label>
+            <input class="field" type="number" name="anti_ban_jitter_max_ms" min="2000" max="30000"
+                   value="<%= settings.anti_ban_jitter_max_ms || 30000 %>" />
+          </div>
+          <div>
+            <label class="label">Min gap between sends (ms)</label>
+            <input class="field" type="number" name="anti_ban_min_gap_ms" min="0" max="60000"
+                   value="<%= settings.anti_ban_min_gap_ms || 4000 %>" />
+          </div>
+          <div>
+            <label class="label">Timezone</label>
+            <input class="field" name="anti_ban_timezone" value="<%= settings.anti_ban_timezone || 'Asia/Kolkata' %>" />
+          </div>
+          <div>
+            <label class="label">Hours start (0–23)</label>
+            <input class="field" type="number" name="anti_ban_hours_start" min="0" max="23"
+                   value="<%= settings.anti_ban_hours_start || 9 %>" />
+          </div>
+          <div>
+            <label class="label">Hours end (0–23)</label>
+            <input class="field" type="number" name="anti_ban_hours_end" min="0" max="23"
+                   value="<%= settings.anti_ban_hours_end || 21 %>" />
+          </div>
+        </div>
+        <label class="flex items-center gap-2 text-sm font-semibold">
+          <input type="checkbox" name="anti_ban_hours_enabled" value="1"
+            <%= String(settings.anti_ban_hours_enabled || '1') === '1' ? 'checked' : '' %> />
+          Enforce working hours
+        </label>
+      </section>
+
+      <button type="submit" class="btn-primary px-8 py-3">Save settings</button>
+    </form>
+  </main>
+</body>
+</html>

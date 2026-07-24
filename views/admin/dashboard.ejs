@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('../partials/styles') %>
+</head>
+<body class="font-sans text-ink page-bg min-h-screen antialiased">
+  <%- include('../partials/nav') %>
+
+  <main class="max-w-7xl mx-auto px-4 py-8 space-y-8 animate-in">
+    <div class="flex flex-wrap items-end justify-between gap-4">
+      <div>
+        <p class="text-sm font-semibold uppercase tracking-wider text-violet mb-1">Overview</p>
+        <h1 class="font-display text-3xl font-bold">Dashboard</h1>
+      </div>
+      <a href="/" class="btn-ghost">Open QR page</a>
+    </div>
+
+    <% if (typeof flash !== 'undefined' && flash) { %>
+      <div class="rounded-2xl px-4 py-3 text-sm font-medium border <%= flash.type === 'error' ? 'bg-coral/10 text-coral border-coral/20' : 'bg-sea/10 text-sea border-sea/20' %>">
+        <%= flash.message %>
+      </div>
+    <% } %>
+
+    <div class="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+      <% const cards = [
+        { label: 'Total leads', value: stats.total, from: 'from-sea', to: 'to-teal-400' },
+        { label: 'Today', value: stats.today, from: 'from-amber', to: 'to-orange-400' },
+        { label: 'Awaiting form', value: stats.awaiting_form, from: 'from-violet', to: 'to-fuchsia-500' },
+        { label: 'Submitted', value: stats.submitted, from: 'from-sky-500', to: 'to-sea' },
+        { label: 'Forwarded', value: stats.forwarded, from: 'from-emerald-500', to: 'to-sea' },
+        { label: 'Live chats', value: typeof activeChats !== 'undefined' ? activeChats : 0, from: 'from-coral', to: 'to-amber' },
+      ]; %>
+      <% cards.forEach(function (c) { %>
+        <div class="stat-card panel p-4 relative overflow-hidden">
+          <div class="absolute inset-x-0 top-0 h-1 bg-gradient-to-r <%= c.from %> <%= c.to %>"></div>
+          <div class="text-xs uppercase tracking-wide text-ink/45 font-semibold"><%= c.label %></div>
+          <div class="font-display text-3xl font-semibold mt-1"><%= c.value %></div>
+        </div>
+      <% }) %>
+    </div>
+
+    <div class="grid lg:grid-cols-2 gap-6">
+      <section class="panel p-5 md:p-6">
+        <div class="flex items-center justify-between gap-3 mb-4">
+          <h2 class="font-display text-lg font-semibold">WhatsApp</h2>
+          <% const st = waStatus && waStatus.status ? waStatus.status : 'unknown'; %>
+          <span class="chip <%= waStatus && waStatus.ready ? 'bg-sea/15 text-sea' : (st === 'qr' ? 'bg-amber/15 text-amber' : 'bg-coral/15 text-coral') %>">
+            <%= waStatus && waStatus.ready ? 'Ready' : st %>
+          </span>
+        </div>
+        <dl class="grid grid-cols-2 gap-3 text-sm mb-5">
+          <div class="rounded-xl bg-mist/60 p-3">
+            <dt class="text-ink/45 text-xs font-semibold uppercase">Status</dt>
+            <dd class="font-semibold mt-0.5"><%= st %></dd>
+          </div>
+          <div class="rounded-xl bg-mist/60 p-3">
+            <dt class="text-ink/45 text-xs font-semibold uppercase">Ready</dt>
+            <dd class="font-semibold mt-0.5"><%= waStatus && waStatus.ready ? 'Yes' : 'No' %></dd>
+          </div>
+        </dl>
+        <% if (waStatus && waStatus.lastError) { %>
+          <p class="text-sm text-coral mb-4"><%= waStatus.lastError %></p>
+        <% } %>
+        <div class="flex flex-wrap gap-2">
+          <form method="post" action="/admin/whatsapp/reset-session" onsubmit="return confirm('Reset WhatsApp session and show a new QR?');">
+            <button type="submit" class="btn-primary">Reset session</button>
+          </form>
+          <form method="post" action="/admin/whatsapp/logout" onsubmit="return confirm('Log out of WhatsApp?');">
+            <button type="submit" class="btn-ghost text-coral border-coral/25">Logout WA</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="panel p-5 md:p-6">
+        <h2 class="font-display text-lg font-semibold mb-4">Active chats</h2>
+        <% if (!activeChatList || !activeChatList.length) { %>
+          <p class="text-sm text-ink/50">No live desk bridges right now.</p>
+        <% } else { %>
+          <ul class="space-y-2 max-h-56 overflow-auto">
+            <% activeChatList.forEach(function (c) { %>
+              <li class="flex items-center justify-between gap-3 rounded-xl bg-mist/50 px-3 py-2 text-sm">
+                <div>
+                  <div class="font-semibold"><%= c.customer_phone %></div>
+                  <div class="text-ink/45 text-xs"><%= c.company_name || 'Desk' %> · #<%= c.session_code || c.id %></div>
+                </div>
+                <span class="chip bg-sea/15 text-sea">live</span>
+              </li>
+            <% }) %>
+          </ul>
+        <% } %>
+      </section>
+    </div>
+
+    <div class="grid lg:grid-cols-2 gap-6">
+      <section class="panel p-5 md:p-6">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="font-display text-lg font-semibold">Recent leads</h2>
+          <a href="/admin/submissions" class="text-sm font-semibold text-sea hover:underline">View all</a>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-left text-ink/45 text-xs uppercase tracking-wide">
+                <th class="pb-2 font-semibold">Customer</th>
+                <th class="pb-2 font-semibold">Type</th>
+                <th class="pb-2 font-semibold">Status</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-ink/5">
+              <% (recentLeads || []).forEach(function (l) { %>
+                <tr>
+                  <td class="py-2.5">
+                    <div class="font-semibold"><%= l.customer_name || '—' %></div>
+                    <div class="text-xs text-ink/45"><%= l.customer_phone %></div>
+                  </td>
+                  <td class="py-2.5"><%= l.insurance_type || '—' %></td>
+                  <td class="py-2.5"><span class="chip bg-violet/10 text-violet"><%= l.status %></span></td>
+                </tr>
+              <% }) %>
+              <% if (!recentLeads || !recentLeads.length) { %>
+                <tr><td colspan="3" class="py-6 text-ink/45">No leads yet.</td></tr>
+              <% } %>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel p-5 md:p-6">
+        <h2 class="font-display text-lg font-semibold mb-4">Recent messages</h2>
+        <ul class="space-y-2 max-h-72 overflow-auto">
+          <% (recentMessages || []).forEach(function (m) { %>
+            <li class="rounded-xl border border-ink/5 px-3 py-2 text-sm">
+              <div class="flex items-center gap-2 mb-1">
+                <span class="chip <%= m.direction === 'out' ? 'bg-sea/15 text-sea' : 'bg-amber/15 text-amber' %>"><%= m.direction %></span>
+                <span class="text-xs text-ink/45"><%= m.phone || '—' %></span>
+                <span class="text-xs text-ink/35 ml-auto"><%= m.created_at %></span>
+              </div>
+              <p class="text-ink/70 line-clamp-2"><%= m.body %></p>
+            </li>
+          <% }) %>
+          <% if (!recentMessages || !recentMessages.length) { %>
+            <li class="text-sm text-ink/45 py-4">No messages logged yet.</li>
+          <% } %>
+        </ul>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

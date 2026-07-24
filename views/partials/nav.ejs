@@ -1,0 +1,37 @@
+<%
+  const links = [
+    { href: '/', label: 'QR', match: /^\/$/ },
+    { href: '/admin', label: 'Dashboard', match: /^\/admin\/?$/ },
+    { href: '/admin/workflow', label: 'Workflow', match: /^\/admin\/workflow/ },
+    { href: '/admin/access', label: 'Users', match: /^\/admin\/access/ },
+    { href: '/admin/form-builder', label: 'Form Builder', match: /^\/admin\/form-builder/ },
+    { href: '/admin/catalog', label: 'Catalog', match: /^\/admin\/catalog/ },
+    { href: '/admin/settings', label: 'Settings', match: /^\/admin\/settings/ },
+    { href: '/admin/submissions', label: 'Leads', match: /^\/admin\/submissions/ },
+  ];
+%>
+<header class="sticky top-0 z-40 border-b border-ink/10 bg-white/75 backdrop-blur-md">
+  <div class="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center gap-3">
+    <a href="/admin" class="font-display font-bold text-lg bg-gradient-to-r from-sea to-violet bg-clip-text text-transparent">
+      <%= businessName %>
+    </a>
+    <nav class="flex flex-wrap items-center gap-1.5 flex-1">
+      <% links.forEach(function (l) {
+        const active = typeof reqPath === 'string' ? l.match.test(reqPath) : false;
+      %>
+        <a href="<%= l.href %>"
+           class="px-3 py-1.5 rounded-xl text-sm font-semibold transition <%= active ? 'bg-gradient-to-r from-sea/15 to-violet/15 text-ink' : 'text-ink/60 hover:bg-mist hover:text-ink' %>">
+          <%= l.label %>
+        </a>
+      <% }) %>
+    </nav>
+    <% if (admin) { %>
+      <div class="flex items-center gap-2">
+        <span class="chip bg-amber/15 text-amber hidden sm:inline-flex"><%= admin %></span>
+        <form method="post" action="/admin/logout">
+          <button type="submit" class="btn-ghost text-coral border-coral/20 hover:bg-coral/5">Logout</button>
+        </form>
+      </div>
+    <% } %>
+  </div>
+</header>

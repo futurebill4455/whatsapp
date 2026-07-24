@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('partials/styles') %>
+</head>
+<body class="font-sans text-ink page-bg min-h-screen antialiased">
+  <main class="min-h-screen flex items-center justify-center px-4 py-12">
+    <div class="panel p-8 max-w-md w-full text-center animate-in">
+      <div class="w-16 h-16 mx-auto mb-5 rounded-2xl bg-gradient-to-br from-sea to-violet"></div>
+      <h1 class="font-display text-2xl font-bold mb-2">Thank you</h1>
+      <p class="text-ink/65 whitespace-pre-line"><%= successMessage %></p>
+      <% if (submission && submission.customer_name) { %>
+        <p class="mt-4 text-sm text-ink/45">Submitted for <strong class="text-ink"><%= submission.customer_name %></strong></p>
+      <% } %>
+    </div>
+  </main>
+</body>
+</html>

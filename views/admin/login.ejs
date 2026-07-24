@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('../partials/styles') %>
+</head>
+<body class="font-sans text-ink page-bg min-h-screen antialiased">
+  <main class="min-h-screen flex items-center justify-center px-4 py-12">
+    <div class="w-full max-w-md animate-in">
+      <div class="text-center mb-8">
+        <p class="text-sm font-semibold uppercase tracking-wider text-sea mb-2">Admin</p>
+        <h1 class="font-display text-3xl font-bold bg-gradient-to-r from-sea to-violet bg-clip-text text-transparent">
+          <%= businessName %>
+        </h1>
+        <p class="text-ink/55 mt-2 text-sm">Sign in to manage leads, workflows & WhatsApp</p>
+      </div>
+
+      <div class="panel p-6 md:p-8">
+        <% if (typeof flash !== 'undefined' && flash) { %>
+          <div class="mb-5 rounded-xl px-4 py-3 text-sm font-medium border <%= flash.type === 'error' ? 'bg-coral/10 text-coral border-coral/20' : 'bg-sea/10 text-sea border-sea/20' %>">
+            <%= flash.message %>
+          </div>
+        <% } %>
+
+        <form method="post" action="/admin/login" class="space-y-4">
+          <div>
+            <label class="label" for="username">Username</label>
+            <input class="field" id="username" name="username" autocomplete="username" required autofocus />
+          </div>
+          <div>
+            <label class="label" for="password">Password</label>
+            <input class="field" id="password" name="password" type="password" autocomplete="current-password" required />
+          </div>
+          <button type="submit" class="btn-primary w-full py-3">Sign in</button>
+        </form>
+      </div>
+
+      <p class="text-center text-sm text-ink/45 mt-6">
+        <a href="/" class="text-sea font-semibold hover:underline">← Back to QR connect</a>
+      </p>
+    </div>
+  </main>
+</body>
+</html>

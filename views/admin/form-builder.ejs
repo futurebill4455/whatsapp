@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('../partials/styles') %>
+</head>
+<body class="font-sans text-ink page-bg min-h-screen antialiased">
+  <%- include('../partials/nav') %>
+
+  <main class="max-w-5xl mx-auto px-4 py-8 space-y-8 animate-in">
+    <div>
+      <p class="text-sm font-semibold uppercase tracking-wider text-violet mb-1">Intake</p>
+      <h1 class="font-display text-3xl font-bold">Form builder</h1>
+      <p class="text-ink/55 mt-1 text-sm">Manage optional metadata fields. The public form still uses the fixed multi-step structure (type → company → premium → duration → details).</p>
+    </div>
+
+    <% if (typeof flash !== 'undefined' && flash) { %>
+      <div class="rounded-2xl px-4 py-3 text-sm font-medium border <%= flash.type === 'error' ? 'bg-coral/10 text-coral border-coral/20' : 'bg-sea/10 text-sea border-sea/20' %>">
+        <%= flash.message %>
+      </div>
+    <% } %>
+
+    <section class="panel p-5 md:p-6 bg-gradient-to-br from-sea/5 via-white to-violet/5">
+      <h2 class="font-display font-semibold mb-2">Form structure note</h2>
+      <ul class="text-sm text-ink/65 space-y-1.5 list-disc pl-5">
+        <li>Step 1: Insurance type (Health / Vehicle from catalog)</li>
+        <li>Step 2: Company filtered by type (desk phone used for forwarding)</li>
+        <li>Step 3: Premium / sum insured + policy duration</li>
+        <li>Step 4: Customer name, advisor, and member rows for Health</li>
+        <li>Special field types: <code class="text-xs bg-mist px-1 rounded">select_insurance_type</code>, <code class="text-xs bg-mist px-1 rounded">select_company</code>, <code class="text-xs bg-mist px-1 rounded">select_premium</code>, <code class="text-xs bg-mist px-1 rounded">select_duration</code></li>
+      </ul>
+    </section>
+
+    <section class="panel p-5 md:p-6 space-y-4">
+      <h2 class="font-display text-lg font-semibold">Add field</h2>
+      <form method="post" action="/admin/form-builder/fields" class="grid sm:grid-cols-2 gap-3">
+        <div>
+          <label class="label">Field key</label>
+          <input class="field" name="field_key" required placeholder="customer_name" />
+        </div>
+        <div>
+          <label class="label">Label</label>
+          <input class="field" name="label" required placeholder="Full Name" />
+        </div>
+        <div>
+          <label class="label">Type</label>
+          <select class="field" name="field_type">
+            <option value="text">text</option>
+            <option value="number">number</option>
+            <option value="select">select</option>
+            <option value="select_insurance_type">select_insurance_type</option>
+            <option value="select_company">select_company</option>
+            <option value="select_premium">select_premium</option>
+            <option value="select_duration">select_duration</option>
+            <option value="textarea">textarea</option>
+          </select>
+        </div>
+        <div>
+          <label class="label">Sort order</label>
+          <input class="field" name="sort_order" type="number" value="0" />
+        </div>
+        <div class="sm:col-span-2">
+          <label class="label">Options (one per line, for select)</label>
+          <textarea class="field" name="options" rows="3" placeholder="Option A&#10;Option B"></textarea>
+        </div>
+        <label class="flex items-center gap-2 text-sm font-semibold">
+          <input type="checkbox" name="is_required" value="1" checked /> Required
+        </label>
+        <button type="submit" class="btn-primary justify-self-start">Add field</button>
+      </form>
+    </section>
+
+    <section class="panel overflow-hidden">
+      <div class="px-5 py-4 border-b border-ink/5">
+        <h2 class="font-display text-lg font-semibold">Fields</h2>
+      </div>
+      <ul class="divide-y divide-ink/5">
+        <% fields.forEach(function (f) { %>
+          <li class="p-4 md:p-5">
+            <form method="post" action="/admin/form-builder/fields/<%= f.id %>" class="grid sm:grid-cols-2 gap-3">
+              <div>
+                <label class="label">Key</label>
+                <input class="field bg-mist/40" value="<%= f.field_key %>" disabled />
+              </div>
+              <div>
+                <label class="label">Label</label>
+                <input class="field" name="label" value="<%= f.label %>" />
+              </div>
+              <div>
+                <label class="label">Type</label>
+                <select class="field" name="field_type">
+                  <% ['text','number','select','select_insurance_type','select_company','select_premium','select_duration','textarea'].forEach(function (t) { %>
+                    <option value="<%= t %>" <%= f.field_type === t ? 'selected' : '' %>><%= t %></option>
+                  <% }) %>
+                </select>
+              </div>
+              <div>
+                <label class="label">Sort</label>
+                <input class="field" name="sort_order" type="number" value="<%= f.sort_order %>" />
+              </div>
+              <div class="sm:col-span-2">
+                <label class="label">Options</label>
+                <textarea class="field" name="options" rows="2"><%= Array.isArray(f.options) ? f.options.join('\n') : '' %></textarea>
+              </div>
+              <div class="flex flex-wrap items-center gap-3 sm:col-span-2">
+                <label class="flex items-center gap-2 text-sm font-semibold">
+                  <input type="checkbox" name="is_required" value="1" <%= f.is_required ? 'checked' : '' %> /> Required
+                </label>
+                <select class="field w-28" name="is_active">
+                  <option value="1" <%= f.is_active ? 'selected' : '' %>>Active</option>
+                  <option value="0" <%= !f.is_active ? 'selected' : '' %>>Off</option>
+                </select>
+                <button class="btn-ghost text-xs" name="_action" value="update">Save</button>
+                <button class="btn-ghost text-xs text-coral border-coral/25" name="_action" value="delete" onclick="return confirm('Delete field?');">Delete</button>
+              </div>
+            </form>
+          </li>
+        <% }) %>
+        <% if (!fields.length) { %>
+          <li class="p-8 text-ink/45 text-sm">No fields yet — seed will create defaults.</li>
+        <% } %>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

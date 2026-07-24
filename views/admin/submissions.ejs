@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('../partials/styles') %>
+</head>
+<body class="font-sans text-ink page-bg min-h-screen antialiased">
+  <%- include('../partials/nav') %>
+
+  <main class="max-w-7xl mx-auto px-4 py-8 space-y-6 animate-in">
+    <div class="flex flex-wrap items-end justify-between gap-4">
+      <div>
+        <p class="text-sm font-semibold uppercase tracking-wider text-coral mb-1">CRM</p>
+        <h1 class="font-display text-3xl font-bold">Leads</h1>
+      </div>
+      <form method="get" action="/admin/submissions" class="flex gap-2 items-end">
+        <div>
+          <label class="label">Status</label>
+          <select class="field" name="status" onchange="this.form.submit()">
+            <option value="">All</option>
+            <% ['awaiting_form','submitted','confirmed','forwarded'].forEach(function (s) { %>
+              <option value="<%= s %>" <%= filterStatus === s ? 'selected' : '' %>><%= s %></option>
+            <% }) %>
+          </select>
+        </div>
+      </form>
+    </div>
+
+    <% if (typeof flash !== 'undefined' && flash) { %>
+      <div class="rounded-2xl px-4 py-3 text-sm font-medium border <%= flash.type === 'error' ? 'bg-coral/10 text-coral border-coral/20' : 'bg-sea/10 text-sea border-sea/20' %>">
+        <%= flash.message %>
+      </div>
+    <% } %>
+
+    <section class="panel overflow-hidden">
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-mist/50">
+            <tr class="text-left text-xs uppercase tracking-wide text-ink/45">
+              <th class="px-4 py-3 font-semibold">When</th>
+              <th class="px-4 py-3 font-semibold">Customer</th>
+              <th class="px-4 py-3 font-semibold">Type / Company</th>
+              <th class="px-4 py-3 font-semibold">Premium</th>
+              <th class="px-4 py-3 font-semibold">Status</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-ink/5">
+            <% leads.forEach(function (l) { %>
+              <tr class="hover:bg-mist/30">
+                <td class="px-4 py-3 text-xs text-ink/50 whitespace-nowrap"><%= l.submitted_at || l.created_at %></td>
+                <td class="px-4 py-3">
+                  <div class="font-semibold"><%= l.customer_name || '—' %></div>
+                  <div class="text-xs text-ink/45"><%= l.customer_phone %></div>
+                  <% if (l.advisor_name) { %>
+                    <div class="text-xs text-violet mt-0.5">Advisor: <%= l.advisor_name %></div>
+                  <% } %>
+                </td>
+                <td class="px-4 py-3">
+                  <div><%= l.insurance_type || '—' %></div>
+                  <div class="text-xs text-ink/50"><%= l.company || '' %></div>
+                </td>
+                <td class="px-4 py-3">
+                  <div><%= l.premium_amount || '—' %></div>
+                  <div class="text-xs text-ink/50"><%= l.policy_duration || '' %></div>
+                </td>
+                <td class="px-4 py-3">
+                  <span class="chip
+                    <%= l.status === 'forwarded' ? 'bg-sea/15 text-sea' :
+                        l.status === 'submitted' ? 'bg-violet/10 text-violet' :
+                        l.status === 'awaiting_form' ? 'bg-amber/15 text-amber' : 'bg-mist text-ink/60' %>">
+                    <%= l.status %>
+                  </span>
+                </td>
+              </tr>
+            <% }) %>
+            <% if (!leads.length) { %>
+              <tr><td colspan="5" class="px-4 py-10 text-center text-ink/45">No leads found.</td></tr>
+            <% } %>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

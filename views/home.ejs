@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('partials/styles') %>
+</head>
+<body class="font-sans text-ink page-bg min-h-screen antialiased">
+  <div class="max-w-5xl mx-auto px-4 py-10 animate-in">
+    <div class="flex flex-wrap items-end justify-between gap-4 mb-8">
+      <div>
+        <p class="text-sm font-semibold uppercase tracking-wider text-sea mb-1">WhatsApp link</p>
+        <h1 class="font-display text-4xl font-bold tracking-tight"><%= businessName %></h1>
+        <p class="text-ink/60 mt-2 max-w-xl">Scan the QR with WhatsApp on your phone to connect this bot. Status updates live.</p>
+      </div>
+      <a href="/admin/login" class="btn-primary">Admin login</a>
+    </div>
+
+    <% if (typeof flash !== 'undefined' && flash) { %>
+      <div class="mb-6 rounded-2xl px-4 py-3 text-sm font-medium border <%= flash.type === 'error' ? 'bg-coral/10 text-coral border-coral/20' : 'bg-sea/10 text-sea border-sea/20' %>">
+        <%= flash.message %>
+      </div>
+    <% } %>
+
+    <div class="grid lg:grid-cols-[1.1fr_0.9fr] gap-6">
+      <section class="panel p-6 md:p-8 relative overflow-hidden">
+        <div class="absolute -right-10 -top-10 w-40 h-40 rounded-full bg-gradient-to-br from-sea/20 to-violet/20 blur-2xl pointer-events-none"></div>
+        <div class="flex items-center justify-between gap-3 mb-6">
+          <h2 class="font-display text-xl font-semibold">Scan to connect</h2>
+          <span id="statusBadge" class="chip bg-amber/15 text-amber badge-live">Connecting…</span>
+        </div>
+
+        <div id="qrWrap" class="mx-auto w-full max-w-sm aspect-square rounded-3xl border-2 border-dashed border-ink/10 bg-gradient-to-br from-white to-mist/60 flex items-center justify-center p-4">
+          <% if (qrDataUrl) { %>
+            <img id="qrImage" src="<%= qrDataUrl %>" alt="WhatsApp QR" class="w-full h-full object-contain rounded-2xl" />
+          <% } else { %>
+            <img id="qrImage" src="" alt="WhatsApp QR" class="w-full h-full object-contain rounded-2xl hidden" />
+            <div id="qrPlaceholder" class="text-center px-6">
+              <div class="w-14 h-14 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-sea to-violet opacity-80"></div>
+              <p class="font-semibold">Waiting for QR</p>
+              <p class="text-sm text-ink/50 mt-1">WhatsApp Web is starting…</p>
+            </div>
+          <% } %>
+        </div>
+
+        <p id="statusDetail" class="text-center text-sm text-ink/55 mt-5">Keep this page open while scanning.</p>
+      </section>
+
+      <aside class="space-y-4">
+        <div class="panel p-5">
+          <h3 class="font-display font-semibold mb-3">Connection</h3>
+          <dl class="space-y-3 text-sm">
+            <div class="flex justify-between gap-3">
+              <dt class="text-ink/50">Status</dt>
+              <dd id="statusText" class="font-semibold"><%= waStatus && waStatus.status ? waStatus.status : '—' %></dd>
+            </div>
+            <div class="flex justify-between gap-3">
+              <dt class="text-ink/50">Ready</dt>
+              <dd id="readyText" class="font-semibold"><%= waStatus && waStatus.ready ? 'Yes' : 'No' %></dd>
+            </div>
+            <div class="flex justify-between gap-3">
+              <dt class="text-ink/50">Platform</dt>
+              <dd class="font-semibold"><%= waStatus && waStatus.platform ? waStatus.platform : '—' %></dd>
+            </div>
+          </dl>
+        </div>
+
+        <div class="panel p-5 bg-gradient-to-br from-sea/10 via-white to-violet/10 border-sea/10">
+          <h3 class="font-display font-semibold mb-2">How to scan</h3>
+          <ol class="text-sm text-ink/70 space-y-2 list-decimal pl-4">
+            <li>Open WhatsApp on your phone</li>
+            <li>Settings → Linked devices → Link a device</li>
+            <li>Point the camera at this QR code</li>
+          </ol>
+        </div>
+
+        <div class="panel p-5">
+          <p class="text-xs uppercase tracking-wide font-semibold text-ink/40 mb-2">Tips</p>
+          <ul class="text-sm text-ink/65 space-y-2">
+            <li class="flex gap-2"><span class="chip bg-violet/10 text-violet shrink-0">Live</span> QR refreshes automatically via Socket.IO</li>
+            <li class="flex gap-2"><span class="chip bg-amber/15 text-amber shrink-0">Admin</span> Manage workflows & leads after login</li>
+          </ul>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    (function () {
+      const badge = document.getElementById('statusBadge');
+      const detail = document.getElementById('statusDetail');
+      const statusText = document.getElementById('statusText');
+      const readyText = document.getElementById('readyText');
+      const qrImage = document.getElementById('qrImage');
+      const placeholder = document.getElementById('qrPlaceholder');
+
+      const badgeStyles = {
+        qr: 'chip bg-amber/15 text-amber badge-live',
+        ready: 'chip bg-sea/15 text-sea badge-live',
+        authenticated: 'chip bg-violet/15 text-violet badge-live',
+        disconnected: 'chip bg-coral/15 text-coral',
+        connecting: 'chip bg-amber/15 text-amber',
+        error: 'chip bg-coral/15 text-coral',
+      };
+
+      function setQr(dataUrl) {
+        if (!dataUrl) return;
+        qrImage.src = dataUrl;
+        qrImage.classList.remove('hidden');
+        if (placeholder) placeholder.classList.add('hidden');
+      }
+
+      function applyStatus(st) {
+        if (!st) return;
+        const s = st.status || 'connecting';
+        badge.className = badgeStyles[s] || badgeStyles.connecting;
+        badge.textContent = s === 'ready' ? 'Connected' : (s.charAt(0).toUpperCase() + s.slice(1));
+        statusText.textContent = s;
+        readyText.textContent = st.ready ? 'Yes' : 'No';
+        if (st.ready) {
+          detail.textContent = 'WhatsApp is connected and ready.';
+          if (placeholder) placeholder.classList.add('hidden');
+          qrImage.classList.add('hidden');
+        } else if (s === 'qr') {
+          detail.textContent = 'Scan the QR code with your phone.';
+        } else if (st.lastError) {
+          detail.textContent = st.lastError;
+        } else {
+          detail.textContent = 'Keep this page open while scanning.';
+        }
+      }
+
+      applyStatus(<%- JSON.stringify(waStatus || {}) %>);
+
+      const socket = io();
+      socket.on('whatsapp:qr', function (payload) {
+        if (payload && payload.qr) setQr(payload.qr);
+      });
+      socket.on('whatsapp:status', applyStatus);
+
+      fetch('/api/whatsapp/status')
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          applyStatus(data);
+          if (data.qr) setQr(data.qr);
+        })
+        .catch(function () {});
+    })();
+  </script>
+</body>
+</html>

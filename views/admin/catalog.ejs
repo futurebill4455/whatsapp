@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('../partials/styles') %>
+</head>
+<body class="font-sans text-ink page-bg min-h-screen antialiased">
+  <%- include('../partials/nav') %>
+
+  <main class="max-w-7xl mx-auto px-4 py-8 space-y-8 animate-in">
+    <div>
+      <p class="text-sm font-semibold uppercase tracking-wider text-sea mb-1">Products</p>
+      <h1 class="font-display text-3xl font-bold">Catalog</h1>
+      <p class="text-ink/55 mt-1 text-sm">Insurance types, companies (with desk phones), premiums & durations.</p>
+    </div>
+
+    <% if (typeof flash !== 'undefined' && flash) { %>
+      <div class="rounded-2xl px-4 py-3 text-sm font-medium border <%= flash.type === 'error' ? 'bg-coral/10 text-coral border-coral/20' : 'bg-sea/10 text-sea border-sea/20' %>">
+        <%= flash.message %>
+      </div>
+    <% } %>
+
+    <!-- Types -->
+    <section class="panel p-5 md:p-6 space-y-4">
+      <div class="flex items-center gap-2">
+        <span class="chip bg-violet/10 text-violet">Types</span>
+        <h2 class="font-display text-lg font-semibold">Insurance types</h2>
+      </div>
+      <form method="post" action="/admin/types" class="grid sm:grid-cols-3 gap-3 items-end">
+        <div class="sm:col-span-2">
+          <label class="label">Name</label>
+          <input class="field" name="name" required placeholder="Health" />
+        </div>
+        <div class="flex gap-2">
+          <div class="flex-1">
+            <label class="label">Sort</label>
+            <input class="field" name="sort_order" type="number" value="0" />
+          </div>
+          <button type="submit" class="btn-primary self-end">Add</button>
+        </div>
+      </form>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead><tr class="text-left text-xs uppercase text-ink/45">
+            <th class="py-2">Name</th><th class="py-2">Active</th><th class="py-2">Sort</th><th class="py-2">Actions</th>
+          </tr></thead>
+          <tbody class="divide-y divide-ink/5">
+            <% types.forEach(function (t) { %>
+              <tr>
+                <td class="py-2" colspan="4">
+                  <form method="post" action="/admin/types/<%= t.id %>" class="grid sm:grid-cols-4 gap-2 items-center">
+                    <input class="field" name="name" value="<%= t.name %>" />
+                    <select class="field" name="is_active">
+                      <option value="1" <%= t.is_active ? 'selected' : '' %>>Active</option>
+                      <option value="0" <%= !t.is_active ? 'selected' : '' %>>Off</option>
+                    </select>
+                    <input class="field" name="sort_order" type="number" value="<%= t.sort_order %>" />
+                    <div class="flex gap-1.5">
+                      <button class="btn-ghost text-xs" name="_action" value="update">Save</button>
+                      <button class="btn-ghost text-xs text-coral border-coral/25" name="_action" value="delete" onclick="return confirm('Delete type?');">Del</button>
+                    </div>
+                  </form>
+                </td>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Companies -->
+    <section class="panel p-5 md:p-6 space-y-4">
+      <div class="flex items-center gap-2">
+        <span class="chip bg-sea/15 text-sea">Companies</span>
+        <h2 class="font-display text-lg font-semibold">Companies & desk phones</h2>
+      </div>
+      <form method="post" action="/admin/companies" class="grid sm:grid-cols-2 lg:grid-cols-5 gap-3 items-end">
+        <div>
+          <label class="label">Name</label>
+          <input class="field" name="name" required />
+        </div>
+        <div>
+          <label class="label">Type</label>
+          <select class="field" name="insurance_type_id">
+            <option value="">Any</option>
+            <% types.forEach(function (t) { %>
+              <option value="<%= t.id %>"><%= t.name %></option>
+            <% }) %>
+          </select>
+        </div>
+        <div>
+          <label class="label">Desk phone</label>
+          <input class="field" name="desk_phone" placeholder="9198XXXXXXXX" />
+        </div>
+        <div>
+          <label class="label">Sort</label>
+          <input class="field" name="sort_order" type="number" value="0" />
+        </div>
+        <button type="submit" class="btn-primary">Add company</button>
+      </form>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead><tr class="text-left text-xs uppercase text-ink/45">
+            <th class="py-2 px-1">Company</th><th class="py-2">Type</th><th class="py-2">Desk</th><th class="py-2">Actions</th>
+          </tr></thead>
+          <tbody class="divide-y divide-ink/5">
+            <% companies.forEach(function (c) { %>
+              <tr>
+                <td class="py-3" colspan="4">
+                  <form method="post" action="/admin/companies/<%= c.id %>" class="grid lg:grid-cols-5 gap-2 items-center">
+                    <input class="field" name="name" value="<%= c.name %>" />
+                    <select class="field" name="insurance_type_id">
+                      <option value="">Any</option>
+                      <% types.forEach(function (t) { %>
+                        <option value="<%= t.id %>" <%= Number(c.insurance_type_id) === Number(t.id) ? 'selected' : '' %>><%= t.name %></option>
+                      <% }) %>
+                    </select>
+                    <input class="field" name="desk_phone" value="<%= c.desk_phone || '' %>" placeholder="Desk phone" />
+                    <select class="field" name="is_active">
+                      <option value="1" <%= c.is_active ? 'selected' : '' %>>Active</option>
+                      <option value="0" <%= !c.is_active ? 'selected' : '' %>>Off</option>
+                    </select>
+                    <div class="flex gap-1.5">
+                      <input class="field w-20" name="sort_order" type="number" value="<%= c.sort_order %>" />
+                      <button class="btn-ghost text-xs" name="_action" value="update">Save</button>
+                      <button class="btn-ghost text-xs text-coral border-coral/25" name="_action" value="delete" onclick="return confirm('Delete company?');">Del</button>
+                    </div>
+                  </form>
+                </td>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <div class="grid lg:grid-cols-2 gap-6">
+      <!-- Premiums -->
+      <section class="panel p-5 md:p-6 space-y-4">
+        <div class="flex items-center gap-2">
+          <span class="chip bg-amber/15 text-amber">Premiums</span>
+          <h2 class="font-display text-lg font-semibold">Sum insured</h2>
+        </div>
+        <form method="post" action="/admin/premiums" class="grid grid-cols-3 gap-2 items-end">
+          <div>
+            <label class="label">Label</label>
+            <input class="field" name="label" required placeholder="₹10 Lakh" />
+          </div>
+          <div>
+            <label class="label">Value</label>
+            <input class="field" name="value" required placeholder="10L" />
+          </div>
+          <button type="submit" class="btn-primary">Add</button>
+        </form>
+        <ul class="space-y-2">
+          <% premiums.forEach(function (p) { %>
+            <li>
+              <form method="post" action="/admin/premiums/<%= p.id %>" class="flex flex-wrap gap-2 items-center">
+                <input class="field flex-1 min-w-[100px]" name="label" value="<%= p.label %>" />
+                <input class="field w-24" name="value" value="<%= p.value %>" />
+                <select class="field w-24" name="is_active">
+                  <option value="1" <%= p.is_active ? 'selected' : '' %>>On</option>
+                  <option value="0" <%= !p.is_active ? 'selected' : '' %>>Off</option>
+                </select>
+                <button class="btn-ghost text-xs" name="_action" value="update">Save</button>
+                <button class="btn-ghost text-xs text-coral border-coral/25" name="_action" value="delete" onclick="return confirm('Delete?');">Del</button>
+              </form>
+            </li>
+          <% }) %>
+        </ul>
+      </section>
+
+      <!-- Durations -->
+      <section class="panel p-5 md:p-6 space-y-4">
+        <div class="flex items-center gap-2">
+          <span class="chip bg-violet/10 text-violet">Durations</span>
+          <h2 class="font-display text-lg font-semibold">Policy duration</h2>
+        </div>
+        <form method="post" action="/admin/durations" class="grid grid-cols-3 gap-2 items-end">
+          <div>
+            <label class="label">Label</label>
+            <input class="field" name="label" required placeholder="1 Year" />
+          </div>
+          <div>
+            <label class="label">Value</label>
+            <input class="field" name="value" required placeholder="1" />
+          </div>
+          <button type="submit" class="btn-primary">Add</button>
+        </form>
+        <ul class="space-y-2">
+          <% durations.forEach(function (d) { %>
+            <li>
+              <form method="post" action="/admin/durations/<%= d.id %>" class="flex flex-wrap gap-2 items-center">
+                <input class="field flex-1 min-w-[100px]" name="label" value="<%= d.label %>" />
+                <input class="field w-24" name="value" value="<%= d.value %>" />
+                <select class="field w-24" name="is_active">
+                  <option value="1" <%= d.is_active ? 'selected' : '' %>>On</option>
+                  <option value="0" <%= !d.is_active ? 'selected' : '' %>>Off</option>
+                </select>
+                <button class="btn-ghost text-xs" name="_action" value="update">Save</button>
+                <button class="btn-ghost text-xs text-coral border-coral/25" name="_action" value="delete" onclick="return confirm('Delete?');">Del</button>
+              </form>
+            </li>
+          <% }) %>
+        </ul>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

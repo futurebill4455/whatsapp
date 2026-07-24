@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('partials/styles') %>
+</head>
+<body class="font-sans text-ink page-bg min-h-screen antialiased">
+  <header class="border-b border-ink/10 bg-white/70 backdrop-blur">
+    <div class="max-w-lg mx-auto px-4 h-14 flex items-center">
+      <span class="font-display text-lg font-semibold bg-gradient-to-r from-sea to-violet bg-clip-text text-transparent"><%= businessName %></span>
+    </div>
+  </header>
+
+  <main class="max-w-lg mx-auto px-4 py-10 animate-in">
+    <h1 class="font-display text-3xl font-semibold mb-2">Insurance enquiry</h1>
+    <p class="text-ink/65 mb-8"><%= formIntro %></p>
+
+    <% if (typeof flash !== 'undefined' && flash) { %>
+      <div class="mb-6 rounded-2xl px-4 py-3 text-sm font-medium border <%= flash.type === 'error' ? 'bg-coral/10 text-coral border-coral/20' : 'bg-sea/10 text-sea border-sea/20' %>">
+        <%= flash.message %>
+      </div>
+    <% } %>
+
+    <form method="post" action="/form/<%= submission.token %>" id="leadForm" class="space-y-6">
+      <!-- Step indicators -->
+      <div class="flex gap-2 mb-2" id="stepDots">
+        <% for (let i = 1; i <= 4; i++) { %>
+          <div class="step-dot h-1.5 flex-1 rounded-full bg-ink/10" data-step="<%= i %>"></div>
+        <% } %>
+      </div>
+
+      <!-- Step 1: Type -->
+      <section class="panel p-5 form-step" data-step="1">
+        <h2 class="font-display font-semibold mb-3">1. Insurance type</h2>
+        <div class="grid gap-2">
+          <% insuranceTypes.forEach(function (t) { %>
+            <label class="flex items-center gap-3 rounded-xl border border-ink/10 px-4 py-3 cursor-pointer hover:border-sea/40 has-[:checked]:border-sea has-[:checked]:bg-sea/5">
+              <input type="radio" name="insurance_type" value="<%= t.name %>" required class="accent-sea" />
+              <span class="font-semibold"><%= t.name %></span>
+            </label>
+          <% }) %>
+        </div>
+        <button type="button" class="btn-primary mt-5 next-step">Continue</button>
+      </section>
+
+      <!-- Step 2: Company -->
+      <section class="panel p-5 form-step hidden" data-step="2">
+        <h2 class="font-display font-semibold mb-3">2. Company</h2>
+        <div class="grid gap-2" id="companyList">
+          <% companies.forEach(function (c) { %>
+            <label class="company-opt flex items-center gap-3 rounded-xl border border-ink/10 px-4 py-3 cursor-pointer hover:border-violet/40 has-[:checked]:border-violet has-[:checked]:bg-violet/5"
+                   data-type-id="<%= c.insurance_type_id || '' %>"
+                   data-type-name="<%= c.insurance_type_name || '' %>">
+              <input type="radio" name="company" value="<%= c.name %>" class="accent-violet" />
+              <span class="font-semibold"><%= c.name %></span>
+            </label>
+          <% }) %>
+        </div>
+        <div class="flex gap-2 mt-5">
+          <button type="button" class="btn-ghost prev-step">Back</button>
+          <button type="button" class="btn-primary next-step">Continue</button>
+        </div>
+      </section>
+
+      <!-- Step 3: Premium + duration -->
+      <section class="panel p-5 form-step hidden" data-step="3">
+        <h2 class="font-display font-semibold mb-3">3. Cover & duration</h2>
+        <div class="space-y-4">
+          <div>
+            <label class="label">Sum insured / premium</label>
+            <select class="field" name="premium_amount" required>
+              <option value="">Select…</option>
+              <% premiums.forEach(function (p) { %>
+                <option value="<%= p.value %>"><%= p.label %></option>
+              <% }) %>
+            </select>
+          </div>
+          <div>
+            <label class="label">Policy duration</label>
+            <select class="field" name="policy_duration" required>
+              <option value="">Select…</option>
+              <% durations.forEach(function (d) { %>
+                <option value="<%= d.value %>"><%= d.label %></option>
+              <% }) %>
+            </select>
+          </div>
+        </div>
+        <div class="flex gap-2 mt-5">
+          <button type="button" class="btn-ghost prev-step">Back</button>
+          <button type="button" class="btn-primary next-step">Continue</button>
+        </div>
+      </section>
+
+      <!-- Step 4: Details -->
+      <section class="panel p-5 form-step hidden" data-step="4">
+        <h2 class="font-display font-semibold mb-3">4. Your details</h2>
+        <div class="space-y-4">
+          <div>
+            <label class="label">Full name</label>
+            <input class="field" name="customer_name" required />
+          </div>
+          <div>
+            <label class="label">Advisor name (optional)</label>
+            <input class="field" name="advisor_name" />
+          </div>
+          <div id="healthMembers" class="hidden space-y-3">
+            <div>
+              <label class="label">Number of members</label>
+              <input class="field" type="number" name="member_count" id="memberCount" min="1" max="10" value="1" />
+            </div>
+            <div id="membersWrap" class="space-y-3"></div>
+          </div>
+        </div>
+        <div class="flex gap-2 mt-5">
+          <button type="button" class="btn-ghost prev-step">Back</button>
+          <button type="submit" class="btn-primary">Submit enquiry</button>
+        </div>
+      </section>
+    </form>
+  </main>
+
+  <script>
+    (function () {
+      const typeMap = {};
+      <% insuranceTypes.forEach(function (t) { %>
+        typeMap[<%- JSON.stringify(t.name) %>] = <%- JSON.stringify(String(t.id)) %>;
+      <% }) %>
+
+      let step = 1;
+      const steps = Array.from(document.querySelectorAll('.form-step'));
+      const dots = Array.from(document.querySelectorAll('.step-dot'));
+
+      function showStep(n) {
+        step = n;
+        steps.forEach(function (s) {
+          s.classList.toggle('hidden', Number(s.dataset.step) !== n);
+        });
+        dots.forEach(function (d) {
+          const sn = Number(d.dataset.step);
+          d.className =
+            'step-dot h-1.5 flex-1 rounded-full ' +
+            (sn < n ? 'bg-sea' : sn === n ? 'bg-gradient-to-r from-sea to-violet' : 'bg-ink/10');
+        });
+      }
+
+      function selectedType() {
+        const el = document.querySelector('input[name="insurance_type"]:checked');
+        return el ? el.value : '';
+      }
+
+      function filterCompanies() {
+        const typeName = selectedType();
+        const typeId = typeMap[typeName] || '';
+        document.querySelectorAll('.company-opt').forEach(function (lab) {
+          const tid = lab.getAttribute('data-type-id') || '';
+          const tname = (lab.getAttribute('data-type-name') || '').toLowerCase();
+          const match =
+            !tid ||
+            tid === typeId ||
+            (typeName && tname === typeName.toLowerCase());
+          lab.classList.toggle('hidden', !match);
+          if (!match) {
+            const radio = lab.querySelector('input');
+            if (radio) radio.checked = false;
+          }
+        });
+      }
+
+      function isHealth() {
+        return /health/i.test(selectedType());
+      }
+
+      function renderMembers() {
+        const wrap = document.getElementById('membersWrap');
+        const count = Math.max(1, Math.min(10, Number(document.getElementById('memberCount').value) || 1));
+        wrap.innerHTML = '';
+        for (let i = 1; i <= count; i++) {
+          const box = document.createElement('div');
+          box.className = 'rounded-xl border border-ink/10 p-3 space-y-2';
+          box.innerHTML =
+            '<p class="text-xs font-semibold uppercase text-ink/45">Member ' + i + '</p>' +
+            '<input class="field" name="member_' + i + '_name" placeholder="Name" ' + (isHealth() ? 'required' : '') + ' />' +
+            '<input class="field" type="date" name="member_' + i + '_dob" />' +
+            '<select class="field" name="member_' + i + '_gender">' +
+            '<option value="">Gender</option><option>Male</option><option>Female</option><option>Other</option></select>';
+          wrap.appendChild(box);
+        }
+      }
+
+      document.querySelectorAll('.next-step').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          if (step === 1) {
+            if (!selectedType()) return alert('Please select an insurance type.');
+            filterCompanies();
+            document.getElementById('healthMembers').classList.toggle('hidden', !isHealth());
+            if (isHealth()) renderMembers();
+          }
+          if (step === 2) {
+            if (!document.querySelector('input[name="company"]:checked')) {
+              return alert('Please select a company.');
+            }
+          }
+          if (step === 3) {
+            const form = document.getElementById('leadForm');
+            if (!form.premium_amount.value || !form.policy_duration.value) {
+              return alert('Please select premium and duration.');
+            }
+          }
+          showStep(Math.min(4, step + 1));
+        });
+      });
+
+      document.querySelectorAll('.prev-step').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          showStep(Math.max(1, step - 1));
+        });
+      });
+
+      const mc = document.getElementById('memberCount');
+      if (mc) mc.addEventListener('change', renderMembers);
+
+      showStep(1);
+    })();
+  </script>
+</body>
+</html>

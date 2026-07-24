@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-sand text-ink antialiased;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply bg-white/90 border border-ink/10 rounded-2xl shadow-soft;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition;
+  }
+  .btn-primary {
+    @apply btn bg-gradient-to-r from-sea to-violet text-white hover:opacity-95;
+  }
+  .btn-ghost {
+    @apply btn bg-white border border-ink/10 text-ink/80 hover:bg-mist;
+  }
+  .field {
+    @apply w-full rounded-xl border border-ink/15 bg-white px-3 py-2.5 text-sm outline-none focus:border-sea focus:ring-2 focus:ring-sea/20;
+  }
+  .label {
+    @apply block text-xs font-semibold uppercase tracking-wide text-ink/50 mb-1.5;
+  }
+  .chip {
+    @apply inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold;
+  }
+}

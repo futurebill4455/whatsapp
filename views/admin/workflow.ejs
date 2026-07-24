@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('../partials/styles') %>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/jerosoler/Drawflow/dist/drawflow.min.css" />
+  <link rel="stylesheet" href="/css/workflow.css" />
+</head>
+<body class="font-sans text-ink page-bg min-h-screen antialiased flex flex-col">
+  <%- include('../partials/nav') %>
+
+  <main class="flex-1 flex flex-col max-w-[1600px] w-full mx-auto px-4 py-4 gap-4 animate-in">
+    <div class="flex flex-wrap items-end justify-between gap-3">
+      <div>
+        <p class="text-sm font-semibold uppercase tracking-wider text-violet mb-1">Automation</p>
+        <h1 class="font-display text-2xl md:text-3xl font-bold">Workflow builder</h1>
+        <p class="text-ink/55 text-sm mt-1">Drag nodes, connect outputs, save & activate. Active: <strong><%= workflow.name %></strong> (#<%= workflow.id %>)</p>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <button type="button" id="btnSave" class="btn-primary">Save graph</button>
+        <button type="button" id="btnActivate" class="btn-ghost text-sea border-sea/25">Activate</button>
+        <form method="post" action="/admin/workflow/reset-default" onsubmit="return confirm('Reset active workflow to default graph?');">
+          <button type="submit" class="btn-ghost text-amber border-amber/25">Reset default</button>
+        </form>
+      </div>
+    </div>
+
+    <% if (typeof flash !== 'undefined' && flash) { %>
+      <div class="rounded-2xl px-4 py-3 text-sm font-medium border <%= flash.type === 'error' ? 'bg-coral/10 text-coral border-coral/20' : 'bg-sea/10 text-sea border-sea/20' %>">
+        <%= flash.message %>
+      </div>
+    <% } %>
+
+    <div class="grid lg:grid-cols-[240px_1fr] gap-4 flex-1 min-h-[70vh]">
+      <aside class="panel p-4 space-y-3 h-fit lg:sticky lg:top-20">
+        <h2 class="font-display font-semibold text-sm uppercase tracking-wide text-ink/50">Nodes</h2>
+        <div id="nodePalette" class="space-y-2"></div>
+        <div class="pt-3 border-t border-ink/5">
+          <label class="label">Workflow name</label>
+          <input id="workflowName" class="field" value="<%= workflow.name %>" />
+        </div>
+        <p id="wfStatus" class="text-xs text-ink/45"></p>
+      </aside>
+
+      <section class="panel overflow-hidden relative min-h-[560px]">
+        <div id="drawflow" class="w-full h-full absolute inset-0"></div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    window.__WORKFLOW__ = {
+      id: <%= workflow.id %>,
+      graph: <%- workflowJson %>,
+      nodeMeta: <%- nodeMeta %>,
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/gh/jerosoler/Drawflow/dist/drawflow.min.js"></script>
+  <script src="/js/workflow-builder.js"></script>
+</body>
+</html>

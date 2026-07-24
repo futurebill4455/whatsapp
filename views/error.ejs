@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= typeof title !== 'undefined' ? title : 'Error' %> · <%= typeof businessName !== 'undefined' ? businessName : 'App' %></title>
+  <%- include('partials/styles') %>
+</head>
+<body class="font-sans text-ink page-bg min-h-screen antialiased">
+  <main class="min-h-screen flex items-center justify-center px-4">
+    <div class="panel p-8 max-w-md w-full text-center animate-in">
+      <span class="chip bg-coral/15 text-coral mb-4">Error</span>
+      <h1 class="font-display text-2xl font-bold mb-2"><%= typeof title !== 'undefined' ? title : 'Something went wrong' %></h1>
+      <p class="text-ink/60"><%= typeof message !== 'undefined' ? message : 'Please try again later.' %></p>
+      <a href="/" class="btn-primary mt-6 inline-flex">Home</a>
+    </div>
+  </main>
+</body>
+</html>
