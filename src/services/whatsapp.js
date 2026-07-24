@@ -11,7 +11,6 @@ const {
   ChatSessions,
   AccessUsers,
 } = require('../models');
-const { bindEngine, newToken } = require('./workflowEngine');
 const { buildPuppeteerLaunchOptions, isRenderLike, isVpsLinux } = require('./chromiumLaunch');
 const { sanitizeFormLink } = require('../utils/leadSummary');
 const {
@@ -19,28 +18,18 @@ const {
   buildFormUrl: requireBuildFormUrl,
 } = require('../config/baseUrl');
 const antiBan = require('./antiBan');
-const replyVariations = require('./replyVariations');
+const { forwardLeadToDesk } = require('./deskForward');
 
 const AUTH_PATH = path.join(process.cwd(), '.wwebjs_auth');
 const CACHE_PATH = path.join(process.cwd(), '.wwebjs_cache');
 const CLIENT_ID = 'insurance-bot';
 const WHATSAPP_WEB_URL = 'https://web.whatsapp.com/';
 
-/** Always-on greetings — work even if Admin Panel / DB triggers are misconfigured */
-const HARDCODED_GREETINGS = ['hi', 'hello', 'hey', 'start', 'ഹായ്'];
-
 function normalizeMsg(text) {
   return String(text || '')
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .trim()
     .toLowerCase();
-}
-
-function isHardcodedGreeting(text) {
-  const n = normalizeMsg(text);
-  return HARDCODED_GREETINGS.some(
-    (g) => n === g.toLowerCase() || n.startsWith(`${g.toLowerCase()} `)
-  );
 }
 
 function getCloseKeywords() {
@@ -59,11 +48,7 @@ function isCloseCommand(text) {
 }
 
 function makeToken() {
-  try {
-    return newToken();
-  } catch (_) {
-    return crypto.randomBytes(24).toString('hex');
-  }
+  return crypto.randomBytes(24).toString('hex');
 }
 
 function humanDelayMs() {
@@ -276,7 +261,6 @@ class WhatsAppService {
     this._seenCleanupTimer = null;
     this._boundMessageHandler = null;
     this._boundMessageCreateHandler = null;
-    this.engine = bindEngine(this);
     this.loadingPercent = null;
     this.loadingMessage = null;
     this._loadingWatchdog = null;
@@ -896,7 +880,8 @@ class WhatsAppService {
   }
 
   /**
-   * Queued send with fully dynamic 4–25s timing + proportional typing + volume caps.
+   * Queued send with fully dynamic 4–20s timing + proportional typing + volume caps.
+   * Honours working hours unless options.skipWorkingHours is set (e.g. never for Close).
    */
   async sendMessage(to, body, options = {}) {
     if (!this.client) {
@@ -908,6 +893,11 @@ class WhatsAppService {
 
     const run = async () => {
       const logPhone = this.formatPhone(to) || String(to || '').replace(/@.+$/, '');
+
+      if (!options.skipWorkingHours && !antiBan.isWithinWorkingHours()) {
+        console.warn(`[AntiBan] Blocked send to ${logPhone}: outside working hours`);
+        return null;
+      }
 
       if (!options.skipRateLimit) {
         const caps = antiBan.checkSendCaps(logPhone);
@@ -928,7 +918,7 @@ class WhatsAppService {
         await sleep(antiBan.readingDelayMs(options.inboundText));
       }
 
-      // Unique variable delay (4–25s) + typing share proportional to that delay
+      // Unique variable delay (4–20s) + typing share proportional to that delay
       const plan =
         options.timingPlan ||
         (options.delayMs != null
@@ -1049,6 +1039,12 @@ class WhatsAppService {
     return next;
   }
 
+  /**
+   * Core inbound pipeline (DB-only — no visual workflow builder):
+   *  1) Active two-way bridge (native forward / chunked) — Close/CLS silent end
+   *  2) Strict whitelist + ACCESS_CODE gate → bare form URL
+   *  3) Everything else → complete silence
+   */
   async handleIncomingMessage(message) {
     // Deduplicate message / message_create
     if (this._markSeen(message)) return;
@@ -1117,6 +1113,7 @@ class WhatsAppService {
     }
 
     // 1) Two-way chat bridge (customer ↔ desk) — highest priority
+    //    Close/CLS always processed; relay respects working hours inside send/forward.
     try {
       const bridged = await this.handleChatBridge(message, phone, chatId, body);
       if (bridged) return;
@@ -1126,13 +1123,15 @@ class WhatsAppService {
 
     if (!body) return;
 
-    try {
-      // ═══════════════════════════════════════════════════════════════
-      // DB-ONLY access path — no visual workflow builder involvement.
-      // ═══════════════════════════════════════════════════════════════
-      const user = AccessUsers.findByPhone(phone);
+    // Outside working hours: no unlock / form dispatch (strict silence)
+    if (!antiBan.isWithinWorkingHours()) {
+      console.log(`[AntiBan] Outside working hours — silent ignore ${phone}`);
+      return;
+    }
 
-      // Unauthorized number → complete silence
+    try {
+      // Strict whitelist: phone must exist in access_users
+      const user = AccessUsers.findByPhone(phone);
       if (!user || !user.is_active) {
         console.log(`[Access] Silent ignore unauthorized ${phone}`);
         return;
@@ -1141,7 +1140,7 @@ class WhatsAppService {
       const status = AccessUsers.displayStatus(user);
       const canonicalPhone = user.phone || phone;
 
-      // Waiting for code → only ACCESS_CODE unlocks; wrong/other text → silence
+      // Waiting for code → ONLY exact ACCESS_CODE unlocks; anything else → silence
       if (status === 'waiting_code') {
         const unlockResult = AccessUsers.tryUnlock(phone, body);
         if (!unlockResult.ok) {
@@ -1152,40 +1151,20 @@ class WhatsAppService {
         }
 
         console.log(
-          `[Access] ${canonicalPhone} (${user.name}) → Active — bare form URL (DB-only)`
+          `[Access] ${canonicalPhone} (${user.name}) → Active — bare form URL`
         );
         await this.sendFormLinkOnly(canonicalPhone, {
           chatId,
           replyTo: message,
           inboundText: body,
         });
-        // Two-way relay arms after form submit (desk known); Active users are eligible now
         return;
       }
 
-      // Active user — DB helpers only (silence until form submit opens bridge)
-      if (status === 'active') {
-        if (isCloseCommand(body)) {
-          // No open bridge session → silence (bridge handler already covered active chats)
-          return;
-        }
-
-        // Optional: resend bare form link on Hi (still no workflow)
-        if (isHardcodedGreeting(body)) {
-          await this.sendFormLinkOnly(canonicalPhone, {
-            chatId,
-            replyTo: message,
-            inboundText: body,
-          });
-          return;
-        }
-
-        // Ignore all other chatter until form submit opens two-way bridge
-        console.log(`[Access] Active ${canonicalPhone} — no bot reply for: ${body.slice(0, 40)}`);
-        return;
-      }
-
-      console.log(`[Access] Silent ignore ${phone} status=${status}`);
+      // Active (or any other status): complete silence until form opens the bridge
+      console.log(
+        `[Access] Silent ignore ${canonicalPhone} status=${status} body=${body.slice(0, 40)}`
+      );
     } catch (err) {
       console.error('[WhatsApp] Access handler error:', err?.message || err);
       // Never reply on errors for gated traffic
@@ -1194,7 +1173,7 @@ class WhatsAppService {
 
   /**
    * Two-way live relay — multi-tenant safe + LID-aware desk matching.
-   * Close is customer-only. Desk replies are routed via quote / [#CODE] / last-active.
+   * Either party may Close / CLS (silent). Desk replies via quote / [#CODE] / last-active.
    */
   async handleChatBridge(message, phone, chatId, body) {
     const digits = this.formatPhone(phone);
@@ -1487,11 +1466,18 @@ class WhatsAppService {
 
   /**
    * Two-way session relay with humanized pacing:
-   * - Short text / media → native WhatsApp forward (Forwarded tag) + jitter/typing
-   * - Long text → smart conversational chunks with typing + 1–3s micro-delays
+   * - Short text / media → native WhatsApp forward (Forwarded tag) + unique jitter/typing
+   * - Long text → smart conversational chunks; each chunk gets its own unique 4–20s plan
    */
   async relayMessageAcrossBridge(message, session, direction, body, hasMediaFlag = null) {
     this.normalizeIncomingMessageIds(message);
+
+    if (!antiBan.isWithinWorkingHours()) {
+      console.log(
+        `[AntiBan] Bridge relay skipped (outside working hours) session #${session.id}`
+      );
+      return;
+    }
 
     const toCustomer = direction === 'desk_to_customer';
     const destPhone = toCustomer ? session.customer_phone : session.desk_phone;
@@ -1526,7 +1512,7 @@ class WhatsAppService {
       return;
     }
 
-    // Shared: rate-limit turn + reading. Each outbound then gets its own unique 4–25s plan.
+    // Shared: rate-limit turn + reading. Each outbound then gets its own unique 4–20s plan.
     await antiBan.outboundLimiter.waitTurn();
     await sleep(antiBan.readingDelayMs(cleanBody || body));
 
@@ -1625,7 +1611,7 @@ class WhatsAppService {
   }
 
   /**
-   * Relay long text as natural chunks with typing + 1–3s micro-delays between parts.
+   * Relay long text as natural chunks; each chunk uses a unique variable delay + typing.
    */
   async relayChunkedTextAcrossBridge({
     session,
@@ -1656,7 +1642,7 @@ class WhatsAppService {
       }
 
       const chunk = antiBan.lightlyVaryTextStructure(chunks[i]);
-      // Full dynamic 4–25s plan + proportional typing inside sendMessage
+      // Full dynamic 4–20s plan + proportional typing inside sendMessage
       const sent = await this.sendMessage(destPhone, chunk, {
         chatId: destChatId,
         skipReading: true,
@@ -1902,6 +1888,22 @@ class WhatsAppService {
   async sendMedia(to, media, options = {}) {
     if (!this.client) throw new Error('WhatsApp client is not ready');
     const run = async () => {
+      const logPhone = this.formatPhone(to) || String(to || '').replace(/@.+$/, '');
+
+      if (!options.skipWorkingHours && !antiBan.isWithinWorkingHours()) {
+        console.warn(`[AntiBan] Blocked media to ${logPhone}: outside working hours`);
+        return null;
+      }
+      if (!options.skipRateLimit) {
+        const caps = antiBan.checkSendCaps(logPhone);
+        if (!caps.ok) {
+          console.warn(
+            `[AntiBan] Blocked media to ${logPhone}: ${caps.reason} (${caps.count}/${caps.cap})`
+          );
+          return null;
+        }
+      }
+
       await antiBan.outboundLimiter.waitTurn();
       const caption = options.caption || '';
       const plan = antiBan.planOutboundTiming(caption || '[media]');
@@ -1928,7 +1930,7 @@ class WhatsAppService {
       if (result) result._outboundChatId = chatId;
       MessageLog.add({
         direction: 'out',
-        phone: this.formatPhone(to) || String(chatId).replace(/@.+$/, ''),
+        phone: logPhone,
         body: options.caption || '[media]',
       });
       console.log(
@@ -1978,8 +1980,8 @@ class WhatsAppService {
   }
 
   /**
-   * After web form submit: desk-only lead + instant native two-way relay.
-   * Does not use the visual workflow builder for routing.
+   * After web form submit: desk-only lead + instant two-way session.
+   * Uses deskForward — no visual workflow builder.
    */
   async sendFormConfirmation(submission) {
     return this.notifyFormSubmitted(submission);
@@ -2003,8 +2005,7 @@ class WhatsAppService {
     }
 
     try {
-      const { forwardLeadToDesk } = require('./workflowEngine');
-      const result = await forwardLeadToDesk(submission, {
+      const result = await forwardLeadToDesk(this, submission, {
         phone: submission.customer_phone,
         chatId: submission.customer_chat_id || undefined,
         notifyCustomer: false,
@@ -2019,8 +2020,7 @@ class WhatsAppService {
   }
 
   async confirmAndForward(submission, opts = {}) {
-    const { forwardLeadToDesk } = require('./workflowEngine');
-    await forwardLeadToDesk(submission, {
+    await forwardLeadToDesk(this, submission, {
       phone: submission.customer_phone,
       chatId: opts.chatId || submission.customer_chat_id,
       replyTo: opts.replyTo,

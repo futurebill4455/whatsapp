@@ -15,11 +15,9 @@ const {
 const {
   buildLeadVars,
   renderTemplate,
-  buildForwardMessage,
   buildConfirmationMessage,
   buildFormLinkParts,
   sanitizeFormLink,
-  DEFAULT_FORWARD_TEMPLATE,
 } = require('../utils/leadSummary');
 const { buildFormUrl } = require('../config/baseUrl');
 
@@ -320,130 +318,11 @@ class WorkflowEngine {
   /**
    * Compile lead summary and send to internal desk ONLY.
    * Opens two-way session immediately. Customer is not notified by default.
+   * Delegates to deskForward (no Drawflow / WorkflowRuns).
    */
   async forwardLeadToDesk(submission, ctx = {}) {
-    const phone = ctx.phone || submission.customer_phone;
-    const insuranceType = submission.insurance_type;
-    const company = submission.company;
-    const notifyCustomer = ctx.notifyCustomer === true;
-    const sendDeskTip = ctx.sendDeskTip === true;
-
-    Submissions.markConfirmed(submission.id);
-    if (ctx.chatId) {
-      try {
-        Submissions.setCustomerChatId(submission.token, ctx.chatId);
-      } catch (_) {}
-    }
-
-    const target = InternalNumbers.resolveForType(insuranceType, company);
-    if (!target || !target.phone) {
-      console.error(
-        `[Forward] No internal desk number configured for type="${insuranceType}" company="${company}"`
-      );
-      return { ok: false, reason: 'no_desk_number' };
-    }
-
-    const deskPhone = String(target.phone).replace(/\D/g, '');
-    const forwardText = buildForwardMessage(
-      submission,
-      Settings.get('forward_template') || DEFAULT_FORWARD_TEMPLATE
-    );
-
-    console.log(
-      `[Forward] Sending lead #${submission.id} → desk "${target.label}" (${deskPhone}) via ${target.source || 'unknown'}`
-    );
-
-    try {
-      let deskChatId = null;
-      try {
-        if (typeof this.whatsapp.resolveOutboundChatId === 'function') {
-          deskChatId = await this.whatsapp.resolveOutboundChatId(deskPhone);
-          console.log(`[Forward] Desk ${deskPhone} resolves to chat ${deskChatId}`);
-        }
-      } catch (resErr) {
-        console.warn('[Forward] Could not resolve desk chat id:', resErr.message);
-      }
-
-      const leadMsg = await this.whatsapp.sendMessage(deskPhone, forwardText, {
-        chatId: deskChatId || undefined,
-      });
-      deskChatId =
-        leadMsg?._outboundChatId ||
-        this.whatsapp._lastOutboundChatId ||
-        deskChatId;
-
-      Submissions.markForwarded(submission.id, deskPhone);
-
-      let session = null;
-      try {
-        try {
-          await sleep(require('./antiBan').sessionSpacingMs());
-        } catch (_) {
-          await sleep(2000 + Math.floor(Math.random() * 3000));
-        }
-        session = ChatSessions.open({
-          submission_id: submission.id,
-          customer_phone: phone,
-          customer_chat_id: ctx.chatId || submission.customer_chat_id || null,
-          desk_phone: deskPhone,
-          desk_chat_id: deskChatId,
-          company_name: company || target.label,
-        });
-        console.log(
-          `[ChatBridge] Session #${session.id}[${session.session_code}] opened (instant two-way): customer ${phone} ↔ desk ${deskPhone}`
-        );
-
-        const leadId = leadMsg?.id?._serialized || leadMsg?.id?.$1 || leadMsg?.id?.id;
-        if (leadId) ChatSessions.trackMessage(session.id, 'system_to_desk', leadId, forwardText);
-
-        if (sendDeskTip) {
-          try {
-            const tip =
-              `Live chat opened [#${session.session_code}]\n` +
-              `Customer: ${phone} (${submission.customer_name || '—'})\n` +
-              `Quote their messages (or include [#${session.session_code}]) to reply.`;
-            const tipMsg = await this.whatsapp.sendMessage(deskPhone, tip, {
-              chatId: deskChatId || undefined,
-            });
-            const tipId = tipMsg?.id?._serialized || tipMsg?.id?.$1 || tipMsg?.id?.id;
-            if (tipId) ChatSessions.trackMessage(session.id, 'system_to_desk', tipId, tip);
-            const tipChat = tipMsg?._outboundChatId || this.whatsapp._lastOutboundChatId;
-            if (tipChat) ChatSessions.bindDeskChatId(session.id, tipChat);
-          } catch (tipErr) {
-            console.warn('[ChatBridge] Desk tip message failed:', tipErr.message);
-          }
-        }
-      } catch (sessErr) {
-        console.error('[ChatBridge] Failed to open session:', sessErr.message);
-      }
-
-      if (notifyCustomer) {
-        try {
-          await this.whatsapp.sendMessage(
-            phone,
-            Settings.get('success_message') ||
-              'Thank you! Your details have been sent to our team.',
-            sendOpts(ctx)
-          );
-        } catch (err) {
-          console.error('[Forward] Customer success message failed:', err.message);
-        }
-      }
-
-      return {
-        ok: true,
-        desk: deskPhone,
-        label: target.label,
-        session_id: session?.id || null,
-        session_code: session?.session_code || null,
-      };
-    } catch (err) {
-      console.error(
-        `[Forward] FAILED sending lead #${submission.id} to desk "${target.label}" (${deskPhone}):`,
-        err.message
-      );
-      return { ok: false, reason: 'send_failed', error: err.message, desk: deskPhone };
-    }
+    const { forwardLeadToDesk } = require('./deskForward');
+    return forwardLeadToDesk(this.whatsapp, submission, ctx);
   }
 
   /**
@@ -454,20 +333,6 @@ class WorkflowEngine {
   }
 
   async handleFormSubmit(submission) {
-    try {
-      const waiting =
-        WorkflowRuns.findWaitingByToken(submission.token, 'form_submit') ||
-        WorkflowRuns.findWaiting(submission.customer_phone, 'form_submit') ||
-        WorkflowRuns.findWaiting(submission.customer_phone, 'yes_no');
-      if (waiting) {
-        WorkflowRuns.update(waiting.id, {
-          status: 'completed',
-          waiting_for: null,
-          submission_token: submission.token,
-        });
-      }
-    } catch (_) {}
-
     const result = await this.forwardLeadToDesk(submission, {
       phone: submission.customer_phone,
       chatId: submission.customer_chat_id || undefined,
@@ -790,11 +655,14 @@ async function handleIncomingMessage(...args) {
 }
 
 async function forwardLeadToDesk(submission, ctx) {
-  return getEngine().forwardLeadToDesk(submission, ctx);
+  const whatsapp = require('./whatsapp');
+  const desk = require('./deskForward');
+  return desk.forwardLeadToDesk(whatsapp, submission, ctx);
 }
 
 async function notifyFormSubmitted(submission) {
-  return getEngine().notifyFormSubmitted(submission);
+  const whatsapp = require('./whatsapp');
+  return whatsapp.notifyFormSubmitted(submission);
 }
 
 module.exports = {

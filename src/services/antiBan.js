@@ -1,6 +1,6 @@
 /**
  * Enterprise anti-ban / humanization layer for WhatsApp automation.
- * Fully dynamic variable timing (default 4–25s) — no fixed/repeating delays.
+ * Fully dynamic variable timing (default 4–20s) — no fixed/repeating delays.
  * Typing duration scales with each planned delay. Working hours + rate caps.
  */
 const Settings = (() => {
@@ -45,13 +45,17 @@ const _recentDelays = [];
 const RECENT_DELAY_WINDOW = 10;
 
 function jitterBounds() {
-  const min = numSetting('anti_ban_jitter_min_ms', 4000, ['WA_JITTER_MIN_MS']);
-  const max = numSetting('anti_ban_jitter_max_ms', 25000, ['WA_JITTER_MAX_MS']);
-  return { lo: Math.min(min, max), hi: Math.max(min, max) };
+  let min = numSetting('anti_ban_jitter_min_ms', 4000, ['WA_JITTER_MIN_MS']);
+  let max = numSetting('anti_ban_jitter_max_ms', 20000, ['WA_JITTER_MAX_MS']);
+  // Hard product envelope: 4–20 seconds
+  min = Math.max(4000, Math.min(Number(min) || 4000, 20000));
+  max = Math.max(4000, Math.min(Number(max) || 20000, 20000));
+  if (max < min) max = min;
+  return { lo: min, hi: max };
 }
 
 /**
- * Unique randomized delay for every outbound action (default 4–25s).
+ * Unique randomized delay for every outbound action (default 4–20s).
  * Never returns the exact same value as the previous delay (or near-duplicates).
  */
 function nextVariableDelayMs() {
@@ -92,7 +96,7 @@ function humanJitterMs() {
 
 /**
  * Plan think + typing for one outbound message.
- * totalMs is unique 4–25s; typingMs is proportional to that delay (+ text length).
+ * totalMs is unique 4–20s; typingMs is proportional to that delay (+ text length).
  */
 function planOutboundTiming(text = '', { forcedTotalMs = null } = {}) {
   const totalMs =
@@ -155,7 +159,7 @@ function antiPatternJitterMs() {
   return nextVariableDelayMs();
 }
 
-/** Inter-chunk gap: same dynamic engine (4–25s), never a fixed 1s/3s pattern. */
+/** Inter-chunk gap: same dynamic engine (4–20s), never a fixed 1s/3s pattern. */
 function microDelayMs() {
   return nextVariableDelayMs();
 }
