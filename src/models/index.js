@@ -977,6 +977,42 @@ function digitsOnly(phone) {
 }
 
 /**
+ * Build comparable phone keys so +91 / 91 / local 10-digit / dashes / spaces all match.
+ * Example: +919562233772, 919562233772, 9562233772 → share key 9562233772
+ */
+function phoneMatchKeys(phone) {
+  const d = digitsOnly(phone);
+  if (!d) return [];
+  const keys = new Set([d]);
+
+  if (d.length >= 10) keys.add(d.slice(-10));
+
+  // Common India variants
+  if (d.length === 10) {
+    keys.add(`91${d}`);
+    keys.add(`0${d}`);
+  }
+  if (d.startsWith('91') && d.length >= 12) {
+    keys.add(d.slice(2));
+    keys.add(d.slice(-10));
+  }
+  if (d.startsWith('0') && d.length >= 11) {
+    keys.add(d.slice(1));
+    keys.add(d.slice(-10));
+  }
+
+  return [...keys].filter(Boolean);
+}
+
+/** True when two phone strings refer to the same handset (flexible digit compare). */
+function phonesMatch(a, b) {
+  const ka = phoneMatchKeys(a);
+  if (!ka.length) return false;
+  const kb = new Set(phoneMatchKeys(b));
+  return ka.some((k) => kb.has(k));
+}
+
+/**
  * Simple authorized users: Name + Phone + Unique Access Code.
  * Unlock requires BOTH matching phone AND that user's assigned code.
  */
@@ -992,37 +1028,34 @@ const AccessUsers = {
     return db.prepare('SELECT * FROM access_users WHERE id = ?').get(id);
   },
 
+  /**
+   * Flexible whitelist lookup — ignores +, spaces, dashes, and 91/0 prefixes.
+   */
   findByPhone(phone) {
     const digits = digitsOnly(phone);
     if (!digits) return null;
 
+    const incomingKeys = new Set(phoneMatchKeys(digits));
+    if (!incomingKeys.size) return null;
+
+    // Exact digit hit first (fast path)
     const exact = db
       .prepare('SELECT * FROM access_users WHERE is_active = 1 AND phone = ? LIMIT 1')
       .get(digits);
     if (exact) return exact;
 
-    // Tolerate country-code / local variants (e.g. 98XXXXXXXX vs 9198XXXXXXXX)
-    const variants = new Set([digits]);
-    if (digits.length === 10) variants.add(`91${digits}`);
-    if (digits.length > 10 && digits.startsWith('91')) variants.add(digits.slice(2));
-    if (digits.length >= 10) variants.add(digits.slice(-10));
-
-    for (const v of variants) {
+    for (const key of incomingKeys) {
+      if (key === digits) continue;
       const row = db
         .prepare('SELECT * FROM access_users WHERE is_active = 1 AND phone = ? LIMIT 1')
-        .get(v);
+        .get(key);
       if (row) return row;
     }
 
-    if (digits.length >= 10) {
-      const tail = digits.slice(-10);
-      return db
-        .prepare(
-          `SELECT * FROM access_users
-           WHERE is_active = 1 AND substr(phone, -10) = ?
-           LIMIT 1`
-        )
-        .get(tail);
+    // Last-resort: compare last-10 against every active row (handles odd stored formats)
+    const active = this.list(true);
+    for (const user of active) {
+      if (phonesMatch(digits, user.phone)) return user;
     }
     return null;
   },
@@ -1042,16 +1075,16 @@ const AccessUsers = {
 
   /**
    * Verify inbound message as access code for this phone.
+   * Runs independently of any workflow builder.
    * Returns { ok, user, reason }.
    */
   tryUnlock(phone, codeInput) {
-    const digits = digitsOnly(phone);
     const code = this.normalizeCode(codeInput);
-    if (!digits || !code || code.length < 4) {
+    if (!code || code.length < 4) {
       return { ok: false, reason: 'invalid_input' };
     }
 
-    const user = this.findByPhone(digits);
+    const user = this.findByPhone(phone);
     if (!user) {
       return { ok: false, reason: 'unknown_phone' };
     }
@@ -1070,12 +1103,15 @@ const AccessUsers = {
   },
 
   create({ name, phone, access_code }) {
-    const digits = digitsOnly(phone);
+    let digits = digitsOnly(phone);
     const code = this.normalizeCode(access_code);
     const displayName = String(name || '').trim();
     if (!displayName) throw new Error('Name is required');
     if (!digits) throw new Error('Phone number is required');
     if (!code || code.length < 4) throw new Error('Access code must be at least 4 characters');
+
+    // Prefer storing with country code when admin enters 10-digit IN mobile
+    if (digits.length === 10) digits = `91${digits}`;
 
     const result = db
       .prepare(
@@ -1088,8 +1124,11 @@ const AccessUsers = {
   update(id, { name, phone, access_code, is_active, clear_verified }) {
     const current = this.get(id);
     if (!current) return null;
-    const digits =
+    let digits =
       phone !== undefined ? digitsOnly(phone) || current.phone : current.phone;
+    if (phone !== undefined && digits && digits.length === 10) {
+      digits = `91${digits}`;
+    }
     const code =
       access_code !== undefined
         ? this.normalizeCode(access_code) || current.access_code
@@ -1118,6 +1157,13 @@ const AccessUsers = {
   },
 
   lock(phone) {
+    const user = this.findByPhone(phone);
+    if (user) {
+      db.prepare(
+        `UPDATE access_users SET verified_at = NULL, updated_at = datetime('now') WHERE id = ?`
+      ).run(user.id);
+      return;
+    }
     const digits = digitsOnly(phone);
     db.prepare(
       `UPDATE access_users SET verified_at = NULL, updated_at = datetime('now') WHERE phone = ?`

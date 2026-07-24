@@ -814,29 +814,67 @@ class WhatsAppService {
 
   /**
    * Resolve a stable digit phone + chat id for inbound messages (supports @c.us and @lid).
-   * Never blocks replies — getContact is timed out.
+   * Sanitizes digits flexibly so whitelist matching can ignore + / spaces / 91 prefixes.
    */
   async resolveIncomingPeer(message) {
     const chatId = message.from;
-    let phone = String(chatId || '').replace(/@.+$/, '');
+    const consider = (raw) => {
+      const d = this.formatPhone(String(raw || '').replace(/@.+$/, ''));
+      // Plausible mobile/E.164 lengths — skip raw LID-looking huge ids
+      if (d && d.length >= 10 && d.length <= 15) return d;
+      return null;
+    };
+
+    let phone = null;
+
+    // Direct @c.us chats already carry the real phone in the JID
+    if (String(chatId || '').endsWith('@c.us')) {
+      phone = consider(chatId);
+    }
 
     try {
       const contact = await Promise.race([
         message.getContact(),
-        sleep(1200).then(() => null),
+        sleep(3000).then(() => null),
       ]);
       if (contact) {
-        const number = contact.number || contact.id?.user;
-        // Prefer real phone numbers; ignore pure LID-looking ids when we already have chatId
-        if (number && String(number).replace(/\D/g, '').length >= 10) {
-          phone = String(number).replace(/\D/g, '');
+        const candidates = [
+          contact.number,
+          contact.id?.user,
+          contact.id?._serialized,
+          contact.id?.$1,
+        ];
+        for (const cand of candidates) {
+          const d = consider(cand);
+          if (d) {
+            phone = d;
+            break;
+          }
         }
       }
     } catch (err) {
       console.warn('[WhatsApp] getContact failed:', err.message);
     }
 
-    phone = this.formatPhone(phone) || phone;
+    // Fallbacks from message payload
+    if (!phone) {
+      try {
+        const data = message._data || {};
+        for (const cand of [data.from, data.author, data.notifyName ? null : null, message.author]) {
+          const d = consider(cand);
+          if (d) {
+            phone = d;
+            break;
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (!phone) {
+      phone = consider(chatId) || this.formatPhone(chatId) || String(chatId || '').replace(/@.+$/, '');
+    }
+
+    console.log(`[WhatsApp] Peer resolved chatId=${chatId} phone=${phone}`);
     return { chatId, phone };
   }
 
@@ -1122,9 +1160,8 @@ class WhatsAppService {
     if (!body) return;
 
     try {
-      // 2) STRICT access gate — before any bot reply (except active bridge above).
-      // Unlock requires BOTH: phone on whitelist AND that user's unique access code.
-      // Unknown numbers / wrong codes / anything else → silent ignore (no reply).
+      // 2) CORE access gate — independent of Drawflow / visual workflow builder.
+      // Flexible phone match + unique ACCESS_CODE → unlock → bare form URL (anti-ban paced).
       const accessEnabled = Settings.get('access_control_enabled', '1') !== '0';
       if (accessEnabled) {
         const unlocked = AccessUsers.isUnlocked(phone);
@@ -1132,11 +1169,13 @@ class WhatsAppService {
         if (!unlocked) {
           const unlockResult = AccessUsers.tryUnlock(phone, body);
           if (unlockResult.ok) {
+            const canonicalPhone = unlockResult.user.phone || phone;
             console.log(
-              `[Access] Unlocked ${phone} (${unlockResult.user.name}) with code ${unlockResult.user.access_code}`
+              `[Access] Unlocked inbound=${phone} matched=${canonicalPhone} ` +
+                `(${unlockResult.user.name}) code=${unlockResult.user.access_code} — sending form URL (no workflow dependency)`
             );
-            // No welcome / access-granted text — only the bare form URL
-            await this.sendFormLinkOnly(phone, {
+            // Status flips Waiting for code → Unlocked via verified_at; send bare URL only
+            await this.sendFormLinkOnly(canonicalPhone, {
               chatId,
               replyTo: message,
               inboundText: body,
@@ -1147,7 +1186,9 @@ class WhatsAppService {
           // Legacy Yes/No only if a pending confirmation still exists (pre-migration)
           const authorized = AccessUsers.findByPhone(phone);
           if (authorized && (isYesReply(body) || isNoReply(body))) {
-            const pending = Submissions.findPendingConfirmation(phone);
+            const pending =
+              Submissions.findPendingConfirmation(authorized.phone) ||
+              Submissions.findPendingConfirmation(phone);
             if (pending && isYesReply(body)) {
               await this.confirmAndForward(pending, {
                 chatId,
@@ -1157,8 +1198,7 @@ class WhatsAppService {
               return;
             }
             if (pending && isNoReply(body)) {
-              // Re-issue bare form link only
-              await this.sendFormLinkOnly(phone, {
+              await this.sendFormLinkOnly(authorized.phone || phone, {
                 chatId,
                 replyTo: message,
                 inboundText: body,
@@ -2037,12 +2077,12 @@ class WhatsAppService {
   }
 
   /**
-   * Send only the bare form URL — no welcome / greeting text.
+   * Core form-link delivery — no welcome text, no workflow-builder dependency.
+   * Uses chatId/replyTo so LID peers still receive the URL after whitelist unlock.
    */
   async sendFormLinkOnly(phone, opts = {}) {
     const existing = Submissions.findLatestOpen(phone);
     if (existing && existing.status === 'awaiting_confirmation') {
-      // Legacy pending confirmations → push straight to desk + open two-way
       await this.confirmAndForward(existing, {
         chatId: opts.chatId,
         replyTo: opts.replyTo,
@@ -2058,12 +2098,17 @@ class WhatsAppService {
     if (!submission) {
       submission = Submissions.create({ token: makeToken(), customer_phone: phone });
     }
-    if (opts.chatId) Submissions.setCustomerChatId(submission.token, opts.chatId);
+    if (opts.chatId) {
+      try {
+        Submissions.setCustomerChatId(submission.token, opts.chatId);
+      } catch (_) {}
+    }
 
+    // Optional: arm workflow waiter IF a graph exists — never required for unlock/form URL
     try {
-      const active = this.engine.getActiveGraph();
+      const active = this.engine?.getActiveGraph?.();
       if (active) {
-        const formNode = Object.values(active.nodes).find((n) => n.type === 'form_submit');
+        const formNode = Object.values(active.nodes || {}).find((n) => n.type === 'form_submit');
         if (formNode) {
           const run = WorkflowRuns.create({
             workflow_id: active.workflow.id,
@@ -2082,11 +2127,13 @@ class WhatsAppService {
         }
       }
     } catch (err) {
-      console.warn('[WhatsApp] Could not arm form_submit waiter:', err.message);
+      console.warn('[WhatsApp] Workflow arm skipped (form link still sent):', err.message);
     }
 
     const formLink = sanitizeFormLink(this.buildFormUrl(submission.token));
-    console.log(`[WhatsApp] Bare form link → ${phone}: ${formLink}`);
+    console.log(`[WhatsApp] Bare form link → ${phone} (chatId=${opts.chatId || 'n/a'}): ${formLink}`);
+
+    // Anti-ban jitter + typing live inside sendMessage; prefer inbound chatId/reply
     await this.sendMessage(phone, formLink, {
       chatId: opts.chatId,
       replyTo: opts.replyTo,
