@@ -8,6 +8,24 @@ function safeJson(raw, fallback) {
   }
 }
 
+/**
+ * node:sqlite DatabaseSync has no better-sqlite3-style db.transaction().
+ * Use explicit BEGIN / COMMIT / ROLLBACK instead.
+ */
+function runInTransaction(fn) {
+  db.exec('BEGIN');
+  try {
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch (_) {}
+    throw err;
+  }
+}
+
 /** Strip non-digits (ignores +, spaces, dashes). */
 function digitsOnly(phone) {
   return String(phone || '').replace(/\D/g, '');
@@ -67,12 +85,17 @@ const Settings = {
   },
 
   setMany(obj) {
-    const tx = db.transaction((entries) => {
-      for (const [key, value] of Object.entries(entries)) {
-        Settings.set(key, value);
+    const entries = Object.entries(obj || {});
+    if (!entries.length) return;
+    const stmt = db.prepare(`
+      INSERT INTO settings (key, value) VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `);
+    runInTransaction(() => {
+      for (const [key, value] of entries) {
+        stmt.run(key, String(value));
       }
     });
-    tx(obj);
   },
 };
 
@@ -785,13 +808,12 @@ const Workflows = {
   },
 
   setActive(id) {
-    const tx = db.transaction(() => {
+    runInTransaction(() => {
       db.prepare('UPDATE workflows SET is_active = 0').run();
       db.prepare(
         `UPDATE workflows SET is_active = 1, updated_at = datetime('now') WHERE id = ?`
       ).run(id);
     });
-    tx();
     return this.get(id);
   },
 
