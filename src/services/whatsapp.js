@@ -1573,6 +1573,7 @@ class WhatsAppService {
     }
 
     // Prefer explicit option, else try typed option sets (voice/pdf/image/…)
+    // `once: true` → only the first option (prevents image + image_as_document doubles)
     let optionSets;
     if (options.sendAsDocument || options.sendAudioAsVoice || options.sendMediaAsSticker) {
       optionSets = [
@@ -1592,6 +1593,12 @@ class WhatsAppService {
         options.caption
       );
     }
+    if (options.once && optionSets.length > 1) {
+      optionSets = [optionSets[0]];
+      console.log(
+        `[Media] once=true — using single attempt=${optionSets[0]._label}`
+      );
+    }
 
     console.log(
       `[Media] sending → ${chatId} mime=${payload.mimetype} file=${payload.filename || '—'} b64=${String(payload.data).length} attempts=${optionSets.map((s) => s._label).join(',')}`
@@ -1605,8 +1612,10 @@ class WhatsAppService {
       try {
         console.log(`[Media] attempt=${label} opts=${JSON.stringify(opts)}`);
         let result;
+        let sentWithoutThrow = false;
         try {
           result = await this.client.sendMessage(chatId, payload, opts);
+          sentWithoutThrow = true;
         } catch (err) {
           console.error(
             `[Media] client.sendMessage (${label}) failed:`,
@@ -1614,7 +1623,7 @@ class WhatsAppService {
           );
           console.error(err.stack);
 
-          // Large base64 via CDP can fail — try temp-file path
+          // Large base64 via CDP can fail — try temp-file path (still one send)
           if (String(payload.data).length > 200000) {
             try {
               const fs = require('fs');
@@ -1640,6 +1649,7 @@ class WhatsAppService {
               const fromFile = MessageMedia.fromFilePath(tmp);
               try {
                 result = await this.client.sendMessage(chatId, fromFile, opts);
+                sentWithoutThrow = true;
               } finally {
                 try {
                   fs.unlinkSync(tmp);
@@ -1651,23 +1661,24 @@ class WhatsAppService {
                 errFile.message
               );
               console.error(errFile.stack);
-              const chat = await this.client.getChatById(chatId);
-              result = await chat.sendMessage(payload, opts);
+              throw err;
             }
           } else {
-            const chat = await this.client.getChatById(chatId);
-            result = await chat.sendMessage(payload, opts);
+            throw err;
           }
         }
 
-        if (!result) {
-          console.warn(`[Media] attempt=${label} returned null/undefined`);
-          errors.push(`${label}:null_result`);
-          continue;
-        }
-
+        // CRITICAL: if sendMessage did not throw, the media was likely delivered.
+        // Do NOT try the next option set (that caused 10–12 duplicate image.jpg sends).
         this._lastOutboundChatId = chatId;
-        result._outboundChatId = chatId;
+        if (!result) {
+          result = { _outboundChatId: chatId };
+          console.warn(
+            `[Media] attempt=${label} returned null — treating as SUCCESS (no further attempts)`
+          );
+        } else {
+          result._outboundChatId = chatId;
+        }
         this.markBotOutbound(chatId, 25000);
 
         try {
@@ -1685,12 +1696,16 @@ class WhatsAppService {
           });
         } catch (_) {}
 
-        console.log(`[Media] send OK → ${chatId} via ${label}`);
+        console.log(
+          `[Media] send OK → ${chatId} via ${label} (once=${!!options.once || sentWithoutThrow})`
+        );
         return result;
       } catch (err) {
         console.error(`[Media] attempt=${label} FAILED:`, err.message);
         console.error(err.stack);
         errors.push(`${label}:${err.message}`);
+        // With once=true, stop immediately after first failure
+        if (options.once) break;
       }
     }
 

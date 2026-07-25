@@ -4,11 +4,11 @@
  * Owns customer ↔ company proxying for text + ALL media types
  * (image, PDF, document, voice/audio, video, sticker).
  *
- * Pipeline (every relay):
- *   1. Detect media aggressively (never rely only on hasMedia/directPath)
- *   2. Download buffer FIRST (before human delay — CDN keys stay fresh)
+ * Pipeline (every media relay — exactly once per message id):
+ *   1. Claim dedupe key (skip if already relayed / in-flight)
+ *   2. Download buffer (before human delay — CDN keys stay fresh)
  *   3. Human delay 1–45s with live typing/recording presence
- *   4. Send via MessageMedia (typed options) → page forward → caption fallback
+ *   4. ONE buffer sendMessage → if fail, ONE native forward → stop
  *
  * All failures are try/caught and logged — never crash the PM2 process.
  */
@@ -55,6 +55,80 @@ class ChatBridgeRelay {
     this.wa = wa;
     /** @type {Map<string|number, Promise>} */
     this._sessionQueues = new Map();
+    /** Inbound media message keys already relayed (dedupe) */
+    this._relayedMediaIds = new Set();
+    /** In-flight media keys (prevent concurrent double relay) */
+    this._inflightMediaIds = new Set();
+  }
+
+  mediaDedupeKey(message, direction = '') {
+    const sid =
+      (this.wa.pm?.getSerializedMsgId &&
+        this.wa.pm.getSerializedMsgId(message)) ||
+      message?.id?._serialized ||
+      null;
+    const hash = message?.id?.id != null ? String(message.id.id) : null;
+    const ts = message?.timestamp || message?._data?.t || '';
+    const from = message?.from || '';
+    const type = message?.type || '';
+    const base = sid || hash || `${from}:${ts}:${type}`;
+    return `${direction}:${base}`;
+  }
+
+  /**
+   * Claim exclusive rights to relay this media once.
+   * @returns {boolean} false if already relayed / in-flight
+   */
+  claimMediaRelay(key) {
+    if (!key) return true;
+    if (this._relayedMediaIds.has(key)) {
+      console.warn(
+        `[BridgeRelay] DEDUPE skip — media already relayed: ${key}`
+      );
+      return false;
+    }
+    if (this._inflightMediaIds.has(key)) {
+      console.warn(
+        `[BridgeRelay] DEDUPE skip — media already in-flight: ${key}`
+      );
+      return false;
+    }
+    this._inflightMediaIds.add(key);
+    return true;
+  }
+
+  /**
+   * Continue an already-claimed in-flight relay (claimed at handleInbound).
+   */
+  continueMediaClaim(key) {
+    if (!key) return true;
+    if (this._relayedMediaIds.has(key)) {
+      console.warn(
+        `[BridgeRelay] DEDUPE skip — already completed: ${key}`
+      );
+      return false;
+    }
+    if (!this._inflightMediaIds.has(key)) {
+      this._inflightMediaIds.add(key);
+    }
+    return true;
+  }
+
+  markMediaRelayed(key) {
+    if (!key) return;
+    this._inflightMediaIds.delete(key);
+    this._relayedMediaIds.add(key);
+    // Bound set size
+    if (this._relayedMediaIds.size > 3000) {
+      const drop = [...this._relayedMediaIds].slice(0, 800);
+      drop.forEach((k) => this._relayedMediaIds.delete(k));
+    }
+    console.log(`[BridgeRelay] DEDUPE marked relayed: ${key}`);
+  }
+
+  releaseMediaClaim(key) {
+    if (!key) return;
+    this._inflightMediaIds.delete(key);
   }
 
   /**
@@ -81,11 +155,12 @@ class ChatBridgeRelay {
   }
 
   unsee(waId) {
+    // Do NOT unsee media after a failed relay — that re-queues duplicates.
+    // Only clear for debugging when explicitly needed.
     if (!waId || !this.wa._seenIds) return;
-    if (this.wa._seenIds.has(waId)) {
-      this.wa._seenIds.delete(waId);
-      console.warn(`[BridgeRelay] Un-saw ${waId} for media retry`);
-    }
+    console.warn(
+      `[BridgeRelay] unsee suppressed for ${waId} (prevents duplicate media relay)`
+    );
   }
 
   /**
@@ -130,6 +205,11 @@ class ChatBridgeRelay {
         console.log(
           `[BridgeRelay] Customer→Desk #${customerSession.id}[${customerSession.session_code}] media=${hasMedia} type=${msgType || 'text'}`
         );
+
+        if (hasMedia) {
+          const key = this.mediaDedupeKey(message, 'customer_to_desk');
+          if (!this.claimMediaRelay(key)) return true;
+        }
 
         await this.enqueueSession(customerSession.id, () =>
           this.relay(message, customerSession, 'customer_to_desk', body, hasMedia)
@@ -202,6 +282,11 @@ class ChatBridgeRelay {
       console.log(
         `[BridgeRelay] Desk→Customer #${deskSession.id}[${deskSession.session_code}] via ${resolved?.method || 'desk_chat'} media=${hasMedia} type=${msgType || 'text'}`
       );
+
+      if (hasMedia) {
+        const key = this.mediaDedupeKey(message, 'desk_to_customer');
+        if (!this.claimMediaRelay(key)) return true;
+      }
 
       await this.enqueueSession(deskSession.id, () =>
         this.relay(message, deskSession, 'desk_to_customer', body, hasMedia)
@@ -287,12 +372,12 @@ class ChatBridgeRelay {
    */
   async relay(message, session, direction, body, hasMediaFlag = null) {
     const waId = message?.id?._serialized || message?.id?.id || null;
+    let mediaKey = null;
     try {
       if (!this.wa.client || !this.wa.ready) {
         console.error(
           `[BridgeRelay] Client not ready — cannot relay ${direction}`
         );
-        if (isMediaLikeMessage(message)) this.unsee(waId);
         return;
       }
 
@@ -307,6 +392,14 @@ class ChatBridgeRelay {
       const hasMedia =
         hasMediaFlag != null ? !!hasMediaFlag : isMediaLikeMessage(message);
 
+      // Strict media dedupe — continue claim from handleInbound (or claim now)
+      if (hasMedia) {
+        mediaKey = this.mediaDedupeKey(message, direction);
+        if (!this.continueMediaClaim(mediaKey)) {
+          return;
+        }
+      }
+
       const destCandidates = await this.resolveDestChatIds(
         destPhone,
         preferredChatId
@@ -315,11 +408,14 @@ class ChatBridgeRelay {
         console.error(
           `[BridgeRelay] No dest chat ids ${direction} phone=${destPhone} preferred=${preferredChatId || '—'}`
         );
-        if (hasMedia) this.unsee(waId);
+        if (mediaKey) this.releaseMediaClaim(mediaKey);
         return;
       }
 
+      // Prefer a single destination to avoid multi-candidate duplicate sends
       const destChatId = preferredChatId || destCandidates[0];
+      const primaryDests = [destChatId].filter(Boolean);
+
       if (waId) {
         try {
           ChatSessions.trackMessage(
@@ -335,7 +431,7 @@ class ChatBridgeRelay {
 
       const cleanBody = antiBan.cleanRelayText(body);
       console.log(
-        `[BridgeRelay] ${direction} media=${hasMedia} type=${msgType || 'text'} dest=${destChatId} candidates=${destCandidates.length}`
+        `[BridgeRelay] ${direction} media=${hasMedia} type=${msgType || 'text'} dest=${destChatId} (single-dest mode)`
       );
 
       const bindDest = (bound) => {
@@ -356,11 +452,12 @@ class ChatBridgeRelay {
           direction,
           destPhone,
           destChatId,
-          destCandidates,
+          destCandidates: primaryDests,
           msgType,
           cleanBody,
           waId,
           bindDest,
+          mediaKey,
         });
         return;
       }
@@ -375,10 +472,14 @@ class ChatBridgeRelay {
     } catch (err) {
       console.error('[BridgeRelay] relay FATAL:', err.message);
       console.error(err.stack);
-      if (isMediaLikeMessage(message)) this.unsee(waId);
+      if (mediaKey) this.releaseMediaClaim(mediaKey);
     }
   }
 
+  /**
+   * Media relay — exactly ONE successful outbound send per message.
+   * Order: buffer send once → native forward once → stop.
+   */
   async relayMedia(ctx) {
     const {
       message,
@@ -390,7 +491,24 @@ class ChatBridgeRelay {
       cleanBody,
       waId,
       bindDest,
+      mediaKey,
     } = ctx;
+
+    const finishOk = (how, dest) => {
+      if (mediaKey) this.markMediaRelayed(mediaKey);
+      console.log(
+        `[BridgeRelay] MEDIA DONE once via=${how} dest=${dest || destChatId} key=${mediaKey || '—'}`
+      );
+    };
+
+    const finishFail = () => {
+      // Keep claim released but DO mark as relayed to stop further event loops
+      // from re-sending the same inbound media repeatedly.
+      if (mediaKey) this.markMediaRelayed(mediaKey);
+      console.error(
+        `[BridgeRelay] MEDIA RELAY FAILED (${msgType}) ${direction} — will not retry (dedupe)`
+      );
+    };
 
     try {
       this.wa.pm.logInboundMediaDetails(message, `relay:${direction}`);
@@ -398,29 +516,30 @@ class ChatBridgeRelay {
 
     const voice = isVoiceType(msgType, null);
     let liveMessage = message;
+    const singleDest = destChatId || (destCandidates && destCandidates[0]);
+    if (!singleDest) {
+      console.error('[BridgeRelay] relayMedia: no destination');
+      finishFail();
+      return;
+    }
 
     console.log(
-      `[BridgeRelay] Media relay PRIMARY=buffer-download+sendMessage type=${msgType} (${direction})`
+      `[BridgeRelay] Media ONE-SHOT relay type=${msgType} dest=${singleDest} (${direction})`
     );
 
-    // Refresh message in Store while we start download (helps downloadMedia)
     try {
       liveMessage =
-        (await this.wa.pm.waitForMessageInStore(liveMessage, 5000)) ||
+        (await this.wa.pm.waitForMessageInStore(liveMessage, 4000)) ||
         liveMessage;
     } catch (err) {
       console.warn('[BridgeRelay] pre-download store wait:', err.message);
     }
 
-    // Download buffer IN PARALLEL with human presence delay
     const downloadPromise = (async () => {
       try {
-        console.log(
-          `[BridgeRelay] Downloading media buffer (${direction}) type=${msgType}…`
-        );
         const media = await this.wa.prepareRelayMedia(liveMessage);
         console.log(
-          `[BridgeRelay] Download result buffer=${media?.data ? String(media.data).length : 0} mime=${media?.mimetype || '—'} file=${media?.filename || '—'}`
+          `[BridgeRelay] Download buffer=${media?.data ? String(media.data).length : 0} mime=${media?.mimetype || '—'}`
         );
         return media;
       } catch (err) {
@@ -430,156 +549,85 @@ class ChatBridgeRelay {
       }
     })();
 
-    await this.humanPresenceDelay(destChatId, { voice });
+    await this.humanPresenceDelay(singleDest, { voice });
 
     try {
-      if (voice) await this.wa.pm.sendRecordingPresence(destChatId);
-      else await this.wa.sendTypingPresence(destChatId);
-    } catch (err) {
-      console.warn('[BridgeRelay] pre-send presence:', err.message);
-    }
+      if (voice) await this.wa.pm.sendRecordingPresence(singleDest);
+      else await this.wa.sendTypingPresence(singleDest);
+    } catch (_) {}
 
-    // ── Path A (PRIMARY): download buffer → Client.sendMessage(media, { caption }) ──
+    // ── 1) Buffer send EXACTLY once to ONE dest ──
     let media = null;
     try {
       media = await downloadPromise;
     } catch (err) {
       console.error('[BridgeRelay] downloadPromise:', err.message);
-      console.error(err.stack);
-    }
-
-    // One more download attempt if first returned empty
-    if (!media?.data) {
-      try {
-        console.log('[BridgeRelay] Buffer empty — retry prepareRelayMedia…');
-        try {
-          liveMessage =
-            (await this.wa.pm.reloadMessageForMedia(liveMessage)) ||
-            liveMessage;
-        } catch (_) {}
-        media = await this.wa.prepareRelayMedia(liveMessage);
-        console.log(
-          `[BridgeRelay] Retry download buffer=${media?.data ? String(media.data).length : 0}`
-        );
-      } catch (err) {
-        console.error('[BridgeRelay] retry prepareRelayMedia:', err.message);
-        console.error(err.stack);
-      }
     }
 
     if (media?.data) {
-      const sendErrors = [];
-      for (const candidate of destCandidates) {
-        try {
-          if (voice) await this.wa.pm.sendRecordingPresence(candidate);
-          else await this.wa.sendTypingPresence(candidate);
-
-          console.log(
-            `[BridgeRelay] sendMessage(media) → ${candidate} type=${msgType} mime=${media.mimetype} file=${media.filename || '—'} b64=${String(media.data).length} captionLen=${String(cleanBody || '').length}`
-          );
-
-          const sent = await this.wa.sendMedia(destPhone, media, {
-            caption: cleanBody || undefined,
-            chatId: candidate,
-            skipTyping: true,
-            skipPacing: true,
-            skipLimiter: true,
-            msgType,
-          });
-
-          if (sent) {
-            bindDest(sent._outboundChatId || candidate);
-            console.log(
-              `[BridgeRelay] MEDIA BUFFER SEND OK (${direction}) → ${candidate} — skipping native forward`
-            );
-            return;
-          }
-          console.warn(
-            `[BridgeRelay] sendMedia returned null/undefined for ${candidate}`
-          );
-          sendErrors.push(`${candidate}:null_result`);
-        } catch (err) {
-          console.error(
-            `[BridgeRelay] sendMedia → ${candidate} FAILED:`,
-            err.message
-          );
-          console.error(err.stack);
-          sendErrors.push(`${candidate}:${err.message}`);
-        }
-      }
-      console.warn(
-        `[BridgeRelay] All buffer send candidates failed: ${sendErrors.join(' | ')}`
-      );
-    } else {
-      console.warn(
-        `[BridgeRelay] No media buffer after download (${direction}) type=${msgType}`
-      );
-    }
-
-    // ── Path B (OPTIONAL): native forward ONLY with a valid serialized id ──
-    let canNativeForward = false;
-    try {
-      const sid = this.wa.pm.getSerializedMsgId
-        ? this.wa.pm.getSerializedMsgId(liveMessage)
-        : null;
-      canNativeForward = !!(
-        sid &&
-        this.wa.pm.isValidSerializedMsgId &&
-        this.wa.pm.isValidSerializedMsgId(sid)
-      );
-      if (!canNativeForward) {
-        console.warn(
-          `[BridgeRelay] Skipping native forward — invalid/missing serialized id (buffer path preferred)`
-        );
-      }
-    } catch (_) {
-      canNativeForward = false;
-    }
-
-    if (canNativeForward) {
       try {
-        console.log('[BridgeRelay] Soft fallback: native forward (valid id)…');
-        const forwarded = await this.nativeForward(
-          liveMessage,
-          destCandidates,
-          { skipTyping: true }
+        console.log(
+          `[BridgeRelay] ONE buffer sendMessage → ${singleDest} type=${msgType} mime=${media.mimetype}`
         );
-        if (forwarded) {
-          bindDest(forwarded._outboundChatId);
-          console.log(
-            `[BridgeRelay] NATIVE FORWARD OK (${direction}) → ${forwarded._outboundChatId}`
-          );
-          return;
-        }
+        const sent = await this.wa.sendMedia(destPhone, media, {
+          caption: cleanBody || undefined,
+          chatId: singleDest,
+          skipTyping: true,
+          skipPacing: true,
+          skipLimiter: true,
+          msgType,
+          once: true, // single option attempt — no image+document double send
+        });
+        // Treat non-throw as success even if WA returns null/undefined
+        bindDest(sent?._outboundChatId || singleDest);
+        finishOk('buffer', sent?._outboundChatId || singleDest);
+        return;
       } catch (err) {
-        console.error('[BridgeRelay] native forward error:', err.message);
+        console.error(
+          '[BridgeRelay] ONE buffer send FAILED:',
+          err.message
+        );
         console.error(err.stack);
       }
+    } else {
+      console.warn('[BridgeRelay] No buffer — trying native forward once');
     }
 
-    // ── Path C: caption-only last resort ──
-    if (cleanBody) {
-      console.warn(
-        `[BridgeRelay] Media failed (${direction}) — caption text only`
+    // ── 2) Native forward EXACTLY once (only if buffer failed) ──
+    try {
+      console.log(
+        `[BridgeRelay] ONE native forward fallback → ${singleDest}`
       );
+      const forwarded = await this.nativeForward(liveMessage, [singleDest], {
+        skipTyping: true,
+      });
+      if (forwarded) {
+        bindDest(forwarded._outboundChatId || singleDest);
+        finishOk('native_forward', forwarded._outboundChatId || singleDest);
+        return;
+      }
+      console.warn('[BridgeRelay] Native forward returned null');
+    } catch (err) {
+      console.error('[BridgeRelay] native forward error:', err.message);
+      console.error(err.stack);
+    }
+
+    // ── 3) Caption only (still once) — then stop forever for this id ──
+    if (cleanBody) {
       try {
-        await this.wa.sendTypingPresence(destChatId);
+        await this.wa.sendTypingPresence(singleDest);
         await this.wa.sendMessage(destPhone, cleanBody, {
-          chatId: destChatId,
+          chatId: singleDest,
           skipTyping: true,
           skipPacing: true,
           skipLimiter: true,
         });
       } catch (err) {
         console.error('[BridgeRelay] caption send failed:', err.message);
-        console.error(err.stack);
       }
     }
 
-    console.error(
-      `[BridgeRelay] MEDIA RELAY FAILED (${msgType}) ${direction} — buffer send did not succeed`
-    );
-    this.unsee(waId);
+    finishFail();
   }
 
   async nativeForward(message, destChatIds, opts = {}) {
@@ -587,8 +635,10 @@ class ChatBridgeRelay {
       console.warn('[BridgeRelay] nativeForward: no message');
       return null;
     }
-    if (!destChatIds?.length) {
-      console.warn('[BridgeRelay] nativeForward: no dest chat ids');
+    // Only first destination — never fan-out
+    const chatId = (destChatIds || []).find(Boolean);
+    if (!chatId) {
+      console.warn('[BridgeRelay] nativeForward: no dest chat id');
       return null;
     }
 
@@ -608,80 +658,35 @@ class ChatBridgeRelay {
       msgId = null;
     }
 
-    if (!msgId) {
-      // Do not spam forwardMessageById with invalid ids
-      console.warn(
-        '[BridgeRelay] nativeForward aborted — no valid serialized id'
-      );
-      // Still try message.forward() which may work without our id string
-      for (const chatId of destChatIds) {
-        if (!chatId || typeof message.forward !== 'function') continue;
-        try {
-          if (opts.skipTyping) await this.wa.sendTypingPresence(chatId);
-          console.log(
-            `[BridgeRelay] message.forward (no page id) → ${chatId}`
-          );
-          await message.forward(chatId);
-          this.wa._lastOutboundChatId = chatId;
-          this.wa.markBotOutbound(chatId, 20000);
-          console.log(`[BridgeRelay] message.forward OK → ${chatId}`);
-          return {
-            ok: true,
-            _outboundChatId: chatId,
-            via: 'message.forward',
-          };
-        } catch (err) {
-          console.error(
-            `[BridgeRelay] message.forward → ${chatId} failed:`,
-            err.message
-          );
-          console.error(err.stack);
-        }
+    try {
+      if (!opts.skipTyping) {
+        await this.humanPresenceDelay(chatId, { voice: false });
+      } else {
+        await this.wa.sendTypingPresence(chatId);
       }
-      return null;
-    }
 
-    console.log(`[BridgeRelay] nativeForward msgId=${msgId}`);
-
-    for (const chatId of destChatIds) {
-      if (!chatId) continue;
-      try {
-        if (!opts.skipTyping) {
-          await this.humanPresenceDelay(chatId, { voice: false });
-        } else {
-          await this.wa.sendTypingPresence(chatId);
-        }
-
+      if (msgId) {
         console.log(
-          `[BridgeRelay] page forwardMessage → ${chatId} id=${msgId}`
+          `[BridgeRelay] page forwardMessage ONCE → ${chatId} id=${msgId}`
         );
         const ok = await this.wa.pm.forwardMessageById(msgId, chatId);
         if (ok) {
           this.wa._lastOutboundChatId = chatId;
           this.wa.markBotOutbound(chatId, 20000);
-          console.log(`[BridgeRelay] page forward OK → ${chatId}`);
           return { ok: true, _outboundChatId: chatId, via: 'page' };
         }
-
-        if (typeof message.forward === 'function') {
-          console.log(`[BridgeRelay] message.forward → ${chatId}`);
-          await message.forward(chatId);
-          this.wa._lastOutboundChatId = chatId;
-          this.wa.markBotOutbound(chatId, 20000);
-          console.log(`[BridgeRelay] message.forward OK → ${chatId}`);
-          return {
-            ok: true,
-            _outboundChatId: chatId,
-            via: 'message.forward',
-          };
-        }
-      } catch (err) {
-        console.error(
-          `[BridgeRelay] forward → ${chatId} failed:`,
-          err.message
-        );
-        console.error(err.stack);
       }
+
+      if (typeof message.forward === 'function') {
+        console.log(`[BridgeRelay] message.forward ONCE → ${chatId}`);
+        await message.forward(chatId);
+        this.wa._lastOutboundChatId = chatId;
+        this.wa.markBotOutbound(chatId, 20000);
+        return { ok: true, _outboundChatId: chatId, via: 'message.forward' };
+      }
+    } catch (err) {
+      console.error(`[BridgeRelay] forward → ${chatId} failed:`, err.message);
+      console.error(err.stack);
     }
     return null;
   }
@@ -738,47 +743,6 @@ class ChatBridgeRelay {
       console.error('[BridgeRelay] text send failed:', err.message);
       console.error(err.stack);
     }
-  }
-
-  async nativeForward(message, destChatIds, opts = {}) {
-    if (!message) {
-      console.warn('[BridgeRelay] nativeForward: no message');
-      return null;
-    }
-    const msgId = message.id?._serialized || message.id?.id || null;
-
-    for (const chatId of destChatIds) {
-      try {
-        if (!opts.skipTyping) {
-          await this.humanPresenceDelay(chatId, { voice: false });
-        } else {
-          await this.wa.sendTypingPresence(chatId);
-        }
-
-        if (msgId) {
-          const ok = await this.wa.pm.forwardMessageById(msgId, chatId);
-          if (ok) {
-            this.wa._lastOutboundChatId = chatId;
-            this.wa.markBotOutbound(chatId, 20000);
-            return { ok: true, _outboundChatId: chatId };
-          }
-        }
-
-        if (typeof message.forward === 'function') {
-          await message.forward(chatId);
-          this.wa._lastOutboundChatId = chatId;
-          this.wa.markBotOutbound(chatId, 20000);
-          return { ok: true, _outboundChatId: chatId };
-        }
-      } catch (err) {
-        console.error(
-          `[BridgeRelay] forward → ${chatId} failed:`,
-          err.message
-        );
-        console.error(err.stack);
-      }
-    }
-    return null;
   }
 }
 
