@@ -91,12 +91,16 @@
           <textarea class="field" name="success_message" rows="3"><%= settings.success_message || '' %></textarea>
         </div>
         <div>
-          <label class="label">Chat close message</label>
-          <textarea class="field" name="chat_close_message" rows="2"><%= settings.chat_close_message || '' %></textarea>
+          <label class="label">Chat close message (customer — leave blank; close is silent)</label>
+          <textarea class="field" name="chat_close_message" rows="2" placeholder="(unused — desk gets 🔴 only)"><%= settings.chat_close_message || '' %></textarea>
         </div>
         <div>
-          <label class="label">Company desk close notify</label>
-          <textarea class="field" name="company_close_notify_message" rows="2"><%= settings.company_close_notify_message || '' %></textarea>
+          <label class="label">Company status dots</label>
+          <p class="text-sm text-ink/55 mb-2">
+            On form submit / live chat open the desk receives <strong>🔵</strong> only.
+            On close the desk receives <strong>🔴</strong> only — no long status text.
+          </p>
+          <input type="hidden" name="company_close_notify_message" value="🔴" />
         </div>
         <div>
           <label class="label">Forward template (desk lead summary)</label>

@@ -132,7 +132,7 @@ async function forwardLeadToDesk(whatsapp, submission, ctx = {}) {
     if (!bridgeOnly) {
       leadMsg = await whatsapp.sendMessage(deskPhone, forwardText, {
         chatId: deskChatId || undefined,
-        skipTyping: true,
+        skipTyping: false,
         skipPacing: false,
       });
       deskChatId =
@@ -174,15 +174,10 @@ async function forwardLeadToDesk(whatsapp, submission, ctx = {}) {
         );
       }
 
-      // Tip so multi-lead desks can route with [#CODE] or by quoting the lead
+      // Status only: blue dot to company (no long "live chat" text)
       try {
-        const tip =
-          `🟢 Live chat opened [#${session.session_code}]\n` +
-          `Customer: ${submission.customer_name || phone}\n` +
-          `Reply here to chat. Quote this lead or include [#${session.session_code}] if you have multiple chats.\n` +
-          `Send Close or CLS to end.`;
-        await antiBan.sleep(antiBan.randInt(400, 900));
-        const tipMsg = await whatsapp.sendMessage(deskPhone, tip, {
+        await antiBan.sleep(antiBan.randInt(300, 700));
+        const tipMsg = await whatsapp.sendMessage(deskPhone, '🔵', {
           chatId: deskChatId || undefined,
           skipTyping: true,
           skipPacing: true,
@@ -195,11 +190,11 @@ async function forwardLeadToDesk(whatsapp, submission, ctx = {}) {
             session.id,
             'system_to_desk',
             String(tipId),
-            tip
+            '🔵'
           );
         }
       } catch (tipErr) {
-        console.warn('[DeskForward] Bridge tip failed:', tipErr.message);
+        console.warn('[DeskForward] Blue-dot status failed:', tipErr.message);
       }
     } catch (sessErr) {
       console.error('[DeskForward] Session open failed:', sessErr.message);

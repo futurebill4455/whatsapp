@@ -42,9 +42,8 @@ function seed() {
     success_message:
       'Thank you! Your details have been forwarded to our team.\n\nYou can now chat with the insurance desk. Send *close* (or *cls*) anytime to end the chat.',
     form_link_message: '',
-    chat_close_message: 'Thank you! Your conversation has been ended. Have a good day!',
-    company_close_notify_message:
-      'Customer ended the chat [#{{session_code}}] ({{customer_phone}}).\nSession closed.',
+    chat_close_message: '',
+    company_close_notify_message: '🔴',
     access_denied_message: '',
     access_wrong_code_message: '',
     access_granted_message: '',
@@ -100,6 +99,16 @@ function seed() {
   Settings.set('access_wrong_code_message', '');
   Settings.set('access_denied_message', '');
   Settings.set('access_control_enabled', '0');
+  // Status dots only — no long chat open/close text to the desk
+  Settings.set('company_close_notify_message', '🔴');
+  const closeMsg = Settings.get('chat_close_message');
+  if (
+    closeMsg &&
+    (/ended the chat|conversation has been ended|live chat/i.test(String(closeMsg)) ||
+      String(closeMsg).length > 40)
+  ) {
+    Settings.set('chat_close_message', '');
+  }
 
   if (InsuranceTypes.list().length === 0) {
     const health = InsuranceTypes.create({ name: 'Health', sort_order: 1 });
