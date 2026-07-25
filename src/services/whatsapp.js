@@ -489,6 +489,12 @@ class WhatsAppService {
       }
       this.emit('whatsapp:status', this.getPublicStatus());
       console.log('[WhatsApp] Ready', this.info?.wid || '');
+      try {
+        const { AccessGate } = require('../models');
+        console.log(
+          `[WhatsApp] Common access code: ${AccessGate.getCommonCode() || '(not set)'}`
+        );
+      } catch (_) {}
       console.log(
         '[WhatsApp] Inbound listeners active: message, message_create, message_ciphertext (+ unread poller)'
       );
@@ -662,7 +668,7 @@ class WhatsAppService {
   startUnreadPoller() {
     this.stopUnreadPoller();
     const intervalMs = Number(process.env.WA_UNREAD_POLL_MS);
-    const ms = Number.isFinite(intervalMs) && intervalMs >= 0 ? intervalMs : 10000;
+    const ms = Number.isFinite(intervalMs) && intervalMs >= 0 ? intervalMs : 5000;
     if (ms === 0) {
       console.log('[WhatsApp] Unread poller disabled (WA_UNREAD_POLL_MS=0)');
       return;
@@ -799,43 +805,64 @@ class WhatsAppService {
 
     const { phone, chatId } = await this.resolveIncomingPeer(message);
 
+    // Stable peer key for DB rows when MSISDN can't be resolved (@lid)
+    const peerKey =
+      phone ||
+      this.formatPhone(chatId) ||
+      String(chatId || '')
+        .replace(/@.+$/, '')
+        .replace(/\D/g, '') ||
+      String(chatId || 'unknown');
+
     try {
       MessageLog.add({
         direction: 'in',
-        phone: phone || chatId,
+        phone: peerKey || chatId,
         body: body || `[${message.type}]`,
         meta: {
           type: message.type,
           chatId,
           hasMedia: !!message.hasMedia,
           id: msgId,
+          phoneResolved: !!phone,
         },
       });
     } catch (_) {}
 
-    // 1) Active bridge first
+    // 1) Active bridge first (needs a digit phone when possible)
     try {
-      const bridged = await this.handleChatBridge(message, phone, chatId, body);
+      const bridged = await this.handleChatBridge(message, phone || peerKey, chatId, body);
       if (bridged) return;
     } catch (err) {
       console.error('[ChatBridge] error:', err.message);
     }
 
-    if (!phone) {
-      console.warn('[WhatsApp] Could not resolve inbound phone — silent');
+    if (!chatId && !phone) {
+      console.warn('[WhatsApp] No chatId/phone on inbound — cannot reply');
       return;
     }
 
-    // 2) Workflow engine (access-code gated) — responds 24/7
+    if (!phone) {
+      console.warn(
+        `[WhatsApp] MSISDN unresolved (likely @lid) — continuing with chatId=${chatId} peerKey=${peerKey}`
+      );
+    }
+
+    // 2) Common access-code workflow — does NOT require a whitelist phone
     try {
-      await this.engine.handleIncomingMessage({
-        phone,
+      const result = await this.engine.handleIncomingMessage({
+        phone: peerKey,
         body,
-        chatId,
+        chatId: chatId || message.from,
         replyTo: message,
       });
+      console.log(
+        `[WhatsApp] Workflow result:`,
+        result?.reason || result?.status || result?.handled || result
+      );
     } catch (err) {
       console.error('[Workflow] handleIncomingMessage:', err.message);
+      console.error(err.stack);
     }
   }
 
@@ -1181,15 +1208,20 @@ class WhatsAppService {
       throw new Error('Empty message');
     }
 
-    if (!this.client) throw new Error('WhatsApp client not ready');
-
     const digits = this.formatPhone(
       String(phoneOrChat || '').includes('@')
         ? String(phoneOrChat).replace(/@.+$/, '')
         : phoneOrChat
     );
 
-    if (!options.skipCaps) {
+    // Prefer inbound chat / reply target — critical for @lid peers
+    let chatId =
+      options.chatId ||
+      options.replyTo?.from ||
+      options.replyTo?.author ||
+      null;
+
+    if (!options.skipCaps && digits) {
       const caps = antiBan.checkSendCaps(digits);
       if (!caps.ok) {
         const err = new Error(caps.reason || 'rate_capped');
@@ -1200,9 +1232,16 @@ class WhatsAppService {
 
     await antiBan.outboundLimiter.waitTurn();
 
-    let chatId = options.chatId;
     if (!chatId) {
-      chatId = await this.resolveOutboundChatId(phoneOrChat);
+      try {
+        chatId = await this.resolveOutboundChatId(phoneOrChat);
+      } catch (err) {
+        if (options.replyTo && typeof options.replyTo.reply === 'function') {
+          chatId = options.replyTo.from || null;
+        } else {
+          throw err;
+        }
+      }
     }
 
     const timing = antiBan.planOutboundTiming(rawText, {
@@ -1215,24 +1254,34 @@ class WhatsAppService {
       await sleep(timing.thinkMs);
     }
 
-    if (!options.skipTyping) {
+    if (!options.skipTyping && chatId) {
       await this.simulatePresenceTyping(chatId, rawText, timing);
     }
 
     let result;
     try {
       if (options.replyTo && typeof options.replyTo.reply === 'function') {
+        console.log(`[WhatsApp] Sending via msg.reply → ${options.replyTo.from || chatId}`);
         result = await options.replyTo.reply(rawText);
       } else {
+        console.log(`[WhatsApp] Sending via chat → ${chatId}`);
         const chat = await this.client.getChatById(chatId);
         result = await chat.sendMessage(rawText);
       }
     } catch (err) {
-      // Retry once with fresh chat id resolution
       console.warn('[WhatsApp] send retry:', err.message);
-      chatId = await this.resolveOutboundChatId(digits || phoneOrChat);
-      const chat = await this.client.getChatById(chatId);
-      result = await chat.sendMessage(rawText);
+      // Prefer reply again, then chatId, then number resolve
+      if (options.replyTo && typeof options.replyTo.reply === 'function') {
+        result = await options.replyTo.reply(rawText);
+      } else {
+        const fallbackId =
+          chatId ||
+          (digits ? await this.resolveOutboundChatId(digits) : null) ||
+          phoneOrChat;
+        const chat = await this.client.getChatById(fallbackId);
+        result = await chat.sendMessage(rawText);
+        chatId = fallbackId;
+      }
     }
 
     this._lastOutboundChatId = chatId;
@@ -1241,7 +1290,7 @@ class WhatsAppService {
     try {
       MessageLog.add({
         direction: 'out',
-        phone: digits,
+        phone: digits || chatId,
         body: rawText,
         meta: { chatId, id: result?.id?._serialized },
       });

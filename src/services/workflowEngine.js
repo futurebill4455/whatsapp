@@ -211,28 +211,46 @@ class WorkflowEngine {
       inboundText: text,
     };
 
+    console.log(
+      `[Workflow] Inbound peer=${phone || '?'} chatId=${chatId || '?'} text="${text.slice(0, 60)}"`
+    );
+
     const active = this.getActiveGraph();
-    if (!active) {
-      return { handled: false, reason: 'no_active_workflow' };
-    }
 
     // Resume Yes/No waiters first (already authorized flows)
-    const waitingYn = WorkflowRuns.findWaiting(phone, 'yes_no');
-    if (waitingYn) {
-      return this.resumeYesNo(waitingYn, text, active.nodes, baseCtx);
+    if (active) {
+      const waitingYn = WorkflowRuns.findWaiting(phone, 'yes_no');
+      if (waitingYn) {
+        return this.resumeYesNo(waitingYn, text, active.nodes, baseCtx);
+      }
+
+      // Waiting for form — stay silent on chatter UNLESS they re-send the access code
+      const waitingForm = WorkflowRuns.findWaiting(phone, 'form_submit');
+      if (waitingForm) {
+        const reUnlock = AccessGate.tryUnlock(phone, text);
+        if (!reUnlock.ok) {
+          console.log(`[Workflow] Awaiting form submit for ${phone} — silent`);
+          return { handled: true, reason: 'awaiting_form_submit', silent: true };
+        }
+        // Re-send form link for the same waiting run
+        console.log(`[Workflow] Access code re-sent while awaiting form — resending link`);
+        await this.whatsapp.sendFormLinkOnly(phone, {
+          chatId,
+          replyTo,
+          inboundText: text,
+        });
+        return { handled: true, reason: 'form_link_resent' };
+      }
     }
 
-    // Waiting for form — stay silent on chatter
-    const waitingForm = WorkflowRuns.findWaiting(phone, 'form_submit');
-    if (waitingForm) {
-      return { handled: true, reason: 'awaiting_form_submit', silent: true };
-    }
-
-    // Common access code (Settings.common_access_code) — no user/phone whitelist
+    // Common access code — any sender, no phone whitelist
     const unlock = AccessGate.tryUnlock(phone, text);
+    console.log(
+      `[Workflow] AccessGate → ok=${unlock.ok} reason=${unlock.reason} matched=${unlock.matchedCode || ''}`
+    );
+
     if (!unlock.ok) {
       if (unlock.reason === 'wrong_code') {
-        console.warn(`[Workflow] Wrong access code from ${phone}`);
         const wrongMsg = String(Settings.get('access_wrong_code_message') || '').trim();
         if (wrongMsg) {
           try {
@@ -243,9 +261,8 @@ class WorkflowEngine {
           return { handled: true, reason: 'wrong_code_replied' };
         }
       } else if (unlock.reason === 'not_configured') {
-        console.warn('[Workflow] common_access_code is not configured');
+        console.warn('[Workflow] common_access_code is not configured in Settings');
       }
-      // Noise / unrelated text — silent
       return { handled: true, reason: unlock.reason || 'unauthorized', silent: true };
     }
 
@@ -270,6 +287,17 @@ class WorkflowEngine {
       }
     }
 
+    // No active workflow → still send form link so the user always gets a reply
+    if (!active) {
+      console.warn('[Workflow] No active workflow — form-link fallback');
+      await this.whatsapp.sendFormLinkOnly(phone, {
+        chatId,
+        replyTo,
+        inboundText: text,
+      });
+      return { handled: true, reason: 'no_workflow_form_fallback' };
+    }
+
     const triggers = findAccessTriggerNodes(active.nodes);
     if (!triggers.length) {
       console.warn('[Workflow] No access_code trigger node; sending form link directly');
@@ -284,7 +312,7 @@ class WorkflowEngine {
     const start = triggers[0];
     const run = WorkflowRuns.create({
       workflow_id: active.workflow.id,
-      customer_phone: phone,
+      customer_phone: phone || String(chatId || 'unknown'),
       context: {
         ...baseCtx,
         matched_code: unlock.matchedCode,
