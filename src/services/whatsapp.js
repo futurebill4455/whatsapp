@@ -1107,10 +1107,22 @@ class WhatsAppService {
 
   normalizeIncomingMessageIds(message) {
     try {
-      if (message?.id && !message.id._serialized && message.id.id) {
-        message.id._serialized = String(message.id.id);
+      if (!message?.id || typeof message.id !== 'object') return;
+      if (message.id._serialized && /^(true|false)_.+@.+_.+/.test(message.id._serialized)) {
+        return;
       }
-    } catch (_) {}
+      const remote =
+        message.id.remote || message.from || message.to || null;
+      const mid = message.id.id != null ? String(message.id.id) : null;
+      if (!remote || !mid) return;
+      // NEVER set _serialized to bare id.id — wwebjs requires true|false_jid_hash
+      const fromMe = message.id.fromMe === true;
+      const built = `${fromMe}_${remote}_${mid}`;
+      message.id._serialized = built;
+      console.log(`[WhatsApp] Normalized message id → ${built}`);
+    } catch (err) {
+      console.warn('[WhatsApp] normalizeIncomingMessageIds:', err.message);
+    }
   }
 
   async handleIncomingMessage(message) {

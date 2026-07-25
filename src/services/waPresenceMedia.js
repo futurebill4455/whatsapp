@@ -237,79 +237,277 @@ function createPresenceMediaHelpers(wa) {
   }
 
   /**
-   * Resolve serialized message id from a Message-like object.
+   * WhatsApp serialized ids look like: true_9199…@c.us_3EB0XXXX
+   * (3 or 4 underscore-separated parts). Bare hash / object id is INVALID.
    */
-  function getSerializedMsgId(message) {
-    return (
-      message?.id?._serialized ||
-      (typeof message?.id === 'string' ? message.id : null) ||
-      message?.id?.id ||
-      null
-    );
+  function isValidSerializedMsgId(raw) {
+    if (!raw || typeof raw !== 'string') return false;
+    const s = raw.trim();
+    if (!s || s.includes(':') || s.includes('undefined')) return false;
+    const parts = s.split('_');
+    if (parts.length !== 3 && parts.length !== 4) return false;
+    if (parts[0] !== 'true' && parts[0] !== 'false') return false;
+    if (!parts[1] || !parts[1].includes('@')) return false;
+    if (!parts[2]) return false;
+    return true;
   }
 
   /**
-   * Poll until the message exists in WA Store (fixes msg_not_found race).
-   * Tries getMessageById → Msg.get/getMessagesById → chat.fetchMessages.
+   * Correctly extract/normalize msg.id._serialized for getMessageById.
+   * Never returns bare msg.id.id (that causes "Invalid serialized message id").
    */
-  async function waitForMessageInStore(message, maxMs = 12000) {
-    const msgId = getSerializedMsgId(message);
-    if (!msgId) {
-      console.warn('[Media] waitForMessageInStore: no message id');
-      return message;
-    }
+  function getSerializedMsgId(message) {
+    try {
+      if (!message) return null;
 
+      const direct = message.id?._serialized;
+      if (isValidSerializedMsgId(direct)) return String(direct).trim();
+
+      if (typeof message.id === 'string' && isValidSerializedMsgId(message.id)) {
+        return message.id.trim();
+      }
+
+      const idObj = message.id && typeof message.id === 'object' ? message.id : null;
+      if (idObj) {
+        const remote =
+          idObj.remote ||
+          message.from ||
+          message.to ||
+          message._data?.from ||
+          message._data?.to ||
+          null;
+        const mid = idObj.id != null ? String(idObj.id) : null;
+        const fromMe = idObj.fromMe === true || idObj.fromMe === 'true';
+        if (remote && mid) {
+          let built = `${fromMe}_${remote}_${mid}`;
+          if (idObj.participant) {
+            // Some group variants append participant as 4th segment
+            const withPart = `${built}_${idObj.participant}`;
+            if (isValidSerializedMsgId(withPart)) built = withPart;
+          }
+          if (isValidSerializedMsgId(built)) {
+            try {
+              message.id._serialized = built;
+            } catch (_) {}
+            console.log(`[Media] Built serialized id: ${built}`);
+            return built;
+          }
+        }
+      }
+
+      // Last resort: _data.id._serialized
+      const dataSer = message._data?.id?._serialized;
+      if (isValidSerializedMsgId(dataSer)) return String(dataSer).trim();
+
+      console.warn(
+        '[Media] No valid serialized id — raw=',
+        JSON.stringify({
+          _serialized: message.id?._serialized || null,
+          id: message.id?.id || (typeof message.id === 'string' ? message.id : null),
+          remote: message.id?.remote || null,
+          fromMe: message.id?.fromMe,
+          from: message.from || null,
+        })
+      );
+      return null;
+    } catch (err) {
+      console.error('[Media] getSerializedMsgId error:', err.message);
+      return null;
+    }
+  }
+
+  /**
+   * Safe getMessageById — only with validated serialized string.
+   * Returns null on invalid id / throw (never crashes).
+   */
+  async function safeGetMessageById(msgId) {
+    if (!isValidSerializedMsgId(msgId)) {
+      console.warn(
+        `[Media] skip getMessageById — invalid serialized id: ${String(msgId || '').slice(0, 80)}`
+      );
+      return null;
+    }
+    if (!wa.client?.getMessageById) return null;
+    try {
+      const fresh = await wa.client.getMessageById(msgId);
+      return fresh || null;
+    } catch (err) {
+      console.warn(
+        `[Media] getMessageById failed (${msgId}):`,
+        err.message
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Fallback: fetch recent chat messages and match by id / timestamp / sender / type.
+   */
+  async function findMessageViaChatFetch(message, { limit = 5 } = {}) {
     const chatId =
       message.from ||
       message.to ||
       message.id?.remote ||
       message._data?.id?.remote ||
       null;
+    if (!chatId || !wa.client?.getChatById) {
+      console.warn('[Media] findMessageViaChatFetch: no chatId/client');
+      return null;
+    }
 
-    console.log(
-      `[Media] waitForMessageInStore ${msgId} (max ${maxMs}ms) chat=${chatId || '—'}`
-    );
+    const wantId = getSerializedMsgId(message);
+    const wantHash =
+      message.id?.id != null
+        ? String(message.id.id)
+        : wantId
+          ? wantId.split('_').slice(2).join('_')
+          : null;
+    const wantTs = Number(message.timestamp || message.t || message._data?.t || 0);
+    const wantType = String(message.type || '').toLowerCase();
+    const wantFrom = String(message.from || '').trim();
 
+    try {
+      console.log(
+        `[Media] fetchMessages fallback chat=${chatId} limit=${limit} type=${wantType || '?'} ts=${wantTs || '—'}`
+      );
+      const chat = await wa.client.getChatById(chatId);
+      const recent = await chat.fetchMessages({ limit: Math.max(5, limit) });
+      if (!recent?.length) {
+        console.warn('[Media] fetchMessages returned empty');
+        return null;
+      }
+
+      // 1) Exact serialized id
+      if (wantId) {
+        const byId = recent.find((m) => {
+          const id = m?.id?._serialized;
+          return id && String(id) === String(wantId);
+        });
+        if (byId) {
+          console.log('[Media] fetchMessages match: exact _serialized');
+          return byId;
+        }
+      }
+
+      // 2) Same hash id segment
+      if (wantHash) {
+        const byHash = recent.find((m) => {
+          const hid = m?.id?.id != null ? String(m.id.id) : null;
+          const ser = m?.id?._serialized || '';
+          return hid === wantHash || ser.endsWith(`_${wantHash}`);
+        });
+        if (byHash) {
+          console.log('[Media] fetchMessages match: id hash');
+          return byHash;
+        }
+      }
+
+      // 3) Same sender + type + nearest timestamp (media)
+      const mediaTypes = MEDIA_TYPES;
+      const candidates = recent.filter((m) => {
+        if (m.fromMe) return false;
+        const t = String(m.type || '').toLowerCase();
+        if (wantType && t !== wantType) return false;
+        if (!wantType && !mediaTypes.has(t) && !m.hasMedia) return false;
+        if (wantFrom && m.from && String(m.from) !== wantFrom) return false;
+        return true;
+      });
+
+      if (candidates.length === 1) {
+        console.log('[Media] fetchMessages match: single sender/type candidate');
+        return candidates[0];
+      }
+
+      if (candidates.length > 1 && wantTs > 0) {
+        candidates.sort(
+          (a, b) =>
+            Math.abs(Number(a.timestamp || 0) - wantTs) -
+            Math.abs(Number(b.timestamp || 0) - wantTs)
+        );
+        const best = candidates[0];
+        const delta = Math.abs(Number(best.timestamp || 0) - wantTs);
+        if (delta <= 120) {
+          console.log(
+            `[Media] fetchMessages match: timestamp±${delta}s type=${best.type}`
+          );
+          return best;
+        }
+      }
+
+      // 4) Latest media from same sender
+      const latestMedia = recent.find(
+        (m) =>
+          !m.fromMe &&
+          (m.hasMedia || mediaTypes.has(String(m.type || '').toLowerCase())) &&
+          (!wantFrom || String(m.from) === wantFrom)
+      );
+      if (latestMedia) {
+        console.log(
+          `[Media] fetchMessages match: latest media type=${latestMedia.type}`
+        );
+        return latestMedia;
+      }
+
+      console.warn(
+        `[Media] fetchMessages: no match among ${recent.length} message(s)`
+      );
+      return null;
+    } catch (err) {
+      console.error('[Media] findMessageViaChatFetch error:', err.message);
+      console.error(err.stack);
+      return null;
+    }
+  }
+
+  /**
+   * Poll until a usable message instance is available.
+   * Never loops forever on invalid ids / msg_not_found.
+   */
+  async function waitForMessageInStore(message, maxMs = 10000) {
     const started = Date.now();
     let attempt = 0;
     let current = message;
+    const maxAttempts = 5; // hard cap — no infinite loop
 
-    while (Date.now() - started < maxMs) {
+    // Prefer chat fetch early when id is already invalid
+    let msgId = getSerializedMsgId(message);
+    if (!msgId) {
+      console.warn(
+        '[Media] waitForMessageInStore: invalid/missing serialized id — using fetchMessages fallback'
+      );
+      const viaFetch = await findMessageViaChatFetch(message, { limit: 5 });
+      return viaFetch || message;
+    }
+
+    console.log(
+      `[Media] waitForMessageInStore id=${msgId} max=${maxMs}ms`
+    );
+
+    while (Date.now() - started < maxMs && attempt < maxAttempts) {
       attempt += 1;
       try {
-        if (wa.client?.getMessageById) {
-          try {
-            const fresh = await wa.client.getMessageById(msgId);
-            if (fresh) {
-              console.log(
-                `[Media] Store hit via getMessageById attempt=${attempt} hasMedia=${!!fresh.hasMedia} type=${fresh.type}`
-              );
-              return fresh;
-            }
-          } catch (err) {
-            console.warn(
-              `[Media] getMessageById attempt=${attempt}:`,
-              err.message
-            );
-          }
+        const fresh = await safeGetMessageById(msgId);
+        if (fresh) {
+          console.log(
+            `[Media] Store hit getMessageById attempt=${attempt} hasMedia=${!!fresh.hasMedia}`
+          );
+          return fresh;
         }
 
-        if (wa.client?.pupPage) {
+        // Store probe only with valid id
+        if (wa.client?.pupPage && isValidSerializedMsgId(msgId)) {
           const storeHit = await wa.client.pupPage.evaluate(async (id) => {
             try {
               const collections = window.require?.('WAWebCollections');
               if (!collections?.Msg) return { found: false, error: 'no_Msg' };
-
               let msg = collections.Msg.get(id);
               if (!msg) {
                 const got = await collections.Msg.getMessagesById([id]);
                 msg = got?.messages?.[0] || null;
               }
               if (!msg) return { found: false, error: 'msg_not_found' };
-
               return {
                 found: true,
-                type: msg.type || null,
                 hasDirectPath: !!msg.directPath,
                 hasMediaKey: !!msg.mediaKey,
                 stage: msg.mediaData?.mediaStage || null,
@@ -325,10 +523,8 @@ function createPresenceMediaHelpers(wa) {
           );
 
           if (storeHit?.found) {
-            const fresh = await wa.client
-              .getMessageById(msgId)
-              .catch(() => null);
-            if (fresh) return fresh;
+            const again = await safeGetMessageById(msgId);
+            if (again) return again;
             current.hasMedia =
               current.hasMedia ||
               !!(storeHit.hasDirectPath || storeHit.hasMediaKey);
@@ -336,29 +532,12 @@ function createPresenceMediaHelpers(wa) {
           }
         }
 
-        if (chatId && wa.client?.getChatById && attempt >= 2) {
-          try {
-            const chat = await wa.client.getChatById(chatId);
-            const recent = await chat.fetchMessages({ limit: 20 });
-            const match = (recent || []).find((m) => {
-              const id = m?.id?._serialized || m?.id?.id;
-              return id && String(id) === String(msgId);
-            });
-            if (match) {
-              console.log(
-                `[Media] Found via chat.fetchMessages attempt=${attempt} hasMedia=${!!match.hasMedia}`
-              );
-              return match;
-            }
-            console.warn(
-              `[Media] fetchMessages attempt=${attempt}: id not in last ${recent?.length || 0}`
-            );
-          } catch (err) {
-            console.warn(
-              `[Media] chat.fetchMessages attempt=${attempt}:`,
-              err.message
-            );
-          }
+        // Fallback every attempt (user asked limit: 5)
+        const viaFetch = await findMessageViaChatFetch(current, { limit: 5 });
+        if (viaFetch) {
+          const fetchedId = getSerializedMsgId(viaFetch);
+          if (fetchedId) msgId = fetchedId;
+          return viaFetch;
         }
       } catch (err) {
         console.error(
@@ -366,48 +545,56 @@ function createPresenceMediaHelpers(wa) {
           err.message
         );
         console.error(err.stack);
+        // Invalid id → stop calling getMessageById, go fetch-only
+        if (/invalid serialized message id/i.test(String(err.message || ''))) {
+          console.warn(
+            '[Media] Invalid serialized id — switching to fetchMessages only'
+          );
+          const viaFetch = await findMessageViaChatFetch(current, { limit: 5 });
+          return viaFetch || current;
+        }
       }
 
-      const waitMs = 1000 + Math.floor(Math.random() * 1000);
+      const waitMs = 1000 + Math.floor(Math.random() * 500);
       console.log(
-        `[Media] msg_not_found — waiting ${waitMs}ms before retry #${attempt + 1}`
+        `[Media] not ready — wait ${waitMs}ms (attempt ${attempt}/${maxAttempts})`
       );
       await sleep(waitMs);
     }
 
     console.warn(
-      `[Media] waitForMessageInStore timed out after ${Date.now() - started}ms for ${msgId}`
+      `[Media] waitForMessageInStore done attempts=${attempt} — final fetchMessages`
     );
-    return current;
+    const last = await findMessageViaChatFetch(current, { limit: 5 });
+    return last || current;
   }
 
   async function reloadMessageForMedia(message) {
     const msgId = getSerializedMsgId(message);
-    if (!msgId || !wa.client?.getMessageById) {
-      console.warn('[Media] cannot reload — missing message id');
-      return message;
-    }
     try {
-      await sleep(800);
-      let fresh = await wa.client.getMessageById(msgId);
-      if (!fresh) {
-        console.warn(
-          `[Media] getMessageById null for ${msgId} — polling Store…`
-        );
-        fresh = await waitForMessageInStore(message, 6000);
+      await sleep(500);
+      if (msgId) {
+        const fresh = await safeGetMessageById(msgId);
+        if (fresh) {
+          console.log(
+            `[Media] reloaded ${msgId} hasMedia=${!!fresh.hasMedia} type=${fresh.type || '?'}`
+          );
+          return fresh;
+        }
       }
-      if (fresh && fresh !== message) {
-        console.log(
-          `[Media] reloaded ${msgId} hasMedia=${!!fresh.hasMedia} type=${fresh.type || '?'} fp=${JSON.stringify(mediaFingerprint(fresh))}`
-        );
-        return fresh;
-      }
-      if (!fresh) {
-        console.warn(`[Media] getMessageById still null for ${msgId}`);
-      }
+      console.warn(
+        `[Media] reload via getMessageById unavailable — fetchMessages fallback`
+      );
+      const viaFetch = await findMessageViaChatFetch(message, { limit: 5 });
+      if (viaFetch) return viaFetch;
+      return await waitForMessageInStore(message, 4000);
     } catch (err) {
-      console.error('[Media] getMessageById failed:', err.message);
+      console.error('[Media] reloadMessageForMedia failed:', err.message);
       console.error(err.stack);
+      try {
+        const viaFetch = await findMessageViaChatFetch(message, { limit: 5 });
+        if (viaFetch) return viaFetch;
+      } catch (_) {}
     }
     return message;
   }
@@ -416,15 +603,31 @@ function createPresenceMediaHelpers(wa) {
    * Poll Store until message exists AND directPath/mediaKey are present.
    */
   async function waitUntilMediaReady(message, maxMs = 15000) {
-    const msgId = getSerializedMsgId(message);
-    if (!msgId || !wa.client?.pupPage) return message;
+    let msgId = getSerializedMsgId(message);
+    if (!wa.client?.pupPage) return message;
 
-    let current = await waitForMessageInStore(message, Math.min(maxMs, 10000));
+    // Invalid id → skip Store poll loop, use fetch fallback
+    if (!msgId) {
+      console.warn(
+        '[Media] waitUntilMediaReady: invalid id — fetchMessages fallback'
+      );
+      const viaFetch = await findMessageViaChatFetch(message, { limit: 5 });
+      return viaFetch || message;
+    }
+
+    let current = await waitForMessageInStore(message, Math.min(maxMs, 8000));
+    msgId = getSerializedMsgId(current) || msgId;
+
+    if (!isValidSerializedMsgId(msgId)) {
+      const viaFetch = await findMessageViaChatFetch(current, { limit: 5 });
+      return viaFetch || current;
+    }
 
     const started = Date.now();
     let attempt = 0;
+    const maxAttempts = 6;
 
-    while (Date.now() - started < maxMs) {
+    while (Date.now() - started < maxMs && attempt < maxAttempts) {
       attempt += 1;
       try {
         const state = await wa.client.pupPage.evaluate(async (id) => {
@@ -478,33 +681,51 @@ function createPresenceMediaHelpers(wa) {
 
         if (state?.error === 'msg_not_found') {
           console.warn(
-            `[Media] waitReady #${attempt}: msg_not_found — keep polling`
+            `[Media] waitReady #${attempt}: msg_not_found — fetchMessages`
           );
-          current = await waitForMessageInStore(current, 3000);
+          const viaFetch = await findMessageViaChatFetch(current, { limit: 5 });
+          if (viaFetch) {
+            current = viaFetch;
+            const nid = getSerializedMsgId(viaFetch);
+            if (nid) msgId = nid;
+          }
         }
       } catch (err) {
         console.warn(`[Media] waitReady error #${attempt}:`, err.message);
+        if (/invalid serialized message id/i.test(String(err.message || ''))) {
+          const viaFetch = await findMessageViaChatFetch(current, { limit: 5 });
+          return viaFetch || current;
+        }
       }
 
-      await sleep(1000 + Math.floor(Math.random() * 1000));
-      try {
-        const fresh = await wa.client.getMessageById(msgId);
-        if (fresh) current = fresh;
-      } catch (_) {}
+      await sleep(1000 + Math.floor(Math.random() * 500));
+      const fresh = await safeGetMessageById(msgId);
+      if (fresh) current = fresh;
     }
 
     console.warn(
-      `[Media] waitReady timed out after ${Date.now() - started}ms — proceeding with best message instance`
+      `[Media] waitReady timed out after ${Date.now() - started}ms — fetchMessages last resort`
     );
-    return current;
+    const last = await findMessageViaChatFetch(current, { limit: 5 });
+    return last || current;
   }
 
   async function forceResolveMediaOnPage(message) {
     const page = wa.client?.pupPage;
-    const msgId = getSerializedMsgId(message);
-    if (!page || !msgId) return false;
+    let msgId = getSerializedMsgId(message);
+    if (!page) return false;
 
-    await waitForMessageInStore(message, 5000);
+    if (!msgId) {
+      const viaFetch = await findMessageViaChatFetch(message, { limit: 5 });
+      if (!viaFetch) return false;
+      message = viaFetch;
+      msgId = getSerializedMsgId(viaFetch);
+      if (!msgId) return false;
+    }
+
+    await waitForMessageInStore(message, 4000);
+    msgId = getSerializedMsgId(message) || msgId;
+    if (!isValidSerializedMsgId(msgId)) return false;
 
     try {
       const result = await page.evaluate(async (id) => {
@@ -552,12 +773,27 @@ function createPresenceMediaHelpers(wa) {
     }
     let serialized = getSerializedMsgId(message);
     if (!serialized) {
-      console.warn('[Media] no serialized id for meta download');
-      return null;
+      console.warn(
+        '[Media] meta download: invalid serialized id — fetchMessages first'
+      );
+      const viaFetch = await findMessageViaChatFetch(message, { limit: 5 });
+      if (!viaFetch) return null;
+      message = viaFetch;
+      serialized = getSerializedMsgId(viaFetch);
+      if (!serialized) {
+        console.warn(
+          '[Media] meta download: still no valid serialized id after fetch'
+        );
+        return null;
+      }
     }
 
-    message = await waitForMessageInStore(message, 10000);
+    message = await waitForMessageInStore(message, 8000);
     serialized = getSerializedMsgId(message) || serialized;
+    if (!isValidSerializedMsgId(serialized)) {
+      console.warn('[Media] meta download aborted — invalid id', serialized);
+      return null;
+    }
 
     console.log(`[Media] Store meta download starting for ${serialized}`);
 
@@ -817,8 +1053,8 @@ function createPresenceMediaHelpers(wa) {
 
         try {
           const msgId = getSerializedMsgId(msg);
-          if (msgId && wa.client?.getMessageById) {
-            const fresh = await wa.client.getMessageById(msgId);
+          if (msgId) {
+            const fresh = await safeGetMessageById(msgId);
             if (fresh) {
               msg = fresh;
               console.log(
@@ -826,18 +1062,27 @@ function createPresenceMediaHelpers(wa) {
               );
             } else {
               console.warn(
-                `[Media] try ${i}: getMessageById null — waitForMessageInStore`
+                `[Media] try ${i}: getMessageById miss — fetchMessages fallback`
               );
-              msg = await waitForMessageInStore(msg, 5000);
+              const viaFetch = await findMessageViaChatFetch(msg, { limit: 5 });
+              if (viaFetch) msg = viaFetch;
+              else msg = await waitForMessageInStore(msg, 4000);
             }
+          } else {
+            console.warn(
+              `[Media] try ${i}: no valid serialized id — fetchMessages only`
+            );
+            const viaFetch = await findMessageViaChatFetch(msg, { limit: 5 });
+            if (viaFetch) msg = viaFetch;
           }
         } catch (err) {
           console.error(
-            `[Media] try ${i}: getMessageById error:`,
+            `[Media] try ${i}: refresh error:`,
             err.message
           );
           console.error(err.stack);
-          msg = await waitForMessageInStore(msg, 4000);
+          const viaFetch = await findMessageViaChatFetch(msg, { limit: 5 });
+          if (viaFetch) msg = viaFetch;
         }
 
         msg = await forceHasMediaFlag(msg);
