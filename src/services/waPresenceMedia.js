@@ -1270,32 +1270,97 @@ function createPresenceMediaHelpers(wa) {
   }
 
   /**
-   * Native WA forward via page (more reliable than message.forward after delays).
+   * Native WA forward via page — primary path for image/PDF/document relay.
+   * Retries once after a short Store hydrate if the first attempt fails.
    */
   async function forwardMessageById(msgId, destChatId) {
-    if (!wa.client?.pupPage || !msgId || !destChatId) return false;
-    try {
+    if (!wa.client?.pupPage || !destChatId) {
+      console.warn('[Media] forwardMessageById: missing pupPage/destChatId');
+      return false;
+    }
+
+    // Normalize / validate id (never pass bare hash)
+    let id = msgId;
+    if (!isValidSerializedMsgId(id)) {
+      console.warn(
+        `[Media] forwardMessageById: invalid id "${String(msgId || '').slice(0, 80)}" — abort page forward`
+      );
+      return false;
+    }
+    id = String(id).trim();
+
+    async function attempt(label) {
+      console.log(
+        `[Media] page forward attempt (${label}) → ${destChatId} id=${id}`
+      );
       const result = await wa.client.pupPage.evaluate(
         async (messageId, chatId) => {
           try {
+            // Ensure message is present in Store before forward
+            const collections = window.require?.('WAWebCollections');
+            let msg = collections?.Msg?.get?.(messageId);
+            if (!msg) {
+              const got = await collections?.Msg?.getMessagesById?.([
+                messageId,
+              ]);
+              msg = got?.messages?.[0] || null;
+            }
+            if (!msg) {
+              return { ok: false, error: 'msg_not_found_before_forward' };
+            }
+
             if (window.WWebJS?.forwardMessage) {
               await window.WWebJS.forwardMessage(chatId, messageId);
               return { ok: true, via: 'WWebJS.forwardMessage' };
             }
+
+            // Fallback: chat.forwardMessages if available
+            try {
+              const chat =
+                (await window.WWebJS.getChat?.(chatId, {
+                  getAsModel: false,
+                })) || null;
+              if (chat?.forwardMessages) {
+                await chat.forwardMessages([msg], chat);
+                return { ok: true, via: 'chat.forwardMessages' };
+              }
+            } catch (_) {}
+
             return { ok: false, error: 'no_forwardMessage' };
           } catch (e) {
             return { ok: false, error: String(e?.message || e) };
           }
         },
-        msgId,
+        id,
         destChatId
       );
+      return result;
+    }
+
+    try {
+      let result = await attempt('1');
       if (result?.ok) {
         console.log(
           `[Media] page forward OK → ${destChatId} (${result.via})`
         );
         return true;
       }
+
+      console.warn(
+        `[Media] page forward failed try1:`,
+        result?.error || result
+      );
+
+      // Brief wait + one retry (Store race)
+      await sleep(1000 + Math.floor(Math.random() * 500));
+      result = await attempt('2');
+      if (result?.ok) {
+        console.log(
+          `[Media] page forward OK (retry) → ${destChatId} (${result.via})`
+        );
+        return true;
+      }
+
       console.error(
         `[Media] page forward failed → ${destChatId}:`,
         result?.error || result
@@ -1314,6 +1379,8 @@ function createPresenceMediaHelpers(wa) {
     mediaFingerprint,
     buildMediaSendOptionSets,
     logInboundMediaDetails,
+    getSerializedMsgId,
+    isValidSerializedMsgId,
     sendTypingPresence,
     sendRecordingPresence,
     showTypingFor,
