@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const { Message } = require('whatsapp-web.js/src/structures');
 const qrcode = require('qrcode');
 const {
   Settings,
@@ -108,6 +109,8 @@ class WhatsAppService {
     this._msgQueueDepth = 0;
     this._seenIds = new Set();
     this._lastOutboundChatId = null;
+    this._unreadPollTimer = null;
+    this._lastInboundAt = 0;
     this.engine = bindEngine(this);
   }
 
@@ -356,7 +359,15 @@ class WhatsAppService {
     return `${digits}@c.us`;
   }
 
+  stopUnreadPoller() {
+    if (this._unreadPollTimer) {
+      clearInterval(this._unreadPollTimer);
+      this._unreadPollTimer = null;
+    }
+  }
+
   async destroyClient() {
+    this.stopUnreadPoller();
     const client = this.client;
     this.client = null;
     this.ready = false;
@@ -478,6 +489,10 @@ class WhatsAppService {
       }
       this.emit('whatsapp:status', this.getPublicStatus());
       console.log('[WhatsApp] Ready', this.info?.wid || '');
+      console.log(
+        '[WhatsApp] Inbound listeners active: message, message_create, message_ciphertext (+ unread poller)'
+      );
+      this.startUnreadPoller();
     });
 
     client.on('auth_failure', (msg) => {
@@ -489,6 +504,7 @@ class WhatsAppService {
     });
 
     client.on('disconnected', async (reason) => {
+      this.stopUnreadPoller();
       this.status = 'disconnected';
       this.ready = false;
       this.info = null;
@@ -509,9 +525,216 @@ class WhatsAppService {
       }
     });
 
+    // Primary inbound path (decrypted messages from others)
     client.on('message', (message) => {
-      this.enqueueIncomingMessage(message);
+      this.onClientMessageEvent('message', message);
     });
+
+    // Fires for own + others; needed when `message` is flaky on newer WA Web
+    client.on('message_create', (message) => {
+      this.onClientMessageEvent('message_create', message);
+    });
+
+    // Ciphertext arrives first; `message` only fires after decrypt (often never)
+    client.on('message_ciphertext', (message) => {
+      this.onClientMessageEvent('message_ciphertext', message);
+      this.watchCiphertextMessage(message);
+    });
+
+    client.on('message_ciphertext_failed', (message) => {
+      console.warn(
+        `[WhatsApp] Ciphertext decrypt FAILED from=${message?.from || '?'} type=${message?.type || '?'}`
+      );
+    });
+  }
+
+  /**
+   * Shared entry for WA Web message events — always logs so terminal proves listener is alive.
+   */
+  onClientMessageEvent(source, message) {
+    if (!message) return;
+    const from = message.from || message.author || '?';
+    const bodyPreview = String(message.body || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120);
+    console.log(
+      `Received message [${source}]: "${bodyPreview || `[${message.type || 'unknown'}]`}" from: ${from}` +
+        (message.fromMe ? ' (fromMe)' : '')
+    );
+    this._lastInboundAt = Date.now();
+
+    if (source === 'message_ciphertext') return; // wait for decrypt / poller
+    if (message.fromMe) return;
+
+    this.enqueueIncomingMessage(message);
+  }
+
+  /**
+   * When WA delivers ciphertext, nudge decrypt then pull the plaintext message.
+   */
+  watchCiphertextMessage(message) {
+    const run = async () => {
+      const chatId = message.from;
+      const origId =
+        message.id?._serialized || message.id?.id || null;
+      console.log(
+        `[WhatsApp] Watching ciphertext decrypt chat=${chatId} id=${origId || '?'}`
+      );
+
+      try {
+        const chat = await message.getChat();
+        if (chat?.sendSeen) await chat.sendSeen().catch(() => {});
+      } catch (_) {}
+
+      for (let attempt = 1; attempt <= 20; attempt++) {
+        await sleep(attempt <= 5 ? 800 : 1500);
+        if (!this.client || !this.ready) return;
+
+        try {
+          // Prefer reloading the same Store model if id is known
+          if (origId && this.client.pupPage) {
+            const model = await this.client.pupPage.evaluate((serialized) => {
+              try {
+                const collections = window.require?.('WAWebCollections');
+                const msg =
+                  collections?.Msg?.get?.(serialized) ||
+                  window.Store?.Msg?.get?.(serialized);
+                if (!msg) return null;
+                if (msg.type === 'ciphertext') return { type: 'ciphertext' };
+                return window.WWebJS.getMessageModel(msg);
+              } catch (e) {
+                return { error: String(e?.message || e) };
+              }
+            }, origId);
+
+            if (model && model.type && model.type !== 'ciphertext' && !model.error) {
+              const decrypted = new Message(this.client, model);
+              console.log(
+                `[WhatsApp] Ciphertext decrypted (attempt ${attempt}): type=${model.type}`
+              );
+              this.enqueueIncomingMessage(decrypted);
+              return;
+            }
+          }
+
+          const chat = await this.client.getChatById(chatId).catch(() => null);
+          if (!chat) continue;
+          const recent = await chat.fetchMessages({ limit: 8 });
+          for (const m of recent) {
+            if (m.fromMe) continue;
+            if (String(m.type || '') === 'ciphertext') continue;
+            const mid = m.id?._serialized || m.id?.id;
+            if (mid && this._seenIds.has(mid)) continue;
+            if (origId && mid && mid !== origId) {
+              // Still accept recent plaintext in this chat while waiting
+              if ((m.timestamp || 0) + 5 < (message.timestamp || 0)) continue;
+            }
+            console.log(
+              `[WhatsApp] Ciphertext recovered via fetchMessages (attempt ${attempt})`
+            );
+            this.enqueueIncomingMessage(m);
+            return;
+          }
+        } catch (err) {
+          if (attempt === 1 || attempt % 5 === 0) {
+            console.warn(
+              `[WhatsApp] Ciphertext watch attempt ${attempt}:`,
+              err.message
+            );
+          }
+        }
+      }
+      console.warn(
+        `[WhatsApp] Ciphertext never decrypted for ${chatId} — unread poller may still catch it`
+      );
+    };
+
+    run().catch((err) => {
+      console.error('[WhatsApp] watchCiphertextMessage:', err.message);
+    });
+  }
+
+  /**
+   * Fallback when WA Web silently drops Msg.add events (common on 2.3000.x).
+   * Polls unread private chats and feeds unseen messages into the same handler.
+   */
+  startUnreadPoller() {
+    this.stopUnreadPoller();
+    const intervalMs = Number(process.env.WA_UNREAD_POLL_MS);
+    const ms = Number.isFinite(intervalMs) && intervalMs >= 0 ? intervalMs : 10000;
+    if (ms === 0) {
+      console.log('[WhatsApp] Unread poller disabled (WA_UNREAD_POLL_MS=0)');
+      return;
+    }
+
+    console.log(`[WhatsApp] Unread poller every ${ms}ms`);
+    this._unreadPollTimer = setInterval(() => {
+      this.pollUnreadChats().catch((err) => {
+        console.warn('[WhatsApp] Unread poll error:', err.message);
+      });
+    }, ms);
+    // Kick once shortly after ready
+    setTimeout(() => {
+      this.pollUnreadChats().catch(() => {});
+    }, 2500);
+  }
+
+  async pollUnreadChats() {
+    if (!this.ready || !this.client) return;
+    let chats;
+    try {
+      chats = await this.client.getChats();
+    } catch (_) {
+      return;
+    }
+
+    const candidates = (chats || []).filter(
+      (c) =>
+        c &&
+        !c.isGroup &&
+        Number(c.unreadCount || 0) > 0 &&
+        c.id?._serialized !== 'status@broadcast'
+    );
+
+    if (!candidates.length) return;
+
+    console.log(
+      `[WhatsApp] Unread poll: ${candidates.length} chat(s) with unread`
+    );
+
+    for (const chat of candidates.slice(0, 12)) {
+      try {
+        const limit = Math.min(Math.max(Number(chat.unreadCount) || 1, 1), 15);
+        const msgs = await chat.fetchMessages({ limit });
+        let fed = 0;
+        for (const m of msgs) {
+          if (!m || m.fromMe) continue;
+          if (String(m.type || '') === 'ciphertext') continue;
+          const mid = m.id?._serialized || m.id?.id;
+          if (mid && this._seenIds.has(mid)) continue;
+          console.log(
+            `Received message [unread_poll]: "${String(m.body || '')
+              .replace(/\s+/g, ' ')
+              .trim()
+              .slice(0, 120) || `[${m.type}]`}" from: ${m.from}`
+          );
+          this.enqueueIncomingMessage(m);
+          fed += 1;
+        }
+        if (fed > 0) {
+          this._lastInboundAt = Date.now();
+          try {
+            await chat.sendSeen();
+          } catch (_) {}
+        }
+      } catch (err) {
+        console.warn(
+          `[WhatsApp] Unread poll chat ${chat?.id?._serialized || '?'}:`,
+          err.message
+        );
+      }
+    }
   }
 
   async destroy() {
@@ -569,8 +792,12 @@ class WhatsAppService {
     if (message.from?.endsWith('@g.us')) return;
     if (message.from === 'status@broadcast') return;
 
-    const { phone, chatId } = await this.resolveIncomingPeer(message);
     const body = String(message.body || '').trim();
+    console.log(
+      `[WhatsApp] Processing inbound type=${message.type || '?'} from=${message.from} body="${body.slice(0, 80)}"`
+    );
+
+    const { phone, chatId } = await this.resolveIncomingPeer(message);
 
     try {
       MessageLog.add({
@@ -1029,13 +1256,6 @@ class WhatsAppService {
     }
     if (!media) throw new Error('No media');
 
-    const digits = this.formatPhone(
-      String(phoneOrChat || '').includes('@')
-        ? String(phoneOrChat).replace(/@.+$/, '')
-        : phoneOrChat
-    );
-
-    if (!this.client) throw new Error('WhatsApp client not ready');
     const digits = this.formatPhone(
       String(phoneOrChat || '').includes('@')
         ? String(phoneOrChat).replace(/@.+$/, '')
