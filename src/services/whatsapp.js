@@ -650,14 +650,23 @@ class WhatsAppService {
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, 120);
-    const mediaHint = isMediaLikeMessage(message)
-      ? ` media=yes hasMediaFlag=${!!message.hasMedia}`
-      : '';
+    const mediaLike = isMediaLikeMessage(message);
     console.log(
       `Received message [${source}]: "${bodyPreview || `[${msgType}]`}" from: ${from}` +
         (message.fromMe ? ' (fromMe)' : '') +
-        mediaHint
+        (mediaLike
+          ? ` MEDIA hasMedia=${!!message.hasMedia} type=${msgType}`
+          : '')
     );
+
+    if (mediaLike && !message.fromMe) {
+      try {
+        this.pm.logInboundMediaDetails(message, source);
+      } catch (err) {
+        console.error('[Media] listener log failed:', err.message);
+        console.error(err.stack);
+      }
+    }
 
     if (source === 'message_ciphertext') return; // wait for decrypt / poller
 
@@ -1133,9 +1142,17 @@ class WhatsAppService {
     }
 
     const body = String(message.body || '').trim();
+    const mediaLike = isMediaLikeMessage(message);
     console.log(
-      `[WhatsApp] Processing inbound type=${message.type || '?'} from=${message.from} hasMedia=${!!message.hasMedia} mediaLike=${isMediaLikeMessage(message)} body="${body.slice(0, 80)}"`
+      `[WhatsApp] Processing inbound type=${message.type || '?'} from=${message.from} hasMedia=${!!message.hasMedia} mediaLike=${mediaLike} body="${body.slice(0, 80)}"`
     );
+    if (mediaLike) {
+      try {
+        this.pm.logInboundMediaDetails(message, 'handleIncoming');
+      } catch (err) {
+        console.error('[Media] handleIncoming log failed:', err.message);
+      }
+    }
 
     const { phone, chatId } = await this.resolveIncomingPeer(message);
 
@@ -1186,7 +1203,6 @@ class WhatsAppService {
     }
 
     // 2) Active two-way bridge (non-code messages only)
-    const mediaLike = isMediaLikeMessage(message);
     try {
       const bridged = await this.handleChatBridge(
         message,
@@ -1585,8 +1601,51 @@ class WhatsAppService {
             err.message
           );
           console.error(err.stack);
-          const chat = await this.client.getChatById(chatId);
-          result = await chat.sendMessage(payload, opts);
+
+          // Large base64 via CDP can fail — try temp-file path
+          if (String(payload.data).length > 200000) {
+            try {
+              const fs = require('fs');
+              const os = require('os');
+              const path = require('path');
+              const ext =
+                (payload.filename && path.extname(payload.filename)) ||
+                (String(payload.mimetype).includes('pdf')
+                  ? '.pdf'
+                  : String(payload.mimetype).startsWith('image/')
+                    ? '.jpg'
+                    : String(payload.mimetype).startsWith('audio/')
+                      ? '.ogg'
+                      : '.bin');
+              const tmp = path.join(
+                os.tmpdir(),
+                `wa-media-${Date.now()}${ext}`
+              );
+              fs.writeFileSync(tmp, Buffer.from(payload.data, 'base64'));
+              console.log(
+                `[Media] wrote temp file ${tmp} bytes=${fs.statSync(tmp).size} — retrying fromFilePath`
+              );
+              const fromFile = MessageMedia.fromFilePath(tmp);
+              try {
+                result = await this.client.sendMessage(chatId, fromFile, opts);
+              } finally {
+                try {
+                  fs.unlinkSync(tmp);
+                } catch (_) {}
+              }
+            } catch (errFile) {
+              console.error(
+                '[Media] temp-file send failed:',
+                errFile.message
+              );
+              console.error(errFile.stack);
+              const chat = await this.client.getChatById(chatId);
+              result = await chat.sendMessage(payload, opts);
+            }
+          } else {
+            const chat = await this.client.getChatById(chatId);
+            result = await chat.sendMessage(payload, opts);
+          }
         }
 
         if (!result) {

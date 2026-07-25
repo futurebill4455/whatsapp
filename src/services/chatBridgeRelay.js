@@ -392,29 +392,48 @@ class ChatBridgeRelay {
       bindDest,
     } = ctx;
 
+    try {
+      this.wa.pm.logInboundMediaDetails(message, `relay:${direction}`);
+    } catch (_) {}
+
+    const voice = isVoiceType(msgType, null);
+
+    // Download IN PARALLEL with human typing delay (CDN keys stay fresh; no silent wait)
+    console.log(
+      `[BridgeRelay] Starting media download in parallel with presence (${direction}) type=${msgType}`
+    );
+    const downloadPromise = (async () => {
+      try {
+        const media = await this.wa.prepareRelayMedia(message);
+        console.log(
+          `[BridgeRelay] Download finished buffer=${media?.data ? String(media.data).length : 0} mime=${media?.mimetype || '—'} file=${media?.filename || '—'}`
+        );
+        return media;
+      } catch (err) {
+        console.error('[BridgeRelay] prepareRelayMedia:', err.message);
+        console.error(err.stack);
+        return null;
+      }
+    })();
+
+    await this.humanPresenceDelay(destChatId, { voice });
+
     let media = null;
     try {
-      console.log(
-        `[BridgeRelay] DOWNLOAD media first (${direction}) type=${msgType}…`
-      );
-      media = await this.wa.prepareRelayMedia(message);
-      console.log(
-        `[BridgeRelay] Download result buffer=${media?.data ? String(media.data).length : 0} mime=${media?.mimetype || '—'} file=${media?.filename || '—'}`
-      );
+      media = await downloadPromise;
     } catch (err) {
-      console.error('[BridgeRelay] prepareRelayMedia:', err.message);
+      console.error('[BridgeRelay] downloadPromise:', err.message);
       console.error(err.stack);
     }
 
-    const voice = isVoiceType(msgType, media);
-    await this.humanPresenceDelay(destChatId, { voice });
-
-    // Pulse presence right before send
     try {
       if (voice) await this.wa.pm.sendRecordingPresence(destChatId);
       else await this.wa.sendTypingPresence(destChatId);
-    } catch (_) {}
+    } catch (err) {
+      console.warn('[BridgeRelay] pre-send presence:', err.message);
+    }
 
+    // Path A: re-send downloaded buffer
     if (media?.data) {
       for (const candidate of destCandidates) {
         try {
@@ -422,7 +441,7 @@ class ChatBridgeRelay {
           else await this.wa.sendTypingPresence(candidate);
 
           console.log(
-            `[BridgeRelay] SEND media → ${candidate} type=${msgType} mime=${media.mimetype}`
+            `[BridgeRelay] SEND media buffer → ${candidate} type=${msgType} mime=${media.mimetype} b64=${String(media.data).length}`
           );
           const sent = await this.wa.sendMedia(destPhone, media, {
             caption: cleanBody || undefined,
@@ -433,23 +452,26 @@ class ChatBridgeRelay {
             msgType,
           });
           bindDest(sent?._outboundChatId || candidate);
-          console.log(`[BridgeRelay] MEDIA OK (${direction}) → ${candidate}`);
+          console.log(`[BridgeRelay] MEDIA SEND OK (${direction}) → ${candidate}`);
           return;
         } catch (err) {
           console.error(
-            `[BridgeRelay] sendMedia → ${candidate} failed:`,
+            `[BridgeRelay] sendMedia → ${candidate} FAILED:`,
             err.message
           );
           console.error(err.stack);
         }
       }
+      console.error(
+        `[BridgeRelay] All sendMedia candidates failed (${direction}) — trying forward`
+      );
     } else {
       console.error(
-        `[BridgeRelay] Empty media buffer (${direction}) type=${msgType}`
+        `[BridgeRelay] No media buffer (${direction}) type=${msgType} — trying native/page forward`
       );
     }
 
-    // Native / page forward fallback
+    // Path B: native / page forward (no buffer needed)
     try {
       console.log('[BridgeRelay] Trying page/native forward…');
       const forwarded = await this.nativeForward(message, destCandidates, {
@@ -460,40 +482,40 @@ class ChatBridgeRelay {
         console.log(`[BridgeRelay] FORWARD OK (${direction})`);
         return;
       }
+      console.error(`[BridgeRelay] Forward returned null (${direction})`);
     } catch (err) {
       console.error('[BridgeRelay] forward error:', err.message);
       console.error(err.stack);
     }
 
-    // One more download+send attempt
-    if (!media?.data) {
-      try {
-        console.log('[BridgeRelay] Retry download after forward fail…');
-        media = await this.wa.prepareRelayMedia(message);
-        if (media?.data) {
-          if (voice) await this.wa.pm.sendRecordingPresence(destChatId);
-          else await this.wa.sendTypingPresence(destChatId);
-          const sent = await this.wa.sendMedia(destPhone, media, {
-            caption: cleanBody || undefined,
-            chatId: destChatId,
-            skipTyping: true,
-            skipPacing: true,
-            skipLimiter: true,
-            msgType,
-          });
-          bindDest(sent?._outboundChatId || destChatId);
-          console.log(`[BridgeRelay] MEDIA RETRY OK (${direction})`);
-          return;
-        }
-      } catch (err) {
-        console.error('[BridgeRelay] media retry failed:', err.message);
-        console.error(err.stack);
+    // Path C: one more download+send
+    try {
+      console.log('[BridgeRelay] Final download retry…');
+      media = await this.wa.prepareRelayMedia(message);
+      if (media?.data) {
+        if (voice) await this.wa.pm.sendRecordingPresence(destChatId);
+        else await this.wa.sendTypingPresence(destChatId);
+        const sent = await this.wa.sendMedia(destPhone, media, {
+          caption: cleanBody || undefined,
+          chatId: destChatId,
+          skipTyping: true,
+          skipPacing: true,
+          skipLimiter: true,
+          msgType,
+        });
+        bindDest(sent?._outboundChatId || destChatId);
+        console.log(`[BridgeRelay] MEDIA RETRY OK (${direction})`);
+        return;
       }
+      console.error('[BridgeRelay] Final download still empty');
+    } catch (err) {
+      console.error('[BridgeRelay] media retry failed:', err.message);
+      console.error(err.stack);
     }
 
     if (cleanBody) {
       console.warn(
-        `[BridgeRelay] Media failed (${direction}) — caption text only`
+        `[BridgeRelay] Media failed (${direction}) — caption text only (IMAGE/PDF/AUDIO LOST)`
       );
       try {
         await this.wa.sendTypingPresence(destChatId);
@@ -510,7 +532,7 @@ class ChatBridgeRelay {
     }
 
     console.error(
-      `[BridgeRelay] MEDIA RELAY FAILED (${msgType}) ${direction}`
+      `[BridgeRelay] MEDIA RELAY FAILED (${msgType}) ${direction} — see [Media] logs above for root cause`
     );
     this.unsee(waId);
   }

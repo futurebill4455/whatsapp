@@ -388,8 +388,63 @@ function createPresenceMediaHelpers(wa) {
       return null;
     }
 
+    console.log(`[Media] Store meta download starting for ${serialized}`);
+
     try {
       const result = await page.evaluate(async (msgId) => {
+        /**
+         * Convert decrypt result (ArrayBuffer | Uint8Array | Blob | OpaqueData-ish) → base64.
+         */
+        async function toBase64(decrypted) {
+          if (!decrypted) return null;
+          if (typeof decrypted === 'string') {
+            const m = decrypted.match(/^data:[^;]+;base64,(.+)$/i);
+            return m ? m[1] : decrypted;
+          }
+
+          let ab = null;
+          try {
+            if (typeof decrypted.arrayBuffer === 'function') {
+              ab = await decrypted.arrayBuffer();
+            } else if (ArrayBuffer.isView(decrypted)) {
+              ab = decrypted.buffer.slice(
+                decrypted.byteOffset,
+                decrypted.byteOffset + decrypted.byteLength
+              );
+            } else if (decrypted instanceof ArrayBuffer) {
+              ab = decrypted;
+            } else if (decrypted?.data) {
+              return toBase64(decrypted.data);
+            }
+          } catch (e) {
+            return { __error: 'toBase64_cast:' + (e?.message || e) };
+          }
+
+          if (!ab) return null;
+
+          if (window.WWebJS?.arrayBufferToBase64Async) {
+            try {
+              return await window.WWebJS.arrayBufferToBase64Async(ab);
+            } catch (_) {}
+          }
+          if (window.WWebJS?.arrayBufferToBase64) {
+            try {
+              return window.WWebJS.arrayBufferToBase64(ab);
+            } catch (_) {}
+          }
+
+          const bytes = new Uint8Array(ab);
+          let binary = '';
+          const chunk = 0x8000;
+          for (let i = 0; i < bytes.length; i += chunk) {
+            binary += String.fromCharCode.apply(
+              null,
+              bytes.subarray(i, i + chunk)
+            );
+          }
+          return btoa(binary);
+        }
+
         try {
           const collections = window.require('WAWebCollections');
           let msg = collections.Msg.get(msgId);
@@ -399,18 +454,35 @@ function createPresenceMediaHelpers(wa) {
           }
           if (!msg) return { error: 'msg_not_found' };
 
+          console.log(
+            '[Media:page] found msg type=' +
+              (msg.type || '?') +
+              ' stage=' +
+              (msg.mediaData?.mediaStage || '?') +
+              ' directPath=' +
+              !!msg.directPath +
+              ' mediaKey=' +
+              !!msg.mediaKey
+          );
+
           const stage = msg.mediaData?.mediaStage || '';
           if (stage === 'REUPLOADING') {
             return { error: 'reuploading', stage };
           }
 
-          if (msg.mediaData && msg.mediaData.mediaStage !== 'RESOLVED') {
+          // Nudge Store to resolve / fetch media bytes
+          if (typeof msg.downloadMedia === 'function') {
             try {
               await msg.downloadMedia({
                 downloadEvenIfExpensive: true,
                 rmrReason: 1,
               });
-            } catch (_) {}
+            } catch (e) {
+              console.warn(
+                '[Media:page] msg.downloadMedia nudge:',
+                e?.message || e
+              );
+            }
           }
 
           if (!msg.directPath || !msg.mediaKey) {
@@ -420,6 +492,7 @@ function createPresenceMediaHelpers(wa) {
               hasMediaKey: !!msg.mediaKey,
               stage: msg.mediaData?.mediaStage || null,
               type: msg.type || null,
+              mimetype: msg.mimetype || null,
             };
           }
 
@@ -448,44 +521,42 @@ function createPresenceMediaHelpers(wa) {
             return {
               error: 'decrypt_failed:' + (e?.message || e),
               status: e?.status || null,
+              ctor: decrypted?.constructor?.name || null,
             };
           }
 
           if (!decrypted) return { error: 'empty_download' };
 
-          let data = null;
-          if (window.WWebJS?.arrayBufferToBase64Async) {
-            data = await window.WWebJS.arrayBufferToBase64Async(decrypted);
-          } else if (decrypted instanceof ArrayBuffer) {
-            const bytes = new Uint8Array(decrypted);
-            let binary = '';
-            for (let i = 0; i < bytes.length; i++) {
-              binary += String.fromCharCode(bytes[i]);
-            }
-            data = btoa(binary);
+          const data = await toBase64(decrypted);
+          if (data && data.__error) return { error: data.__error };
+          if (!data) {
+            return {
+              error: 'no_base64',
+              ctor: decrypted?.constructor?.name || typeof decrypted,
+            };
           }
-          if (!data) return { error: 'no_base64' };
 
           return {
             mimetype: msg.mimetype || 'application/octet-stream',
             data,
             filename: msg.filename || undefined,
             filesize: msg.size || undefined,
+            dataLen: String(data).length,
           };
         } catch (e) {
-          return { error: String(e?.message || e) };
+          return { error: String(e?.message || e), stack: String(e?.stack || '') };
         }
       }, serialized);
 
       if (result?.error || !result?.data) {
         console.error(
-          '[Media] meta download result:',
+          '[Media] meta download FAILED:',
           JSON.stringify(result || { error: 'empty' })
         );
         return null;
       }
       console.log(
-        `[Media] meta download OK mime=${result.mimetype} file=${result.filename || '—'} b64=${String(result.data).length}`
+        `[Media] meta download OK mime=${result.mimetype} file=${result.filename || '—'} b64=${result.dataLen || String(result.data).length}`
       );
       return new MessageMedia(
         result.mimetype || 'application/octet-stream',
@@ -501,64 +572,109 @@ function createPresenceMediaHelpers(wa) {
   }
 
   /**
-   * Bypass Message.hasMedia early-return: download via page even when flag is false.
+   * Force hasMedia=true when Store already has directPath (wwebjs early-returns otherwise).
    */
-  async function downloadMediaBypassHasMediaFlag(message) {
-    const media = await downloadMediaFromMessageMeta(message);
-    return media;
+  async function forceHasMediaFlag(message) {
+    let msg = message;
+    try {
+      msg = await reloadMessageForMedia(msg);
+      const data = msg._data || {};
+      if (!msg.hasMedia && (data.directPath || data.mediaKey)) {
+        msg.hasMedia = true;
+        console.log(
+          '[Media] Forced message.hasMedia=true (directPath/mediaKey on _data)'
+        );
+      }
+      if (!msg.hasMedia) {
+        await forceResolveMediaOnPage(msg);
+        msg = await reloadMessageForMedia(msg);
+        const d2 = msg._data || {};
+        if (d2.directPath || d2.mediaKey) {
+          msg.hasMedia = true;
+          console.log(
+            '[Media] Forced message.hasMedia=true after Store resolve'
+          );
+        }
+      }
+      console.log(
+        `[Media] forceHasMedia → hasMedia=${!!msg.hasMedia} type=${msg.type} fp=${JSON.stringify(mediaFingerprint(msg))}`
+      );
+    } catch (err) {
+      console.error('[Media] forceHasMediaFlag:', err.message);
+      console.error(err.stack);
+    }
+    return msg;
   }
 
-  async function downloadMediaWithRetry(message, tries = 10) {
+  async function downloadMediaWithRetry(message, tries = 12) {
     let msg = message;
     console.log(
-      `[Media] download start fp=${JSON.stringify(mediaFingerprint(msg))}`
+      `[Media] ========== DOWNLOAD START ==========\n[Media] fp=${JSON.stringify(mediaFingerprint(msg))}`
     );
 
     try {
-      msg = await waitUntilMediaReady(msg, 10000);
+      msg = await waitUntilMediaReady(msg, 15000);
     } catch (err) {
       console.warn('[Media] waitUntilMediaReady:', err.message);
     }
 
     for (let i = 1; i <= tries; i++) {
       try {
-        if (i === 1 || i === 3 || i === 5 || i === 8) {
-          msg = await reloadMessageForMedia(msg);
-          await forceResolveMediaOnPage(msg);
-          msg = await reloadMessageForMedia(msg);
-        }
+        console.log(`[Media] --- try ${i}/${tries} ---`);
+        msg = await forceHasMediaFlag(msg);
 
-        // Official API path when hasMedia is true
-        if (typeof msg.downloadMedia === 'function' && msg.hasMedia) {
-          const media = await msg.downloadMedia();
-          if (media?.data) {
-            console.log(
-              `[Media] downloadMedia OK try ${i} mime=${media.mimetype || '?'} b64len=${String(media.data).length}`
+        // 1) Official library API
+        if (typeof msg.downloadMedia === 'function') {
+          if (!msg.hasMedia) {
+            console.warn(
+              `[Media] try ${i}: downloadMedia skipped by library (hasMedia=false) — forcing true`
             );
-            return media;
+            msg.hasMedia = true;
           }
-          console.warn(`[Media] downloadMedia empty try ${i}`);
+          try {
+            console.log(`[Media] try ${i}: calling message.downloadMedia()…`);
+            const media = await msg.downloadMedia();
+            if (media?.data) {
+              console.log(
+                `[Media] downloadMedia() OK try ${i} mime=${media.mimetype || '?'} b64len=${String(media.data).length} file=${media.filename || '—'}`
+              );
+              return media;
+            }
+            console.warn(
+              `[Media] downloadMedia() returned empty try ${i}:`,
+              media == null ? 'null/undefined' : JSON.stringify({
+                mimetype: media?.mimetype,
+                hasData: !!media?.data,
+                filename: media?.filename,
+              })
+            );
+          } catch (err) {
+            console.error(
+              `[Media] downloadMedia() threw try ${i}:`,
+              err.message
+            );
+            console.error(err.stack);
+          }
         } else {
-          console.warn(
-            `[Media] hasMedia=${!!msg.hasMedia} try ${i}/${tries} type=${msg.type || '?'} — using Store meta path`
-          );
+          console.warn(`[Media] try ${i}: message.downloadMedia is not a function`);
         }
 
-        // Always try Store decrypt path (works even when hasMedia is false)
-        const viaMeta = await downloadMediaBypassHasMediaFlag(msg);
+        // 2) Store decrypt path (handles Blob / Uint8Array)
+        console.log(`[Media] try ${i}: Store meta / decrypt path…`);
+        const viaMeta = await downloadMediaFromMessageMeta(msg);
         if (viaMeta?.data) {
           console.log(`[Media] Store meta OK on try ${i}`);
           return viaMeta;
         }
       } catch (err) {
-        console.error(`[Media] download try ${i}/${tries}:`, err.message);
+        console.error(`[Media] download try ${i}/${tries} FATAL:`, err.message);
         console.error(err.stack);
       }
-      await sleep(350 * i);
+      await sleep(400 * i);
     }
 
     console.error(
-      `[Media] all download attempts failed fp=${JSON.stringify(mediaFingerprint(message))}`
+      `[Media] ========== ALL DOWNLOAD ATTEMPTS FAILED ==========\n[Media] fp=${JSON.stringify(mediaFingerprint(message))}`
     );
     return null;
   }
@@ -570,18 +686,32 @@ function createPresenceMediaHelpers(wa) {
     }
     try {
       console.log(
+        `[Media] prepareRelayMedia START type=${message.type} hasMedia=${!!message.hasMedia} id=${message.id?._serialized || '?'}`
+      );
+      console.log(
         `[Media] prepareRelayMedia fp=${JSON.stringify(mediaFingerprint(message))}`
       );
-      const media = await downloadMediaWithRetry(message, 10);
+      const media = await downloadMediaWithRetry(message, 12);
       if (!media?.data) {
-        console.error('[Media] prepareRelayMedia: empty buffer');
+        console.error('[Media] prepareRelayMedia: empty buffer after retries');
         return null;
       }
 
       // Strip accidental data-URL prefix if present
       let rawData = String(media.data);
       const dataUrl = rawData.match(/^data:[^;]+;base64,(.+)$/i);
-      if (dataUrl) rawData = dataUrl[1];
+      if (dataUrl) {
+        rawData = dataUrl[1];
+        console.log('[Media] stripped data-URL prefix from base64');
+      }
+
+      // Validate base64-ish
+      if (!/^[A-Za-z0-9+/=\s]+$/.test(rawData.slice(0, 200))) {
+        console.error(
+          '[Media] prepareRelayMedia: data does not look like base64 (first 40):',
+          rawData.slice(0, 40)
+        );
+      }
 
       const data = message._data || {};
       const mimetype =
@@ -597,7 +727,11 @@ function createPresenceMediaHelpers(wa) {
           filename = /pdf/i.test(mimetype) ? 'document.pdf' : 'file.bin';
         } else if (type === 'image' || /^image\//i.test(mimetype)) {
           filename = /^image\/png/i.test(mimetype) ? 'image.png' : 'image.jpg';
-        } else if (type === 'video' || /^video\//i.test(mimetype) || type === 'gif') {
+        } else if (
+          type === 'video' ||
+          /^video\//i.test(mimetype) ||
+          type === 'gif'
+        ) {
           filename = 'video.mp4';
         } else if (
           type === 'ptt' ||
@@ -610,7 +744,6 @@ function createPresenceMediaHelpers(wa) {
         }
       }
 
-      // PDFs must keep a .pdf name so WA treats them correctly as documents
       if (/pdf/i.test(mimetype) && filename && !/\.pdf$/i.test(filename)) {
         filename = `${filename}.pdf`;
       }
@@ -622,13 +755,41 @@ function createPresenceMediaHelpers(wa) {
         media.filesize
       );
       console.log(
-        `[Media] prepared mime=${out.mimetype} file=${out.filename || '—'} b64=${String(out.data).length}`
+        `[Media] prepareRelayMedia READY mime=${out.mimetype} file=${out.filename || '—'} b64=${String(out.data).length} instanceof=${out instanceof MessageMedia}`
       );
       return out;
     } catch (err) {
       console.error('[Media] prepareRelayMedia failed:', err.message);
       console.error(err.stack);
       return null;
+    }
+  }
+
+  /**
+   * Verbose inbound media dump for the message listener / relay.
+   */
+  function logInboundMediaDetails(message, source = 'listener') {
+    try {
+      const data = message?._data || {};
+      console.log(`[Media] ===== INBOUND MEDIA (${source}) =====`);
+      console.log(`[Media] type=${message?.type}`);
+      console.log(`[Media] hasMedia=${!!message?.hasMedia}`);
+      console.log(`[Media] id=${message?.id?._serialized || message?.id?.id || '?'}`);
+      console.log(`[Media] from=${message?.from}`);
+      console.log(`[Media] mimetype=${data.mimetype || message?.mimetype || '—'}`);
+      console.log(`[Media] filename=${data.filename || message?.filename || '—'}`);
+      console.log(`[Media] directPath=${!!data.directPath}`);
+      console.log(`[Media] mediaKey=${!!data.mediaKey}`);
+      console.log(`[Media] filehash=${!!data.filehash}`);
+      console.log(`[Media] encFilehash=${!!data.encFilehash}`);
+      console.log(`[Media] mediaStage=${data.mediaData?.mediaStage || '—'}`);
+      console.log(`[Media] size=${data.size || data.fileLength || '—'}`);
+      console.log(`[Media] caption/body="${String(message?.body || '').slice(0, 80)}"`);
+      console.log(`[Media] downloadMedia typeof=${typeof message?.downloadMedia}`);
+      console.log(`[Media] mediaLike=${isMediaLikeMessage(message)}`);
+      console.log(`[Media] ===== END INBOUND MEDIA =====`);
+    } catch (err) {
+      console.error('[Media] logInboundMediaDetails error:', err.message);
     }
   }
 
@@ -676,6 +837,7 @@ function createPresenceMediaHelpers(wa) {
     isMediaLikeMessage,
     mediaFingerprint,
     buildMediaSendOptionSets,
+    logInboundMediaDetails,
     sendTypingPresence,
     sendRecordingPresence,
     showTypingFor,
@@ -683,6 +845,7 @@ function createPresenceMediaHelpers(wa) {
     reloadMessageForMedia,
     waitUntilMediaReady,
     forceResolveMediaOnPage,
+    forceHasMediaFlag,
     downloadMediaFromMessageMeta,
     downloadMediaWithRetry,
     prepareRelayMedia,
