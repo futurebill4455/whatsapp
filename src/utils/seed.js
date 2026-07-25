@@ -95,10 +95,23 @@ function seed() {
       if (cleaned !== String(cur)) Settings.set(key, cleaned);
     }
   } catch (_) {}
-  // Ensure wrong-code / "not authorized" replies stay disabled (silent unless exact code)
-  Settings.set('access_wrong_code_message', '');
-  Settings.set('access_denied_message', '');
-  Settings.set('access_control_enabled', '0');
+  // Keep forward template phone-free and cleanly aligned
+  try {
+    const { DEFAULT_FORWARD_TEMPLATE, stripPhoneFromLeadMessage } = require('./leadSummary');
+    const cur = Settings.get('forward_template');
+    if (
+      !cur ||
+      /\{\{\s*phone\s*\}\}/i.test(String(cur)) ||
+      /^\s*•\s*Phone\s*:/im.test(String(cur)) ||
+      /• Phone:/i.test(String(cur))
+    ) {
+      Settings.set('forward_template', DEFAULT_FORWARD_TEMPLATE);
+      console.log('[Seed] Updated forward_template (removed phone, cleaned layout)');
+    } else {
+      const cleaned = stripPhoneFromLeadMessage(String(cur));
+      if (cleaned !== String(cur)) Settings.set('forward_template', cleaned);
+    }
+  } catch (_) {}
   // Status dots only — no long chat open/close text to the desk
   Settings.set('company_close_notify_message', '🔴');
   const closeMsg = Settings.get('chat_close_message');

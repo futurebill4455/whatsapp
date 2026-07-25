@@ -23,6 +23,20 @@ function parseMembers(raw) {
   }
 }
 
+function formatSubmittedAt(value) {
+  if (!value) return new Date().toLocaleString('en-IN', { hour12: true });
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
 /**
  * Format insurance-specific extra fields into clean bullet lines.
  */
@@ -31,36 +45,43 @@ function formatExtraDetails(submission, extra) {
   const type = String(submission?.insurance_type || '').toLowerCase();
   const members = parseMembers(submission?.members_json);
   const memberCount = submission?.member_count || extra.member_count;
-  const premium = submission?.premium_amount || extra.premium_amount || extra.coverage_amount;
-  const duration = submission?.policy_duration || extra.policy_duration || extra.duration;
+  const premium =
+    submission?.premium_amount || extra.premium_amount || extra.coverage_amount;
+  const duration =
+    submission?.policy_duration || extra.policy_duration || extra.duration;
 
-  if (premium) lines.push(`• Sum insured / Premium: ${premium}`);
-  if (duration) lines.push(`• Duration: ${duration}`);
+  if (premium) lines.push(`• Sum insured / Premium : ${premium}`);
+  if (duration) lines.push(`• Duration             : ${duration}`);
 
   if (type.includes('health') || members.length || memberCount) {
-    if (memberCount) lines.push(`• Members: ${memberCount}`);
+    if (memberCount) lines.push(`• Members              : ${memberCount}`);
     if (members.length) {
-      lines.push('• Member details:');
+      lines.push('• Member details');
       members.forEach((m, i) => {
         const name = m.name || '—';
         const dob = m.dob || '—';
         const gender = m.gender || '—';
-        lines.push(`   ${i + 1}. ${name} | DOB: ${dob} | Gender: ${gender}`);
+        lines.push(`   ${i + 1}. ${name}`);
+        lines.push(`      DOB: ${dob}  ·  Gender: ${gender}`);
       });
     }
   }
 
   if (type.includes('vehicle') || type.includes('motor')) {
-    if (extra.vehicle_model) lines.push(`• Vehicle: ${extra.vehicle_model}`);
-    if (extra.manufacturing_year) lines.push(`• Year: ${extra.manufacturing_year}`);
-    if (extra.policy_type) lines.push(`• Policy type: ${extra.policy_type}`);
+    if (extra.vehicle_model) lines.push(`• Vehicle              : ${extra.vehicle_model}`);
+    if (extra.manufacturing_year) {
+      lines.push(`• Year                 : ${extra.manufacturing_year}`);
+    }
+    if (extra.policy_type) lines.push(`• Policy type          : ${extra.policy_type}`);
   }
 
   if (submission?.advisor_name || extra.advisor_name) {
-    lines.push(`• Advisor: ${submission?.advisor_name || extra.advisor_name}`);
+    lines.push(
+      `• Advisor              : ${submission?.advisor_name || extra.advisor_name}`
+    );
   }
 
-  // Remaining free-form extras (skip ones already rendered)
+  // Remaining free-form extras (skip ids / already rendered / phone)
   const skip = new Set([
     'member_count',
     'members',
@@ -72,11 +93,18 @@ function formatExtraDetails(submission, extra) {
     'vehicle_model',
     'manufacturing_year',
     'policy_type',
+    'company_id',
+    'insurance_type_id',
+    'phone',
+    'customer_phone',
+    'mobile',
   ]);
   for (const [key, value] of Object.entries(extra || {})) {
     if (skip.has(key) || value == null || value === '') continue;
     if (typeof value === 'object') continue;
-    lines.push(`• ${key.replace(/_/g, ' ')}: ${value}`);
+    if (/phone|mobile|msisdn/i.test(key)) continue;
+    const label = key.replace(/_/g, ' ');
+    lines.push(`• ${label.charAt(0).toUpperCase()}${label.slice(1)} : ${value}`);
   }
 
   return lines.join('\n');
@@ -87,25 +115,27 @@ function formatExtraDetails(submission, extra) {
  */
 function buildLeadVars(submission, overrides = {}) {
   const extra = parseExtra(submission?.extra_json || submission?.extra_data);
-  const insurance_type = overrides.insurance_type || submission?.insurance_type || '';
+  const insurance_type =
+    overrides.insurance_type || submission?.insurance_type || '';
   const details = formatExtraDetails(submission, extra);
 
   return {
     name: overrides.name || submission?.customer_name || '—',
-    phone: overrides.phone || submission?.customer_phone || '—',
+    // phone kept for legacy templates but stripped from forward output
+    phone: '',
     insurance_type: insurance_type || '—',
     company: overrides.company || submission?.company || '—',
     premium_amount: submission?.premium_amount || extra.premium_amount || '',
     policy_duration: submission?.policy_duration || extra.policy_duration || '',
     advisor_name: submission?.advisor_name || extra.advisor_name || '',
     member_count: submission?.member_count || extra.member_count || '',
-    submitted_at:
-      overrides.submitted_at ||
-      submission?.submitted_at ||
-      new Date().toISOString(),
+    submitted_at: formatSubmittedAt(
+      overrides.submitted_at || submission?.submitted_at
+    ),
     details,
     ...extra,
     ...overrides,
+    phone: '', // never expose phone in desk lead summary
   };
 }
 
@@ -114,19 +144,33 @@ function buildLeadVars(submission, overrides = {}) {
  */
 function renderTemplate(template, vars) {
   return String(template || '')
-    .replace(/\{\{(\w+)\}\}/g, (_, key) => (vars[key] != null ? String(vars[key]) : ''))
+    .replace(/\{\{(\w+)\}\}/g, (_, key) =>
+      vars[key] != null ? String(vars[key]) : ''
+    )
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
+/** Remove any phone / mobile lines from a lead message body. */
+function stripPhoneFromLeadMessage(text) {
+  return String(text || '')
+    .replace(/\{\{\s*phone\s*\}\}/gi, '')
+    .replace(/^.*\b(phone|mobile|whatsapp)\b\s*[:：].*$/gim, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
+ * Clean, aligned desk lead summary — no customer phone number.
+ */
 const DEFAULT_FORWARD_TEMPLATE = `📋 *New Insurance Lead*
 
-• Name: {{name}}
-• Phone: {{phone}}
-• Insurance Type: {{insurance_type}}
-• Company: {{company}}
+• Name         : {{name}}
+• Insurance    : {{insurance_type}}
+• Company      : {{company}}
 {{details}}
-• Submitted: {{submitted_at}}`;
+
+_Submitted: {{submitted_at}}_`;
 
 /**
  * Clean a form URL for WhatsApp: bare http(s)://… only.
@@ -141,7 +185,6 @@ function sanitizeFormLink(url) {
   if (!/^https?:\/\//i.test(s)) {
     s = `http://${s}`;
   }
-  // Drop trailing slash unless the path is only "/"
   const withoutScheme = s.replace(/^https?:\/\//i, '');
   if (withoutScheme.includes('/') && withoutScheme.replace(/\/+$/, '').includes('/')) {
     return s.replace(/\/+$/, '');
@@ -151,18 +194,22 @@ function sanitizeFormLink(url) {
 
 /**
  * Full desk-forward message from a submission (+ optional custom template).
+ * Always strips phone lines for privacy.
  */
 function buildForwardMessage(submission, template) {
   const vars = buildLeadVars(submission);
-  return renderTemplate(template || DEFAULT_FORWARD_TEMPLATE, vars);
+  const raw = renderTemplate(template || DEFAULT_FORWARD_TEMPLATE, vars);
+  return stripPhoneFromLeadMessage(raw);
 }
 
 module.exports = {
   parseExtra,
   parseMembers,
   formatExtraDetails,
+  formatSubmittedAt,
   buildLeadVars,
   renderTemplate,
+  stripPhoneFromLeadMessage,
   sanitizeFormLink,
   buildForwardMessage,
   DEFAULT_FORWARD_TEMPLATE,

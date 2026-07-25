@@ -103,8 +103,16 @@
           <input type="hidden" name="company_close_notify_message" value="🔴" />
         </div>
         <div>
-          <label class="label">Forward template (desk lead summary)</label>
-          <textarea class="field font-mono text-xs" name="forward_template" rows="6"><%= settings.forward_template || '' %></textarea>
+          <label class="label">Forward template (desk lead summary — no phone number)</label>
+          <textarea class="field font-mono text-xs" name="forward_template" rows="8" placeholder="📋 *New Insurance Lead*"><%= settings.forward_template || '' %></textarea>
+          <p class="text-xs text-ink/45 mt-1">
+            Customer phone is never included. Placeholders:
+            <code class="bg-mist px-1 rounded">{{name}}</code>
+            <code class="bg-mist px-1 rounded">{{insurance_type}}</code>
+            <code class="bg-mist px-1 rounded">{{company}}</code>
+            <code class="bg-mist px-1 rounded">{{details}}</code>
+            <code class="bg-mist px-1 rounded">{{submitted_at}}</code>
+          </p>
         </div>
       </section>
 

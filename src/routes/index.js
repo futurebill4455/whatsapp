@@ -409,7 +409,12 @@ router.post('/admin/chat-flow', requireAdmin, (req, res) => {
     company_close_notify_message: scrubForbidden(
       String(req.body.company_close_notify_message || '')
     ),
-    forward_template: scrubForbidden(String(req.body.forward_template || '')),
+    forward_template: (() => {
+      const { stripPhoneFromLeadMessage, DEFAULT_FORWARD_TEMPLATE } = require('../utils/leadSummary');
+      const raw = String(req.body.forward_template || '').trim();
+      if (!raw) return DEFAULT_FORWARD_TEMPLATE;
+      return stripPhoneFromLeadMessage(raw);
+    })(),
     // Never auto-reply on wrong/random messages
     access_granted_message: '',
     flow_welcome_message: '',
