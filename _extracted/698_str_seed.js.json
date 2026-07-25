@@ -1,0 +1,5 @@
+{
+  "path": "c:/Users/LENOVO/OneDrive/Desktop/whatsapp/src/utils/seed.js",
+  "old_string": "    chat_close_message: 'Thank you! Your conversation has been ended. Have a good day!',\n    cancel_message: 'Your request has been cancelled. Send *Hi* anytime to start again.',",
+  "new_string": "    chat_close_message: 'Thank you! Your conversation has been ended. Have a good day!',\n    company_close_notify_message:\n      'Customer ended the chat [#{{session_code}}] ({{customer_phone}}).\\nSession closed.',\n    cancel_message: 'Your request has been cancelled. Send *Hi* anytime to start again.',"
+}

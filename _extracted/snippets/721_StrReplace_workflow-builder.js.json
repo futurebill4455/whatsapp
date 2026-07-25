@@ -1,0 +1,5 @@
+{
+  "new_string": "    if (type === 'condition_yes_no') {\n      return [\n        { key: 'yes_keywords', label: 'Yes keywords', default: 'yes,y,ok' },\n        { key: 'no_keywords', label: 'No keywords', default: 'no,n,cancel' },\n      ];\n    }\n    if (type === 'condition_access') {\n      return [\n        {\n          key: 'mode',\n          label: 'Mode: code | unlocked | whitelist',\n          default: 'code',\n        },\n      ];\n    }\n    if (type === 'forward_desk') {",
+  "old_string": "    if (type === 'condition_yes_no') {\n      return [\n        { key: 'yes_keywords', label: 'Yes keywords', default: 'yes,y,ok' },\n        { key: 'no_keywords', label: 'No keywords', default: 'no,n,cancel' },\n      ];\n    }\n    if (type === 'forward_desk') {",
+  "path": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp\\public\\js\\workflow-builder.js"
+}

@@ -1,0 +1,4 @@
+{
+  "command": "node --check src/models/index.js; node --check src/services/whatsapp.js; node --experimental-sqlite -e \"const {AccessUsers}=require('./src/models'); const u=AccessUsers.create({name:'Match Flex',phone:'+91 95622-33772',access_code:'FLEX99'}); console.log('stored',u.phone); for (const p of ['919562233772','+919562233772','9562233772','91 9562233772','09562233772']) { console.log(p,'->',!!AccessUsers.findByPhone(p), AccessUsers.tryUnlock(p,'flex99').ok); AccessUsers.lock(p);} AccessUsers.remove(u.id);\"",
+  "description": "Test flexible phone match and unlock"
+}

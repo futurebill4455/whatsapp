@@ -1,0 +1,236 @@
+[
+  {
+    "i": 82,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    confirmation_template:\n      'Hi {{name}}, please confirm your details:\\n\\n• Name: {{name}}\\n• I"
+  },
+  {
+    "i": 197,
+    "key": "src/models/index.js",
+    "reason": "old_string not found",
+    "oldPreview": "  resolveForType(insuranceTypeName, companyName = null) {\n    // 1) Match desk label to preferred co"
+  },
+  {
+    "i": 273,
+    "key": "src/models/index.js",
+    "reason": "old_string not found",
+    "oldPreview": "  listActiveByDesk(phone) {\n    const digits = String(phone || '').replace(/\\D/g, '');\n    if (!digi"
+  },
+  {
+    "i": 422,
+    "key": "src/models/index.js",
+    "reason": "skipped short overwrite",
+    "len": 1868
+  },
+  {
+    "i": 422,
+    "key": "src/utils/seed.js",
+    "reason": "skipped short overwrite",
+    "len": 1013
+  },
+  {
+    "i": 456,
+    "key": "src/utils/leadSummary.js",
+    "reason": "old_string not found",
+    "oldPreview": "/**\n * Full desk-forward message from a submission (+ optional custom template).\n */\nfunction buildF"
+  },
+  {
+    "i": 460,
+    "key": "src/utils/leadSummary.js",
+    "reason": "old_string not found",
+    "oldPreview": "/**\n * Build a WhatsApp-safe form-link message.\n * Puts the bare URL on its own line (blank lines ar"
+  },
+  {
+    "i": 476,
+    "key": "src/utils/leadSummary.js",
+    "reason": "old_string not found",
+    "oldPreview": "/**\n * Strip soft hyphens / zero-width chars WhatsApp clients sometimes inject into long URLs.\n */\nf"
+  },
+  {
+    "i": 478,
+    "key": "src/utils/leadSummary.js",
+    "reason": "old_string not found",
+    "oldPreview": "/**\n * Strip soft hyphens / zero-width chars WhatsApp clients sometimes inject into long URLs.\n */\nf"
+  },
+  {
+    "i": 479,
+    "key": "src/utils/leadSummary.js",
+    "reason": "old_string not found",
+    "oldPreview": "/**\n * Format a URL so WhatsApp renders it as a tappable blue link.\n * Angle brackets keep the URL a"
+  },
+  {
+    "i": 482,
+    "key": "src/utils/leadSummary.js",
+    "reason": "old_string not found",
+    "oldPreview": "/**\n * Format a URL so WhatsApp renders it as a tappable blue link.\n * Angle brackets keep it as one"
+  },
+  {
+    "i": 483,
+    "key": "src/utils/leadSummary.js",
+    "reason": "old_string not found",
+    "oldPreview": " * `link` is angle-bracket wrapped for clickable rendering; `linkUrl` is bare href.\n */\nfunction bui"
+  },
+  {
+    "i": 487,
+    "key": "src/utils/leadSummary.js",
+    "reason": "old_string not found",
+    "oldPreview": "/**\n * Strip soft hyphens / zero-width chars and ensure an http(s):// scheme\n * so WhatsApp can auto"
+  },
+  {
+    "i": 495,
+    "key": "src/utils/leadSummary.js",
+    "reason": "old_string not found",
+    "oldPreview": "    if (extra.coverage_amount) lines.push(`• Coverage amount: ${extra.coverage_amount}`);\n    if (ex"
+  },
+  {
+    "i": 498,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    close_keywords: 'close,ക്ലോസ്',"
+  },
+  {
+    "i": 498,
+    "key": "src/utils/leadSummary.js",
+    "reason": "old_string not found",
+    "oldPreview": "    duration_days: extra.duration_days || '',"
+  },
+  {
+    "i": 499,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  if (Settings.get('close_keywords') === null) {\n    Settings.set('close_keywords', defaults.close_k"
+  },
+  {
+    "i": 501,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  if (Settings.get('close_keywords') === null) {\n    Settings.set('close_keywords', defaults.close_k"
+  },
+  {
+    "i": 507,
+    "key": "src/models/index.js",
+    "reason": "old_string not found",
+    "oldPreview": "    return {\n      session: active[0],\n      method: 'last_customer_active',\n      ambiguous: true,\n"
+  },
+  {
+    "i": 516,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    close_keywords: 'close',\n  };"
+  },
+  {
+    "i": 517,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    already_pending_message: 'You already have a pending request. Please complete the form or reply "
+  },
+  {
+    "i": 518,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  if (Settings.get('relay_delay_ms') === null) {\n    Settings.set('relay_delay_ms', defaults.relay_d"
+  },
+  {
+    "i": 526,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    access_denied_message:\n      'This service is invite-only. Please send your *unique access code*"
+  },
+  {
+    "i": 526,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  for (const key of [\n    'access_control_enabled',\n    'access_denied_message',\n    'access_granted"
+  },
+  {
+    "i": 552,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    anti_ban_jitter_min_ms: '3000',\n    anti_ban_jitter_max_ms: '7000',\n    anti_ban_min_gap_ms: '35"
+  },
+  {
+    "i": 552,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  for (const key of [\n    'access_control_enabled',\n    'access_denied_message',\n    'access_granted"
+  },
+  {
+    "i": 591,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    close_keywords: 'close',\n    trigger_keywords: 'hi,hello,hey,start,ഹായ്',\n    relay_delay_ms: '3"
+  },
+  {
+    "i": 592,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  if (Settings.get('close_keywords') === null) {\n    Settings.set('close_keywords', defaults.close_k"
+  },
+  {
+    "i": 605,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    anti_ban_hourly_cap: '18',\n    anti_ban_daily_cap: '60',\n    anti_ban_global_hourly_cap: '220',\n"
+  },
+  {
+    "i": 605,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    'anti_ban_daily_cap',\n    'anti_ban_global_hourly_cap',\n  ]) {"
+  },
+  {
+    "i": 617,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    anti_ban_jitter_min_ms: '5000',\n    anti_ban_jitter_max_ms: '12000',\n    anti_ban_min_gap_ms: '4"
+  },
+  {
+    "i": 617,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  // Migrate legacy 3–7s jitter → enterprise 5–12s\n  const jMin = Number(Settings.get('anti_ban_jitt"
+  },
+  {
+    "i": 620,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  // Migrate legacy fixed ranges → dynamic 4–25s engine\n  const jMin = Number(Settings.get('anti_ban"
+  },
+  {
+    "i": 621,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  // Migrate legacy fixed ranges → dynamic 4–25s engine\n  Settings.set('anti_ban_jitter_min_ms', '40"
+  },
+  {
+    "i": 646,
+    "key": "src/models/index.js",
+    "reason": "old_string not found",
+    "oldPreview": "  findActiveByCustomer(phone) {\n    const digits = String(phone || '').replace(/\\D/g, '');\n    if (!"
+  },
+  {
+    "i": 664,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    anti_ban_jitter_min_ms: '4000',\n    anti_ban_jitter_max_ms: '25000',\n    anti_ban_min_gap_ms: '4"
+  },
+  {
+    "i": 664,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  // Migrate legacy jitter ranges toward dynamic 4–25s defaults (once)\n  const jMin = Number(Setting"
+  },
+  {
+    "i": 674,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  // Migrate legacy jitter ranges toward dynamic 4–20s defaults\n  const jMin = Number(Settings.get('"
+  },
+  {
+    "i": 730,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    close_keywords: 'close,cls',\n    trigger_keywords: 'hi,hello,hey,start,ഹായ്',"
+  }
+]

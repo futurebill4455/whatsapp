@@ -1,0 +1,5 @@
+{
+  "path": "c:/Users/LENOVO/OneDrive/Desktop/whatsapp/src/models/index.js",
+  "old_string": "  AccessWhitelist,\n  AccessCodes,\n  AuthorizedPeers,\n};",
+  "new_string": "  AccessUsers,\n};"
+}

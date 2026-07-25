@@ -1,0 +1,5 @@
+{
+  "path": "c:/Users/LENOVO/OneDrive/Desktop/whatsapp/src/utils/seed.js",
+  "old_string": "    'anti_ban_daily_cap',\n    'anti_ban_global_hourly_cap',\n  ]) {",
+  "new_string": "    'anti_ban_daily_cap',\n    'anti_ban_global_hourly_cap',\n    'anti_ban_chunk_threshold',\n    'anti_ban_chunk_gap_min_ms',\n    'anti_ban_chunk_gap_max_ms',\n  ]) {"
+}

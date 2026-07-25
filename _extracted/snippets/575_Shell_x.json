@@ -1,0 +1,4 @@
+{
+  "command": "node --check src/services/whatsapp.js; node --check src/models/index.js; node --experimental-sqlite -e \"const {AccessUsers}=require('./src/models'); const u=AccessUsers.create({name:'MatchTest',phone:'919812345678',access_code:'INSU2026'}); console.log('exact',!!AccessUsers.findByPhone('919812345678')); console.log('local10',!!AccessUsers.findByPhone('9812345678')); console.log('wrongUnlock',AccessUsers.tryUnlock('9812345678','WRONG1').reason); console.log('rightUnlock',AccessUsers.tryUnlock('9812345678','insu2026').ok); console.log('isUnlocked',AccessUsers.isUnlocked('919812345678')); AccessUsers.remove(u.id);\"",
+  "description": "Verify phone match and silent unlock logic"
+}

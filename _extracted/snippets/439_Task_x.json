@@ -1,0 +1,5 @@
+{
+  "description": "Recover prior full bot design",
+  "model": "inherit",
+  "prompt": "Search the agent transcript at C:\\Users\\LENOVO\\.cursor\\projects\\c-Users-LENOVO-OneDrive-Desktop-whatsapp/agent-transcripts/93c1067c-8095-4a2a-9dca-77911eddb757/93c1067c-8095-4a2a-9dca-77911eddb757.jsonl for details about the PREVIOUS full-featured WhatsApp insurance bot BEFORE it was stripped for Render free tier.\n\nExtract and return:\n1. Database schema tables and key columns (submissions, companies, form_fields, chat_sessions, workflows, etc.)\n2. WhatsApp message flow: trigger → form link → confirmation → forward → bridge → close\n3. How media relay worked (downloadMedia, MessageMedia, LID/desk_chat_id)\n4. Form fields for Health (members, coverage) and Vehicle\n5. Key model method names (ChatSessions.resolveDeskInbound, Submissions, etc.)\n6. Admin routes that existed\n7. Any chromium/launch optimizations that worked\n\nBe specific. Quote useful code snippets or function signatures if found. Focus on architecture that should be restored."
+}

@@ -1,0 +1,5 @@
+{
+  "path": "c:/Users/LENOVO/OneDrive/Desktop/whatsapp/src/utils/seed.js",
+  "old_string": "  // Migrate legacy fixed ranges → dynamic 4–25s engine\n  const jMin = Number(Settings.get('anti_ban_jitter_min_ms'));\n  const jMax = Number(Settings.get('anti_ban_jitter_max_ms'));\n  if (!Number.isFinite(jMin) || jMin < 4000) {\n    Settings.set('anti_ban_jitter_min_ms', '4000');\n  }\n  if (!Number.isFinite(jMax) || jMax < 25000) {\n    Settings.set('anti_ban_jitter_max_ms', '25000');\n  }",
+  "new_string": "  // Migrate legacy fixed ranges → dynamic 4–25s engine\n  Settings.set('anti_ban_jitter_min_ms', '4000');\n  Settings.set('anti_ban_jitter_max_ms', '25000');"
+}

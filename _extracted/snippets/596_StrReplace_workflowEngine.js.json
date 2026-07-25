@@ -1,0 +1,5 @@
+{
+  "new_string": "    const open = Submissions.findLatestOpen(phone);\n    if (open && open.status === 'awaiting_confirmation') {\n      await this.forwardLeadToDesk(open, {\n        ...baseCtx,\n        notifyCustomer: false,\n        sendDeskTip: false,\n      });\n      return { handled: true, reason: 'legacy_pending_forwarded' };\n    }\n\n    await this.sendLegacyFormLink(phone, baseCtx, isFormLinkChatFlow(flow) ? flow : null);",
+  "old_string": "    const open = Submissions.findLatestOpen(phone);\n    if (open && open.status === 'awaiting_confirmation') {\n      const replyVariations = require('./replyVariations');\n      await this.whatsapp.sendMessage(\n        phone,\n        replyVariations.pick(\n          'already_pending',\n          { phone },\n          'already_pending_message'\n        ),\n        sendOpts(baseCtx)\n      );\n      return { handled: true, reason: 'already_pending' };\n    }\n\n    await this.sendLegacyFormLink(phone, baseCtx, isFormLinkChatFlow(flow) ? flow : null);",
+  "path": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp\\src\\services\\workflowEngine.js"
+}

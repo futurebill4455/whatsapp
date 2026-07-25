@@ -1,0 +1,5 @@
+{
+  "path": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp\\src",
+  "pattern": "antiBan|jitter|typing|working.?hours|rate.?limit|forward|Close|policy_duration|member_age|gender|AccessUsers|message.?variation",
+  "glob": "*.{js,ejs,css}"
+}

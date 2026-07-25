@@ -1,0 +1,5 @@
+{
+  "new_string": "  findActiveByCustomer(phone) {\n    const digits = String(phone || '').replace(/\\D/g, '');\n    if (!digits) return null;\n    const exact = db.prepare(`\n      SELECT * FROM chat_sessions\n      WHERE status = 'active' AND customer_phone = ?\n      ORDER BY id DESC LIMIT 1\n    `).get(digits);\n    if (exact) return exact;\n    const active = db.prepare(`\n      SELECT * FROM chat_sessions WHERE status = 'active' ORDER BY id DESC LIMIT 50\n    `).all();\n    return active.find((s) => phonesMatch(s.customer_phone, phone)) || null;\n  },",
+  "old_string": "  findActiveByCustomer(phone) {\n    const digits = String(phone || '').replace(/\\D/g, '');\n    if (!digits) return null;\n    return db.prepare(`\n      SELECT * FROM chat_sessions\n      WHERE status = 'active' AND customer_phone = ?\n      ORDER BY id DESC LIMIT 1\n    `).get(digits);\n  },",
+  "path": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp\\src\\models\\index.js"
+}

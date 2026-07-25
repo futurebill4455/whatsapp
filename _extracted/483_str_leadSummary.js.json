@@ -1,0 +1,5 @@
+{
+  "path": "c:/Users/LENOVO/OneDrive/Desktop/whatsapp/src/utils/leadSummary.js",
+  "old_string": " * `link` is angle-bracket wrapped for clickable rendering; `linkUrl` is bare href.\n */\nfunction buildFormLinkParts(template, vars = {}) {\n  const linkUrl = sanitizeFormLink(vars.form_link);\n  const link = formatWhatsAppClickableLink(linkUrl);",
+  "new_string": " * `link` / `linkUrl` are the same clean bare http(s) URL (no brackets, no duplicate).\n */\nfunction buildFormLinkParts(template, vars = {}) {\n  const linkUrl = sanitizeFormLink(vars.form_link);\n  const link = formatWhatsAppClickableLink(linkUrl);"
+}

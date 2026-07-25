@@ -144,7 +144,188 @@ class WhatsAppService {
   }
 
   formatPhone(phone) {
-    return String(phone || '').replace(/\D/g, '');
+    // Strip JID server suffix before digit extraction
+    return String(phone || '')
+      .replace(/@.+$/, '')
+      .replace(/^whatsapp:/i, '')
+      .replace(/\D/g, '');
+  }
+
+  /**
+   * True when a digit string looks like a real mobile MSISDN (not a WhatsApp @lid id).
+   */
+  looksLikeMsisdn(digits) {
+    const d = String(digits || '');
+    if (!d) return false;
+    // Typical WA phones: 10–15 digits. LID internals are often longer/opaque.
+    if (d.length < 10 || d.length > 15) return false;
+    // Reject obvious LID-only lengths that aren't country+national (keep 10–15)
+    return true;
+  }
+
+  /**
+   * Resolve a stable digit phone + chat id for inbound messages (@c.us and @lid).
+   * Never treats @lid user-ids as phone numbers.
+   */
+  async resolveIncomingPeer(message) {
+    const chatId = message.from || message.author || null;
+    const lidUser =
+      String(chatId || '').endsWith('@lid')
+        ? String(chatId).replace(/@.+$/, '').replace(/\D/g, '')
+        : '';
+
+    const consider = (raw) => {
+      if (raw == null) return null;
+      const s = String(raw).trim();
+      // Never trust @lid / @broadcast as the phone itself
+      if (/@(lid|broadcast|g\.us)\b/i.test(s)) return null;
+      const d = this.formatPhone(s);
+      if (!this.looksLikeMsisdn(d)) return null;
+      // Reject when digits are exactly the opaque LID user id
+      if (lidUser && d === lidUser) return null;
+      return d;
+    };
+
+    let phone = null;
+    const trySet = (val, source) => {
+      const d = consider(val);
+      if (d && !phone) {
+        phone = d;
+        console.log(`[WhatsApp] Peer phone via ${source}: ${d}`);
+      }
+      return !!d;
+    };
+
+    // 1) Classic @c.us JID
+    if (String(chatId || '').endsWith('@c.us')) {
+      trySet(chatId, 'from@c.us');
+    }
+
+    // 2) Message payload fields (often still hold PN on LID chats)
+    const data = message._data || {};
+    trySet(data.from, '_data.from');
+    trySet(data.author, '_data.author');
+    trySet(data.peerRecipientJid || data.peerJid || data.remoteJid, '_data.peer');
+    trySet(data.notify, '_data.notify'); // usually name, ignore if non-numeric
+
+    // 3) Contact model
+    if (!phone) {
+      try {
+        const contact = await message.getContact();
+        trySet(contact?.number, 'contact.number');
+        trySet(contact?.id?._serialized, 'contact.id');
+        trySet(contact?.id?.user, 'contact.user');
+        // Some builds expose phoneNumber / formattedNumber
+        trySet(contact?.phoneNumber, 'contact.phoneNumber');
+        trySet(contact?.formattedNumber, 'contact.formattedNumber');
+      } catch (err) {
+        console.warn('[WhatsApp] getContact failed:', err.message);
+      }
+    }
+
+    // 4) Chat model
+    if (!phone) {
+      try {
+        const chat = await message.getChat();
+        trySet(chat?.id?._serialized, 'chat.id');
+        trySet(chat?.id?.user, 'chat.user');
+      } catch (_) {}
+    }
+
+    // 5) LID → phone via whatsapp-web.js official helper (then Store fallback)
+    if (!phone && String(chatId || '').endsWith('@lid') && this.client) {
+      try {
+        if (typeof this.client.getContactLidAndPhone === 'function') {
+          const mapped = await this.client.getContactLidAndPhone([chatId]);
+          const entry = Array.isArray(mapped) ? mapped[0] : mapped;
+          const pn = entry?.pn || entry?.phone || null;
+          if (trySet(pn, 'getContactLidAndPhone')) {
+            // done
+          }
+        }
+      } catch (err) {
+        console.warn('[WhatsApp] getContactLidAndPhone failed:', err.message);
+      }
+    }
+
+    if (!phone && String(chatId || '').endsWith('@lid') && this.client?.pupPage) {
+      try {
+        const resolved = await this.client.pupPage.evaluate(async (lidJid) => {
+          const out = { phone: null, via: null };
+          try {
+            // Library helper injected into page
+            if (window.WWebJS?.enforceLidAndPnRetrieval) {
+              const { phone } = await window.WWebJS.enforceLidAndPnRetrieval(lidJid);
+              const serialized =
+                phone?._serialized || phone?.user || (typeof phone === 'string' ? phone : null);
+              if (serialized) {
+                out.phone = String(serialized).replace(/@.+$/, '').replace(/\D/g, '');
+                out.via = 'enforceLidAndPnRetrieval';
+                return out;
+              }
+            }
+
+            const widFactory = window.Store?.WidFactory || window.require?.('WAWebWidFactory');
+            const wid =
+              typeof widFactory?.createWid === 'function'
+                ? widFactory.createWid(lidJid)
+                : lidJid;
+
+            const Contact =
+              window.Store?.Contact ||
+              window.require?.('WAWebCollections')?.Contact;
+            let contact =
+              Contact?.get?.(lidJid) ||
+              Contact?.get?.(wid) ||
+              null;
+            if (!contact && Contact?.find) {
+              try {
+                contact = await Contact.find(wid);
+              } catch (_) {}
+            }
+            if (contact) {
+              const alt =
+                contact.phoneNumber?._serialized ||
+                contact.phoneNumber?.user ||
+                contact.number ||
+                null;
+              const candidate = String(alt || '')
+                .replace(/@.+$/, '')
+                .replace(/\D/g, '');
+              if (candidate && candidate.length >= 10 && candidate.length <= 15) {
+                out.phone = candidate;
+                out.via = 'Contact.phoneNumber';
+                return out;
+              }
+            }
+          } catch (e) {
+            out.via = 'error:' + (e?.message || e);
+          }
+          return out;
+        }, chatId);
+
+        if (resolved?.phone && this.looksLikeMsisdn(resolved.phone)) {
+          phone = resolved.phone;
+          console.log(
+            `[WhatsApp] Peer phone via Store/${resolved.via}: ${phone} (from ${chatId})`
+          );
+        } else {
+          console.warn(
+            `[WhatsApp] Could not map LID ${chatId} → phone (${resolved?.via || 'n/a'})`
+          );
+        }
+      } catch (err) {
+        console.warn('[WhatsApp] LID→PN resolve failed:', err.message);
+      }
+    }
+
+    // 6) Last resort: only if from looks like @c.us-style digits (never @lid)
+    if (!phone) trySet(chatId, 'fallback');
+
+    // Canonicalize Indian 10-digit → 91…
+    if (phone && phone.length === 10) phone = `91${phone}`;
+
+    return { phone: phone || '', chatId };
   }
 
   getBaseUrl() {
@@ -154,46 +335,6 @@ class WhatsAppService {
 
   buildFormUrl(token) {
     return sanitizeFormLink(buildFormUrl(token));
-  }
-
-  /**
-   * Resolve a stable digit phone + chat id for inbound messages (@c.us and @lid).
-   */
-  async resolveIncomingPeer(message) {
-    const chatId = message.from;
-    const consider = (raw) => {
-      const d = this.formatPhone(String(raw || '').replace(/@.+$/, ''));
-      if (d && d.length >= 10 && d.length <= 15) return d;
-      return null;
-    };
-
-    let phone = null;
-
-    if (String(chatId || '').endsWith('@c.us')) {
-      phone = consider(chatId);
-    }
-
-    if (!phone) {
-      try {
-        const contact = await message.getContact();
-        phone =
-          consider(contact?.number) ||
-          consider(contact?.id?.user) ||
-          consider(contact?.id?._serialized);
-      } catch (_) {}
-    }
-
-    if (!phone) {
-      try {
-        const chat = await message.getChat();
-        phone =
-          consider(chat?.id?.user) || consider(chat?.id?._serialized);
-      } catch (_) {}
-    }
-
-    if (!phone) phone = consider(chatId);
-
-    return { phone: phone || '', chatId };
   }
 
   async resolveOutboundChatId(phoneOrId) {

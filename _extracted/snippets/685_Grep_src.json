@@ -1,0 +1,5 @@
+{
+  "glob": "*.{js,ejs}",
+  "path": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp\\src",
+  "pattern": "workflowEngine|workflowDefaults|/admin/workflow|drawflow|NODE_META|buildDefaultWorkflow"
+}

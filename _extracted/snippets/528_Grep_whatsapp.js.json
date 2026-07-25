@@ -1,0 +1,6 @@
+{
+  "path": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp\\src\\services\\whatsapp.js",
+  "pattern": "AccessUsers|isUnlocked|renderTemplate",
+  "glob": "*.js",
+  "-A": 2
+}

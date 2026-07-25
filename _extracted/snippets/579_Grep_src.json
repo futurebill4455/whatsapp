@@ -1,0 +1,4 @@
+{
+  "path": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp\\src",
+  "pattern": "notifyFormSubmitted|sendFormConfirmation|awaiting_confirmation|access_granted|Welcome|closeChatSession|isCloseCommand|form_submit|markConfirmed"
+}

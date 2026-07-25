@@ -1,0 +1,5 @@
+{
+  "new_string": "  getBaseUrl() {\n    return requireBaseUrl();\n  }\n\n  buildFormUrl(token) {\n    return sanitizeFormLink(requireBuildFormUrl(token));\n  }",
+  "old_string": "  getBaseUrl() {\n    return getBaseUrl();\n  }\n\n  buildFormUrl(token) {\n    return sanitizeFormLink(buildFormUrl(token));\n  }",
+  "path": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp\\src\\services\\whatsapp.js"
+}

@@ -1,0 +1,4 @@
+{
+  "command": "node -e \"\nrequire('./src/config/db');\nconst { AccessUsers, phonesMatch } = require('./src/models');\n// phonesMatch may not be exported - test via AccessUsers\nconst db = require('./src/config/db');\n// create ephemeral user if needed\nconst phone = '9561234567';\nconst code = 'TESTCODE99';\ntry {\n  // cleanup previous\n  const existing = AccessUsers.findByPhone(phone);\n  if (existing) {\n    const { getDb } = require('./src/config/db');\n  }\n} catch(e) {}\n\nconst models = require('./src/models');\nconst { getDb } = (() => { try { return require('./src/config/db'); } catch(_) { return {}; }})();\n\n// Use AccessUsers.create if available\nconsole.log('methods', Object.keys(AccessUsers).filter(k=>typeof AccessUsers[k]==='function'));\n\"",
+  "description": "Inspect AccessUsers API for smoke test"
+}

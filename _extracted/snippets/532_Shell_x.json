@@ -1,0 +1,4 @@
+{
+  "command": "node --experimental-sqlite -e \"const { AccessUsers } = require('./src/models'); const u = AccessUsers.create({ name: 'Test User', phone: '919888877766', access_code: 'INSU2026' }); console.log('created', u); console.log('wrong', AccessUsers.tryUnlock('919888877766','WRONG1')); console.log('right', AccessUsers.tryUnlock('919888877766','insu2026')); console.log('isUnlocked', AccessUsers.isUnlocked('919888877766')); AccessUsers.remove(u.id); console.log('cleaned');\"",
+  "description": "Create/test/remove AccessUsers row"
+}

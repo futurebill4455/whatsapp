@@ -1,0 +1,4 @@
+{
+  "contents": "/**\n * Silent session close — no notices to customer or company.\n */\nconst { ChatSessions } = require('../../models');\n\nasync function closeSessionSilent(_whatsapp, session, opts = {}) {\n  const closedBy = opts.closedBy || 'customer';\n  if (!session?.id) return { ok: false, reason: 'no_session' };\n  ChatSessions.close(session.id);\n  console.log(\n    `[SessionClose] #${session.id}[${session.session_code}] closed by ${closedBy} (silent)`\n  );\n  return { ok: true, notified: false };\n}\n\nmodule.exports = {\n  closeSessionWithNotify: closeSessionSilent,\n  closeSessionSilent,\n  buildCustomerCloseNotice: () => '',\n};\n",
+  "path": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp\\src\\middleware\\bot\\sessionClose.js"
+}

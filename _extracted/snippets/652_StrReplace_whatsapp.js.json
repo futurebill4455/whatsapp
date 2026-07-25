@@ -1,0 +1,5 @@
+{
+  "path": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp\\src\\services\\whatsapp.js",
+  "old_string": "const {\n  Settings,\n  Submissions,\n  MessageLog,\n  Workflows,\n  WorkflowRuns,\n  InternalNumbers,\n  ChatSessions,\n  ChatFlow,\n  AccessUsers,\n} = require('../models');",
+  "new_string": "const {\n  Settings,\n  Submissions,\n  MessageLog,\n  InternalNumbers,\n  ChatSessions,\n  AccessUsers,\n} = require('../models');"
+}

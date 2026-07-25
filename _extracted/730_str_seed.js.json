@@ -1,0 +1,5 @@
+{
+  "path": "c:/Users/LENOVO/OneDrive/Desktop/whatsapp/src/utils/seed.js",
+  "old_string": "    close_keywords: 'close,cls',\n    trigger_keywords: 'hi,hello,hey,start,ഹായ്',",
+  "new_string": "    trigger_keywords: '',\n    close_keywords: 'close,cls',"
+}

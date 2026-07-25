@@ -1,0 +1,5 @@
+{
+  "path": "c:/Users/LENOVO/OneDrive/Desktop/whatsapp/src/utils/seed.js",
+  "old_string": "  // Migrate legacy jitter ranges toward dynamic 4–25s defaults (once)\n  const jMin = Number(Settings.get('anti_ban_jitter_min_ms'));\n  const jMax = Number(Settings.get('anti_ban_jitter_max_ms'));\n  if (jMin === 3000 || jMin === 5000) {\n    Settings.set('anti_ban_jitter_min_ms', '4000');\n  }\n  if (jMax === 7000 || jMax === 12000) {\n    Settings.set('anti_ban_jitter_max_ms', '25000');\n  }\n  if (Settings.get('anti_ban_min_gap_ms') === '3500') {\n    Settings.set('anti_ban_min_gap_ms', '4000');\n  }",
+  "new_string": "  // Migrate legacy jitter ranges toward dynamic 4–20s defaults\n  const jMin = Number(Settings.get('anti_ban_jitter_min_ms'));\n  const jMax = Number(Settings.get('anti_ban_jitter_max_ms'));\n  if (jMin === 3000 || jMin === 5000) {\n    Settings.set('anti_ban_jitter_min_ms', '4000');\n  }\n  if (jMax === 7000 || jMax === 12000 || jMax === 25000) {\n    Settings.set('anti_ban_jitter_max_ms', '20000');\n  }\n  if (Settings.get('anti_ban_min_gap_ms') === '3500') {\n    Settings.set('anti_ban_min_gap_ms', '4000');\n  }"
+}

@@ -1,0 +1,4 @@
+{
+  "command": "node -e \"require('./src/config/db'); const {bindEngine}=require('./src/services/workflowEngine'); const {NODE_META}=require('./src/services/workflowDefaults'); console.log('nodes', Object.keys(NODE_META).join(',')); console.log('has access', !!NODE_META.condition_access); const routes=require('fs').readFileSync('src/routes/index.js','utf8'); console.log('workflow route', routes.includes('/admin/workflow')); const wa=require('fs').readFileSync('src/services/whatsapp.js','utf8'); console.log('no accessGate', !wa.includes('evaluateAccessGate')); console.log('engine inbound', wa.includes('engine.handleIncomingMessage')); console.log('silent close', wa.includes('closed by ${closedBy} (silent)') || wa.includes('(silent)'));\"",
+  "description": "Verify workflow wiring without mutating DB"
+}

@@ -1,0 +1,5 @@
+{
+  "path": "c:/Users/LENOVO/OneDrive/Desktop/whatsapp/src/utils/seed.js",
+  "old_string": "  if (Settings.get('close_keywords') === null) {\n    Settings.set('close_keywords', defaults.close_keywords);\n  } else {\n    // Migrate older multi-keyword defaults → exact \"close\" only\n    const ck = String(Settings.get('close_keywords') || '');\n    if (/ക്ലോസ്/i.test(ck) || /^close\\s*,\\s*/i.test(ck.trim())) {\n      Settings.set('close_keywords', 'close');\n    }\n  }",
+  "new_string": "  if (Settings.get('close_keywords') === null) {\n    Settings.set('close_keywords', defaults.close_keywords);\n  } else {\n    // Ensure CLS is available alongside Close\n    const ck = String(Settings.get('close_keywords') || '').toLowerCase();\n    if (!ck.split(',').map((s) => s.trim()).includes('cls')) {\n      Settings.set('close_keywords', `${Settings.get('close_keywords')},cls`);\n    }\n  }"
+}

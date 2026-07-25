@@ -1,0 +1,5 @@
+{
+  "new_string": "const {\n  buildFormLinkParts,\n  sanitizeFormLink,\n} = require('../utils/leadSummary');",
+  "old_string": "const {\n  buildConfirmationMessage,\n  buildFormLinkParts,\n  sanitizeFormLink,\n} = require('../utils/leadSummary');",
+  "path": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp\\src\\services\\whatsapp.js"
+}

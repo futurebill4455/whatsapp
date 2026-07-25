@@ -1,0 +1,5 @@
+{
+  "command": "node --check src/services/whatsapp.js; node --check src/services/workflowEngine.js; node --check src/models/index.js; node --experimental-sqlite -e \"const {ChatSessions}=require('./src/models'); ChatSessions.bindDeskChatId(4,'147858896478304@lid'); const s=ChatSessions.get(4); console.log('session4 desk_chat', s&&s.desk_chat_id, 'code', s&&s.session_code); console.log('by lid', ChatSessions.listActiveByDeskIdentity('147858896478304','147858896478304@lid').map(x=>x.id));\" 2>&1",
+  "description": "Validate code and backfill session desk LID",
+  "working_directory": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp"
+}

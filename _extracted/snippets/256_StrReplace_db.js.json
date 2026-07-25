@@ -1,0 +1,5 @@
+{
+  "new_string": "  try {\n    db.exec(`ALTER TABLE submissions ADD COLUMN quote_relay_active INTEGER DEFAULT 0`);\n  } catch (_) {}\n  try {\n    db.exec(`ALTER TABLE chat_sessions ADD COLUMN session_code TEXT`);\n  } catch (_) {}\n  try {\n    db.exec(`ALTER TABLE chat_sessions ADD COLUMN last_customer_msg_at TEXT`);\n  } catch (_) {}\n  try {\n    db.exec(`ALTER TABLE chat_sessions ADD COLUMN last_desk_msg_at TEXT`);\n  } catch (_) {}\n}",
+  "old_string": "  try {\n    db.exec(`ALTER TABLE submissions ADD COLUMN quote_relay_active INTEGER DEFAULT 0`);\n  } catch (_) {}\n}",
+  "path": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp\\src\\config\\db.js"
+}

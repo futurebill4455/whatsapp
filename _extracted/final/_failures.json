@@ -1,0 +1,356 @@
+[
+  {
+    "i": 82,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    confirmation_template:\n      'Hi {{name}}, please confirm your details:\\n\\n•"
+  },
+  {
+    "i": 197,
+    "key": "src/models/index.js",
+    "reason": "old_string not found",
+    "oldPreview": "  resolveForType(insuranceTypeName, companyName = null) {\n    // 1) Match desk l"
+  },
+  {
+    "i": 273,
+    "key": "src/models/index.js",
+    "reason": "old_string not found",
+    "oldPreview": "  listActiveByDesk(phone) {\n    const digits = String(phone || '').replace(/\\D/g"
+  },
+  {
+    "i": 456,
+    "key": "src/utils/leadSummary.js",
+    "reason": "old_string not found",
+    "oldPreview": "/**\n * Full desk-forward message from a submission (+ optional custom template)."
+  },
+  {
+    "i": 458,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "        'Welcome to *{{business_name}}*! 👋\\n\\nTo get started with your insuranc"
+  },
+  {
+    "i": 458,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "            'Welcome to *{{business_name}}*! 👋\\n\\nPlease fill out your insuranc"
+  },
+  {
+    "i": 460,
+    "key": "src/utils/leadSummary.js",
+    "reason": "old_string not found",
+    "oldPreview": "/**\n * Build a WhatsApp-safe form-link message.\n * Puts the bare URL on its own "
+  },
+  {
+    "i": 476,
+    "key": "src/utils/leadSummary.js",
+    "reason": "old_string not found",
+    "oldPreview": "/**\n * Strip soft hyphens / zero-width chars WhatsApp clients sometimes inject i"
+  },
+  {
+    "i": 478,
+    "key": "src/utils/leadSummary.js",
+    "reason": "old_string not found",
+    "oldPreview": "/**\n * Strip soft hyphens / zero-width chars WhatsApp clients sometimes inject i"
+  },
+  {
+    "i": 479,
+    "key": "src/utils/leadSummary.js",
+    "reason": "old_string not found",
+    "oldPreview": "/**\n * Format a URL so WhatsApp renders it as a tappable blue link.\n * Angle bra"
+  },
+  {
+    "i": 482,
+    "key": "src/utils/leadSummary.js",
+    "reason": "old_string not found",
+    "oldPreview": "/**\n * Format a URL so WhatsApp renders it as a tappable blue link.\n * Angle bra"
+  },
+  {
+    "i": 483,
+    "key": "src/utils/leadSummary.js",
+    "reason": "old_string not found",
+    "oldPreview": " * `link` is angle-bracket wrapped for clickable rendering; `linkUrl` is bare hr"
+  },
+  {
+    "i": 487,
+    "key": "src/utils/leadSummary.js",
+    "reason": "old_string not found",
+    "oldPreview": "/**\n * Strip soft hyphens / zero-width chars and ensure an http(s):// scheme\n * "
+  },
+  {
+    "i": 495,
+    "key": "src/utils/leadSummary.js",
+    "reason": "old_string not found",
+    "oldPreview": "    if (extra.coverage_amount) lines.push(`• Coverage amount: ${extra.coverage_a"
+  },
+  {
+    "i": 498,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    close_keywords: 'close,ക്ലോസ്',"
+  },
+  {
+    "i": 498,
+    "key": "src/utils/leadSummary.js",
+    "reason": "old_string not found",
+    "oldPreview": "    duration_days: extra.duration_days || '',"
+  },
+  {
+    "i": 499,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  if (Settings.get('close_keywords') === null) {\n    Settings.set('close_keyword"
+  },
+  {
+    "i": 499,
+    "key": "src/models/index.js",
+    "reason": "old_string not found",
+    "oldPreview": "  findByKeyword(text) {\n    const normalized = String(text || '')\n      .replace"
+  },
+  {
+    "i": 501,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  if (Settings.get('close_keywords') === null) {\n    Settings.set('close_keyword"
+  },
+  {
+    "i": 507,
+    "key": "src/models/index.js",
+    "reason": "old_string not found",
+    "oldPreview": "module.exports = {\n  Settings,\n  InsuranceTypes,\n  Companies,\n  InternalNumbers,"
+  },
+  {
+    "i": 507,
+    "key": "src/models/index.js",
+    "reason": "old_string not found",
+    "oldPreview": "    return {\n      session: active[0],\n      method: 'last_customer_active',\n   "
+  },
+  {
+    "i": 509,
+    "key": "src/models/index.js",
+    "reason": "old_string not found",
+    "oldPreview": "    return {\n      session: active[0],\n      method: 'last_customer_active',\n   "
+  },
+  {
+    "i": 516,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    close_keywords: 'close',\n  };"
+  },
+  {
+    "i": 517,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    already_pending_message: 'You already have a pending request. Please complet"
+  },
+  {
+    "i": 518,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  if (Settings.get('relay_delay_ms') === null) {\n    Settings.set('relay_delay_m"
+  },
+  {
+    "i": 524,
+    "key": "src/models/index.js",
+    "reason": "old_string not found",
+    "oldPreview": "function digitsOnly(phone) {\n  return String(phone || '').replace(/\\D/g, '');\n}\n"
+  },
+  {
+    "i": 524,
+    "key": "src/models/index.js",
+    "reason": "old_string not found",
+    "oldPreview": "  AccessWhitelist,\n  AccessCodes,\n  AuthorizedPeers,\n};"
+  },
+  {
+    "i": 526,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    access_denied_message:\n      'This service is invite-only. Please send your "
+  },
+  {
+    "i": 526,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  for (const key of [\n    'access_control_enabled',\n    'access_denied_message',"
+  },
+  {
+    "i": 541,
+    "key": "src/models/index.js",
+    "reason": "old_string not found",
+    "oldPreview": "const MessageLog = {\n  add({ direction, phone, body, meta = null }) {\n    db.pre"
+  },
+  {
+    "i": 552,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    anti_ban_jitter_min_ms: '3000',\n    anti_ban_jitter_max_ms: '7000',\n    anti"
+  },
+  {
+    "i": 552,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  for (const key of [\n    'access_control_enabled',\n    'access_denied_message',"
+  },
+  {
+    "i": 574,
+    "key": "src/models/index.js",
+    "reason": "old_string not found",
+    "oldPreview": "  findByPhone(phone) {\n    const digits = digitsOnly(phone);\n    if (!digits) re"
+  },
+  {
+    "i": 591,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    close_keywords: 'close',\n    trigger_keywords: 'hi,hello,hey,start,ഹായ്',\n  "
+  },
+  {
+    "i": 592,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  if (Settings.get('close_keywords') === null) {\n    Settings.set('close_keyword"
+  },
+  {
+    "i": 593,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  if (ChatFlow.list().length === 0) {\n    ChatFlow.create({\n      trigger_keywor"
+  },
+  {
+    "i": 594,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "            'Welcome to *{{business_name}}*! 👋\\n\\nPlease fill out your insuranc"
+  },
+  {
+    "i": 605,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    anti_ban_hourly_cap: '18',\n    anti_ban_daily_cap: '60',\n    anti_ban_global"
+  },
+  {
+    "i": 605,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    'anti_ban_daily_cap',\n    'anti_ban_global_hourly_cap',\n  ]) {"
+  },
+  {
+    "i": 617,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    anti_ban_jitter_min_ms: '5000',\n    anti_ban_jitter_max_ms: '12000',\n    ant"
+  },
+  {
+    "i": 617,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  // Migrate legacy 3–7s jitter → enterprise 5–12s\n  const jMin = Number(Setting"
+  },
+  {
+    "i": 620,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  // Migrate legacy fixed ranges → dynamic 4–25s engine\n  const jMin = Number(Se"
+  },
+  {
+    "i": 621,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  // Migrate legacy fixed ranges → dynamic 4–25s engine\n  Settings.set('anti_ban"
+  },
+  {
+    "i": 626,
+    "key": "src/models/index.js",
+    "reason": "old_string not found",
+    "oldPreview": "function digitsOnly(phone) {\n  return String(phone || '').replace(/\\D/g, '');\n}\n"
+  },
+  {
+    "i": 636,
+    "key": "src/models/index.js",
+    "reason": "old_string not found",
+    "oldPreview": "  findPendingConfirmation(phone) {\n    return db.prepare(`\n      SELECT * FROM s"
+  },
+  {
+    "i": 637,
+    "key": "src/models/index.js",
+    "reason": "old_string not found",
+    "oldPreview": "  /** True when this phone already verified their own code. */\n  isUnlocked(phon"
+  },
+  {
+    "i": 646,
+    "key": "src/models/index.js",
+    "reason": "old_string not found",
+    "oldPreview": "  findActiveByCustomer(phone) {\n    const digits = String(phone || '').replace(/"
+  },
+  {
+    "i": 647,
+    "key": "src/models/index.js",
+    "reason": "old_string not found",
+    "oldPreview": "  findActiveByCustomer(phone) {\n    const digits = String(phone || '').replace(/"
+  },
+  {
+    "i": 664,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    anti_ban_jitter_min_ms: '4000',\n    anti_ban_jitter_max_ms: '25000',\n    ant"
+  },
+  {
+    "i": 664,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  // Migrate legacy jitter ranges toward dynamic 4–25s defaults (once)\n  const j"
+  },
+  {
+    "i": 674,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  // Migrate legacy jitter ranges toward dynamic 4–20s defaults\n  const jMin = N"
+  },
+  {
+    "i": 685,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "const {\n  Admins,\n  Settings,\n  InsuranceTypes,\n  Companies,\n  InternalNumbers,\n"
+  },
+  {
+    "i": 685,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  if (ChatFlow.list().length === 0) {\n    ChatFlow.create({\n      trigger_keywor"
+  },
+  {
+    "i": 685,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    });\n  }\n\n  if (Workflows.count() === 0) {\n    const wf = Workflows.create({\n"
+  },
+  {
+    "i": 698,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    chat_close_message: 'Thank you! Your conversation has been ended. Have a goo"
+  },
+  {
+    "i": 721,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  ChatFlow,\n  FormFields,\n} = require('../models');\n\nfunction seed() {"
+  },
+  {
+    "i": 721,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    });\n  }\n\n  console.log('Database seeded successfully.');\n  console.log(`Data"
+  },
+  {
+    "i": 730,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "  if (Workflows.count() === 0) {\n    const wf = Workflows.create({\n      name: '"
+  },
+  {
+    "i": 730,
+    "key": "src/utils/seed.js",
+    "reason": "old_string not found",
+    "oldPreview": "    close_keywords: 'close,cls',\n    trigger_keywords: 'hi,hello,hey,start,ഹായ്'"
+  }
+]

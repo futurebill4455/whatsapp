@@ -1,0 +1,5 @@
+{
+  "path": "c:/Users/LENOVO/OneDrive/Desktop/whatsapp/src/utils/seed.js",
+  "old_string": "    });\n  }\n\n  console.log('Database seeded successfully.');\n  console.log(`Database path: ${db.name}`);\n}",
+  "new_string": "    });\n  }\n\n  if (Workflows.count() === 0) {\n    const wf = Workflows.create({\n      name: 'Insurance Lead Intake',\n      description: 'Any message → access code → bare form → company desk',\n      graph: buildDefaultWorkflowGraph(),\n      is_active: 1,\n    });\n    console.log(`Default visual workflow created (#${wf.id})`);\n  } else {\n    // Ensure an active workflow exists for the visual engine\n    const active = Workflows.getActive();\n    if (!active) {\n      const first = Workflows.list()[0];\n      if (first) {\n        Workflows.setActive(first.id);\n        console.log(`Activated workflow #${first.id}`);\n      }\n    }\n  }\n\n  console.log('Database seeded successfully.');\n  console.log(`Database path: ${db.name}`);\n}"
+}

@@ -1,0 +1,5 @@
+{
+  "path": "c:/Users/LENOVO/OneDrive/Desktop/whatsapp/src/models/index.js",
+  "old_string": "  bindDeskChatId(sessionId, chatId) {\n    if (!sessionId || !chatId) return sessionId ? this.get(sessionId) : null;\n    db.prepare(`\n      UPDATE chat_sessions\n      SET desk_chat_id = ?, updated_at = datetime('now')\n      WHERE id = ?\n    `).run(String(chatId), sessionId);\n    return this.get(sessionId);\n  },\n\n  findActiveByCode(code) {",
+  "new_string": "  bindDeskChatId(sessionId, chatId) {\n    if (!sessionId || !chatId) return sessionId ? this.get(sessionId) : null;\n    db.prepare(`\n      UPDATE chat_sessions\n      SET desk_chat_id = ?, updated_at = datetime('now')\n      WHERE id = ?\n    `).run(String(chatId), sessionId);\n    return this.get(sessionId);\n  },\n\n  bindCustomerChatId(sessionId, chatId) {\n    if (!sessionId || !chatId) return sessionId ? this.get(sessionId) : null;\n    db.prepare(`\n      UPDATE chat_sessions\n      SET customer_chat_id = ?, updated_at = datetime('now')\n      WHERE id = ?\n    `).run(String(chatId), sessionId);\n    return this.get(sessionId);\n  },\n\n  findActiveByCode(code) {"
+}

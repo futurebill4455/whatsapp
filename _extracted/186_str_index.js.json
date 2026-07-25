@@ -1,0 +1,5 @@
+{
+  "path": "c:/Users/LENOVO/OneDrive/Desktop/whatsapp/src/models/index.js",
+  "old_string": "  findByKeyword(text) {\n    const normalized = String(text || '').trim().toLowerCase();\n    const flows = this.list(true);\n    return flows.find((f) => {\n      const keywords = f.trigger_keyword.split(',').map((k) => k.trim().toLowerCase());\n      return keywords.some((k) => k === normalized || normalized.startsWith(k));\n    });\n  },",
+  "new_string": "  findByKeyword(text) {\n    const normalized = String(text || '')\n      .replace(/[\\u200B-\\u200D\\uFEFF]/g, '')\n      .trim()\n      .toLowerCase();\n    const flows = this.list(true);\n    return flows.find((f) => {\n      const keywords = f.trigger_keyword.split(',').map((k) => k.trim().toLowerCase()).filter(Boolean);\n      return keywords.some((k) => k === normalized || normalized.startsWith(`${k} `));\n    });\n  },"
+}

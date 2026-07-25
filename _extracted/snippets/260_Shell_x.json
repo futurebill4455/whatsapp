@@ -1,0 +1,5 @@
+{
+  "command": "node --check src/models/index.js; node --check src/services/whatsapp.js; node --check src/services/workflowEngine.js; node --experimental-sqlite -e \"const {ChatSessions}=require('./src/models'); const s=ChatSessions.open({customer_phone:'911111111111',desk_phone:'922222222222',company_name:'Star Health'}); console.log('code',s.session_code,'id',s.id); ChatSessions.trackMessage(s.id,'customer_to_desk','fake_wa_id_1','hi'); const r=ChatSessions.resolveDeskInbound('922222222222',{quotedWaId:'fake_wa_id_1'}); console.log('quote route',r.method,r.session.session_code); const r2=ChatSessions.resolveDeskInbound('922222222222',{body:'quote [# '+s.session_code+'] ok'}); console.log('code in body needs brackets'); const r3=ChatSessions.resolveDeskInbound('922222222222',{body:'reply [#'+s.session_code+']'}); console.log('code route',r3.method); ChatSessions.close(s.id); console.log('closed');\" 2>&1",
+  "description": "Validate multi-tenant routing helpers",
+  "working_directory": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp"
+}

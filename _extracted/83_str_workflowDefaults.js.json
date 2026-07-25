@@ -1,0 +1,5 @@
+{
+  "path": "c:/Users/LENOVO/OneDrive/Desktop/whatsapp/src/services/workflowDefaults.js",
+  "old_string": "              confirmation_message:\n                'Hi {{name}}, please confirm your details:\\n\\n• Name: {{name}}\\n• Type: {{insurance_type}}\\n• Company: {{company}}\\n\\nReply *Yes* to confirm or *No* to cancel.',",
+  "new_string": "              confirmation_message:\n                'Hi {{name}}, please confirm your details:\\n\\n• Name: {{name}}\\n• Type: {{insurance_type}}\\n• Company: {{company}}\\n{{details}}\\n\\nReply *Yes* to confirm or *No* to cancel.',"
+}

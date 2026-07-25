@@ -1,0 +1,5 @@
+{
+  "command": "node --experimental-sqlite -e \"\nconst {ChatSessions}=require('./src/models');\nconsole.log(ChatSessions.listActive().map(s=>({id:s.id,code:s.session_code,desk_chat:s.desk_chat_id,cust_chat:s.customer_chat_id})));\n\"",
+  "description": "Confirm active sessions for retest",
+  "working_directory": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp"
+}

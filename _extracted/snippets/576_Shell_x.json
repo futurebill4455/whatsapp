@@ -1,0 +1,4 @@
+{
+  "command": "node --experimental-sqlite -e \"const {AccessUsers}=require('./src/models'); const u=AccessUsers.create({name:'MatchTest',phone:'919812345678',access_code:'TESTCODE9'}); console.log('exact',!!AccessUsers.findByPhone('919812345678')); console.log('local10',!!AccessUsers.findByPhone('9812345678')); console.log('wrong',AccessUsers.tryUnlock('9812345678','WRONG1')); console.log('right',AccessUsers.tryUnlock('9812345678','testcode9')); console.log('unlocked',AccessUsers.isUnlocked('919812345678')); AccessUsers.lock('919812345678'); console.log('hi-attempt',AccessUsers.tryUnlock('919812345678','Hi')); AccessUsers.remove(u.id); console.log('ok');\"",
+  "description": "Retest access match with unique code"
+}

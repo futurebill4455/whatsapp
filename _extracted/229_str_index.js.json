@@ -1,0 +1,5 @@
+{
+  "path": "c:/Users/LENOVO/OneDrive/Desktop/whatsapp/src/models/index.js",
+  "old_string": "  create({ username, password_hash }) {\n    const result = db.prepare(\n      'INSERT INTO admins (username, password_hash) VALUES (?, ?, ?)'\n    ).run(username, password_hash);\n    return db.prepare('SELECT id, username, created_at FROM admins WHERE id = ?').get(result.lastInsertRowid);\n  },",
+  "new_string": "  create({ username, password_hash }) {\n    const result = db.prepare(\n      'INSERT INTO admins (username, password_hash) VALUES (?, ?)'\n    ).run(username, password_hash);\n    return db.prepare('SELECT id, username, created_at FROM admins WHERE id = ?').get(result.lastInsertRowid);\n  },"
+}

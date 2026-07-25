@@ -1,0 +1,5 @@
+{
+  "path": "c:/Users/LENOVO/OneDrive/Desktop/whatsapp/src/utils/seed.js",
+  "old_string": "    confirmation_template:\n      'Hi {{name}}, please confirm your details:\\n\\n• Name: {{name}}\\n• Insurance Type: {{insurance_type}}\\n• Company: {{company}}\\n\\nReply *Yes* to confirm or *No* to cancel.',\n    forward_template:\n      '📋 *New Insurance Lead*\\n\\n• Name: {{name}}\\n• Phone: {{phone}}\\n• Insurance Type: {{insurance_type}}\\n• Company: {{company}}\\n• Submitted: {{submitted_at}}',\n    form_intro: 'Please fill out your insurance details using the secure form below.',",
+  "new_string": "    confirmation_template:\n      'Hi {{name}}, please confirm your details:\\n\\n• Name: {{name}}\\n• Insurance Type: {{insurance_type}}\\n• Company: {{company}}\\n{{details}}\\n\\nReply *Yes* to confirm or *No* to cancel.',\n    forward_template:\n      '📋 *New Insurance Lead*\\n\\n• Name: {{name}}\\n• Phone: {{phone}}\\n• Insurance Type: {{insurance_type}}\\n• Company: {{company}}\\n{{details}}\\n• Submitted: {{submitted_at}}',\n    form_intro: 'Select Health or Vehicle insurance. Extra fields appear based on your choice.',"
+}

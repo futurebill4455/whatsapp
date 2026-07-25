@@ -1,0 +1,5 @@
+{
+  "path": "c:/Users/LENOVO/OneDrive/Desktop/whatsapp/src/utils/seed.js",
+  "old_string": "        'Welcome to *{{business_name}}*! 👋\\n\\nTo get started with your insurance enquiry, please fill out this short form:\\n{{form_link}}\\r\\n\\nOur team will assist you once you submit and confirm your details.',",
+  "new_string": "        'Welcome to *{{business_name}}*! 👋\\n\\nTo get started with your insurance enquiry, please fill out this short form:\\n{{form_link}}\\n\\nOur team will assist you once you submit and confirm your details.',"
+}

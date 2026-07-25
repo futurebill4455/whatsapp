@@ -1,0 +1,5 @@
+{
+  "path": "c:/Users/LENOVO/OneDrive/Desktop/whatsapp/src/utils/seed.js",
+  "old_string": "  const conf = Settings.get('confirmation_template') || '';\n  if (!conf.includes('{{details}}')) {\n    Settings.set('confirmation_template', defaults.confirmation_template);\n  }",
+  "new_string": "  const conf = Settings.get('confirmation_template') || '';\n  if (!conf.includes('{{details}}') || !conf.toLowerCase().includes('is this correct')) {\n    Settings.set('confirmation_template', defaults.confirmation_template);\n  }"
+}

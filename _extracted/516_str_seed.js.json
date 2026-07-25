@@ -1,0 +1,5 @@
+{
+  "path": "c:/Users/LENOVO/OneDrive/Desktop/whatsapp/src/utils/seed.js",
+  "old_string": "    close_keywords: 'close',\n  };",
+  "new_string": "    close_keywords: 'close',\n    access_control_enabled: '1',\n    access_denied_message:\n      'This service is invite-only. Please send your *unique access code* to continue.',\n    access_granted_message: 'Access granted. Send *Hi* to receive your form link.',\n    anti_ban_jitter_min_ms: '3000',\n    anti_ban_jitter_max_ms: '7000',\n    anti_ban_min_gap_ms: '3500',\n  };"
+}

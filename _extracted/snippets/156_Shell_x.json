@@ -1,0 +1,5 @@
+{
+  "command": "node --check src/services/workflowEngine.js; node --check src/services/whatsapp.js; node --check src/utils/leadSummary.js; node --experimental-sqlite -e \"const {buildForwardMessage}=require('./src/utils/leadSummary'); const msg=buildForwardMessage({customer_name:'Test',customer_phone:'9198',insurance_type:'Health',company:'Star Health',form_submitted_at:'2026-07-21',extra_data:JSON.stringify({member_count:2,coverage_amount:'₹10 Lakh',members:[{name:'A',dob:'1990-01-01',gender:'Male'},{name:'B',dob:'1992-02-02',gender:'Female'}]})}); console.log(msg);\"",
+  "description": "Syntax-check and preview forward message",
+  "working_directory": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp"
+}

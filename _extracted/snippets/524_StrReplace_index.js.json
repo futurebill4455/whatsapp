@@ -1,0 +1,5 @@
+{
+  "new_string": "  AccessUsers,\n};",
+  "old_string": "  AccessWhitelist,\n  AccessCodes,\n  AuthorizedPeers,\n};",
+  "path": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp\\src\\models\\index.js"
+}

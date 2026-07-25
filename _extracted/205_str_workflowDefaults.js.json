@@ -1,0 +1,5 @@
+{
+  "path": "c:/Users/LENOVO/OneDrive/Desktop/whatsapp/src/services/workflowDefaults.js",
+  "old_string": "            data: {\n              label: 'Send Cancel Message',\n              message: 'Your request has been cancelled. Send *Hi* anytime to start again.',\n            },",
+  "new_string": "            data: {\n              label: 'Resend Form (No)',\n              message:\n                'No problem — we will send a fresh form link shortly. Please refill your details.',\n            },"
+}

@@ -1,0 +1,5 @@
+{
+  "path": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp\\src\\services\\whatsapp.js",
+  "pattern": "require\\(|AccessUsers|WorkflowRuns|ChatFlow|this\\.engine",
+  "head_limit": 40
+}

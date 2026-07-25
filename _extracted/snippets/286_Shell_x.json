@@ -1,0 +1,4 @@
+{
+  "command": "node --experimental-sqlite -e \"const {ChatSessions}=require('./src/models'); const s=ChatSessions.get(4); console.log(JSON.stringify(s,null,2)); console.log('active', ChatSessions.listActive().map(x=>({id:x.id,code:x.session_code,desk:x.desk_phone,desk_chat:x.desk_chat_id,cust:x.customer_phone,cust_chat:x.customer_chat_id,status:x.status})));\"; head -n 10 \"C:\\Users\\LENOVO\\.cursor\\projects\\c-Users-LENOVO-OneDrive-Desktop-whatsapp\\terminals\\*.txt\" 2>$null; Get-ChildItem \"C:\\Users\\LENOVO\\.cursor\\projects\\c-Users-LENOVO-OneDrive-Desktop-whatsapp\\terminals\" | Select-Object Name",
+  "description": "Inspect session 4 and list terminals"
+}

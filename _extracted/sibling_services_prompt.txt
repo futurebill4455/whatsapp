@@ -1,0 +1,28 @@
+<timestamp>Friday, Jul 24, 2026, 10:50 PM (UTC+5:30)</timestamp>
+<user_query>
+Create complete CommonJS services in c:\Users\LENOVO\OneDrive\Desktop\whatsapp:
+
+1) src/services/chromiumLaunch.js — buildPuppeteerLaunchOptions using @sparticuz/chromium when on Linux/VPS/Render; local Windows can use default puppeteer-core chrome path discovery or executablePath from env PUPPETEER_EXECUTABLE_PATH. Export isRenderLike, isVpsLinux, buildPuppeteerLaunchOptions.
+
+2) src/services/deskForward.js — forwardLeadToDesk(whatsapp, submission, ctx): resolve Companies.findByName(submission.company).desk_phone (catalog only, fail if missing), send lead via whatsapp.sendMessage with antiBan, open ChatSessions, markForwarded. Use leadSummary.buildForwardMessage.
+
+3) src/services/workflowEngine.js — WorkflowEngine with bindEngine(whatsapp):
+- handleIncomingMessage: ONLY start workflow when AccessUsers phone+exact access_code matches (strict silent otherwise). No hi/hello triggers.
+- execute nodes: trigger_message, send_form_link (bare URL only via buildFormUrl+sanitizeFormLink), form_submit wait, forward_desk→deskForward, send_text, condition_access, condition_yes_no, ai_assist (simple template reply using Settings ai_assist_prompt or echo helpful text — no external API required, stub AI that personalizes with name/phone)
+- handleFormSubmit → forwardLeadToDesk
+- Export bindEngine, newToken, getEngine, forwardLeadToDesk wrapper, notifyFormSubmitted
+
+4) src/services/whatsapp.js — full WhatsAppService singleton:
+- LocalAuth, QR via qrcode to dataURL, socket emit whatsapp:qr / status
+- init/destroy, attachSocket
+- enqueueIncomingMessage → handleIncomingMessage: skip groups/fromMe; MessageLog; handleChatBridge first; then engine.handleIncomingMessage
+- handleChatBridge: customer session Close/CLS silent close; relay; desk side Close silent; native forward with Forwarded tag; long text chunk via antiBan; media download+resend fallback; unique jitter+typing each send
+- sendMessage with working hours, rate caps, planOutboundTiming, simulatePresence typing
+- sendFormLinkOnly, notifyFormSubmitted via engine
+- resolveIncomingPeer, resolveOutboundChatId, formatPhone
+- closeChatSession silent
+
+Use models from ../models, antiBan, deskForward, workflowEngine bindEngine.
+Match whatsapp-web.js Client LocalAuth MessageMedia patterns.
+Keep code production-quality and complete.
+</user_query>

@@ -1,0 +1,4 @@
+{
+  "command": "node --experimental-sqlite -e \"const { AccessUsers, Settings } = require('./src/models'); console.log('users', AccessUsers.list().length); const t = AccessUsers.tryUnlock('919999999999','INSU2026'); console.log('unlock', t.ok, t.reason); console.log('unlocked', AccessUsers.isUnlocked('919999999999')); AccessUsers.lock('919999999999'); console.log('after lock', AccessUsers.isUnlocked('919999999999'));\"",
+  "description": "Smoke-test AccessUsers unlock logic"
+}

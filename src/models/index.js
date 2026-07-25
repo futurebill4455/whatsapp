@@ -26,18 +26,23 @@ function runInTransaction(fn) {
   }
 }
 
-/** Strip non-digits (ignores +, spaces, dashes). */
+/** Strip non-digits. Also strips WhatsApp JID suffixes (@c.us / @lid / @s.whatsapp.net). */
 function digitsOnly(phone) {
-  return String(phone || '').replace(/\D/g, '');
+  let s = String(phone || '').trim();
+  // Common WA JID / URL shapes
+  s = s.replace(/@.+$/, '');
+  s = s.replace(/^whatsapp:/i, '');
+  return s.replace(/\D/g, '');
 }
 
 /**
- * Build comparable phone keys so +91 / 91 / local 10-digit / spaces all match.
- * Example: +919562233772, 919562233772, 9562233772 → share key 9562233772
+ * Build comparable phone keys so +91 / 91 / local 10-digit / spaces / @c.us all match.
+ * Example: +919562233772, 919562233772@c.us, 9562233772 → share key 9562233772
  */
 function phoneMatchKeys(phone) {
   const d = digitsOnly(phone);
   if (!d) return [];
+  // LID-like opaque ids are often 14–16+ digits and are NOT phone numbers — keep as-is only
   const keys = new Set([d]);
 
   if (d.length >= 10) keys.add(d.slice(-10));
@@ -46,12 +51,16 @@ function phoneMatchKeys(phone) {
     keys.add(`91${d}`);
     keys.add(`0${d}`);
   }
-  if (d.startsWith('91') && d.length >= 12) {
+  if (d.startsWith('91') && d.length >= 12 && d.length <= 15) {
     keys.add(d.slice(2));
     keys.add(d.slice(-10));
   }
   if (d.startsWith('0') && d.length >= 11) {
     keys.add(d.slice(1));
+    keys.add(d.slice(-10));
+  }
+  // India mobile often starts with 6–9 after country code
+  if (d.length > 10 && d.length <= 15) {
     keys.add(d.slice(-10));
   }
 
@@ -139,25 +148,29 @@ const AccessUsers = {
   },
 
   findByPhone(phone) {
+    // Accept raw JIDs like 919562233772@c.us or +91 95622 33772
     const digits = digitsOnly(phone);
     if (!digits) return null;
 
+    // Opaque @lid ids can look numeric but are not MSISDNs — still try last-10 match
     const incomingKeys = new Set(phoneMatchKeys(digits));
     if (!incomingKeys.size) return null;
 
+    // Fast path: exact stored phone
     const exact = db
       .prepare('SELECT * FROM access_users WHERE is_active = 1 AND phone = ? LIMIT 1')
       .get(digits);
     if (exact) return exact;
 
+    // Try every variant key against DB (91… / last-10 / etc.)
     for (const key of incomingKeys) {
-      if (key === digits) continue;
       const row = db
         .prepare('SELECT * FROM access_users WHERE is_active = 1 AND phone = ? LIMIT 1')
         .get(key);
       if (row) return row;
     }
 
+    // Slow path: flexible compare against every active user
     const active = this.list(true);
     for (const user of active) {
       if (phonesMatch(digits, user.phone)) return user;

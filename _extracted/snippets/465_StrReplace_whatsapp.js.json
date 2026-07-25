@@ -1,0 +1,5 @@
+{
+  "new_string": "    const formLink = this.buildFormUrl(submission.token);",
+  "old_string": "    const formLink = sanitizeFormLink(`${this.getBaseUrl()}/form/${submission.token}`);",
+  "path": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp\\src\\services\\whatsapp.js"
+}

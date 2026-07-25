@@ -1,0 +1,4 @@
+{
+  "command": "git show f98334a:src/services/whatsapp.js 2>$null | Select-String -Pattern 'bindEngine|engine\\.handle|AccessUsers|handleIncomingMessage' | Select-Object -First 40; Write-Output '===='; git show 337659b:src/services/whatsapp.js 2>$null | Select-String -Pattern 'bindEngine|engine\\.handle|handleIncomingMessage' | Select-Object -First 30",
+  "description": "Find last commit that wired workflow on inbound"
+}

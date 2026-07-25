@@ -1,0 +1,5 @@
+{
+  "new_string": "    const formLink = sanitizeFormLink(buildFormUrl(newSub.token));",
+  "old_string": "    const formLink = sanitizeFormLink(`${getBaseUrl()}/form/${newSub.token}`);",
+  "path": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp\\src\\services\\workflowEngine.js"
+}

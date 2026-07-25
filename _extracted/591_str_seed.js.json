@@ -1,0 +1,5 @@
+{
+  "path": "c:/Users/LENOVO/OneDrive/Desktop/whatsapp/src/utils/seed.js",
+  "old_string": "    close_keywords: 'close',\n    trigger_keywords: 'hi,hello,hey,start,ഹായ്',\n    relay_delay_ms: '300',\n    access_control_enabled: '1',\n    access_denied_message:\n      'Please send your unique access code to continue.',\n    access_granted_message:\n      'Welcome *{{name}}*. Access granted. Send *Hi* to receive your form link.',\n    access_wrong_code_message:\n      'That access code is not valid for this number. Please check and try again.',",
+  "new_string": "    close_keywords: 'close,cls',\n    trigger_keywords: 'hi,hello,hey,start,ഹായ്',\n    relay_delay_ms: '300',\n    access_control_enabled: '1',\n    access_denied_message:\n      'Please send your unique access code to continue.',\n    access_granted_message: '',\n    access_wrong_code_message:\n      'That access code is not valid for this number. Please check and try again.',"
+}

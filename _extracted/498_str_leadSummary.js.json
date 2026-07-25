@@ -1,0 +1,5 @@
+{
+  "path": "c:/Users/LENOVO/OneDrive/Desktop/whatsapp/src/utils/leadSummary.js",
+  "old_string": "    duration_days: extra.duration_days || '',",
+  "new_string": "    duration_days: extra.duration_days || '',\n    policy_duration: extra.policy_duration || '',"
+}

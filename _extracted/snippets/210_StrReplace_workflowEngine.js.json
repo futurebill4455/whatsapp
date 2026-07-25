@@ -1,0 +1,5 @@
+{
+  "new_string": "    Submissions.markConfirmed(submission.id);\n    if (ctx.chatId) {\n      try {\n        Submissions.setCustomerChatId(submission.token, ctx.chatId);\n      } catch (_) {}\n    }\n\n    const target = InternalNumbers.resolveForType(insuranceType, company);",
+  "old_string": "    Submissions.markConfirmed(submission.id);\n\n    const target = InternalNumbers.resolveForType(insuranceType, company);",
+  "path": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp\\src\\services\\workflowEngine.js"
+}

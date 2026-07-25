@@ -1,0 +1,5 @@
+{
+  "new_string": "/**\n * Format a URL for WhatsApp: one clean bare http(s) link (no angle brackets, no duplicate).\n * Sent alone in its own message so WhatsApp can auto-link it.\n */\nfunction formatWhatsAppClickableLink(url) {\n  return sanitizeFormLink(url);\n}",
+  "old_string": "/**\n * Format a URL so WhatsApp renders it as a tappable blue link.\n * Angle brackets keep it as one token; bare URL on the next line covers clients\n * that only auto-link plain http(s) text (WhatsApp has no [text](url) markdown).\n */\nfunction formatWhatsAppClickableLink(url) {\n  const href = sanitizeFormLink(url);\n  if (!href) return '';\n  return `<${href}>\\n${href}`;\n}",
+  "path": "c:\\Users\\LENOVO\\OneDrive\\Desktop\\whatsapp\\src\\utils\\leadSummary.js"
+}

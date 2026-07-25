@@ -231,6 +231,15 @@ class WorkflowEngine {
     // Strict access: phone must be whitelisted + exact access code
     const unlock = AccessUsers.tryUnlock(phone, text);
     if (!unlock.ok) {
+      if (unlock.reason === 'unknown_phone') {
+        console.warn(
+          `[Workflow] Access code received but phone not in DB (resolved="${phone}", chatId="${chatId || ''}")`
+        );
+      } else if (unlock.reason === 'wrong_code') {
+        console.warn(
+          `[Workflow] Wrong access code from ${phone} (silent)`
+        );
+      }
       // Already unlocked users sending random text → silent
       if (AccessUsers.isUnlocked(phone)) {
         return { handled: true, reason: 'unlocked_silent', silent: true };
