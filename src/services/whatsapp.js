@@ -111,6 +111,12 @@ class WhatsAppService {
     this._lastOutboundChatId = null;
     this._unreadPollTimer = null;
     this._lastInboundAt = 0;
+    /** @type {Map<string, { timer: NodeJS.Timeout, message: any, peerKey: string, body: string, chatId: string, inboundAt: number, msgId: string }>} */
+    this._pendingSmartDelay = new Map();
+    /** chatKey → last manual (human) fromMe timestamp ms */
+    this._manualReplyAt = new Map();
+    /** chatKey → ignore fromMe as "manual" until this time (bot-initiated sends) */
+    this._botOutboundIgnoreUntil = new Map();
     this.engine = bindEngine(this);
   }
 
@@ -568,12 +574,209 @@ class WhatsAppService {
       `Received message [${source}]: "${bodyPreview || `[${message.type || 'unknown'}]`}" from: ${from}` +
         (message.fromMe ? ' (fromMe)' : '')
     );
-    this._lastInboundAt = Date.now();
 
     if (source === 'message_ciphertext') return; // wait for decrypt / poller
-    if (message.fromMe) return;
 
+    // Track our own sends so the smart-delay window can detect manual replies
+    if (message.fromMe) {
+      this.notePossibleManualReply(message);
+      return;
+    }
+
+    this._lastInboundAt = Date.now();
     this.enqueueIncomingMessage(message);
+  }
+
+  chatKeyFromMessage(message) {
+    if (!message) return '';
+    if (message.fromMe) {
+      return String(message.to || message.from || '').trim();
+    }
+    return String(message.from || message.author || '').trim();
+  }
+
+  notePossibleManualReply(message) {
+    const chatKey = this.chatKeyFromMessage(message);
+    if (!chatKey) return;
+
+    const ignoreUntil = this._botOutboundIgnoreUntil.get(chatKey) || 0;
+    if (Date.now() < ignoreUntil) {
+      // Likely our own automated send — not a manual takeover
+      return;
+    }
+
+    const at = Date.now();
+    this._manualReplyAt.set(chatKey, at);
+    console.log(
+      `[WhatsApp] Manual/outbound fromMe noted in ${chatKey} — pending smart delays will stay silent if still waiting`
+    );
+
+    // If a smart delay is pending for this chat, cancel it immediately (human took over)
+    const pending = this._pendingSmartDelay.get(chatKey);
+    if (pending?.timer) {
+      clearTimeout(pending.timer);
+      this._pendingSmartDelay.delete(chatKey);
+      console.log(
+        `[WhatsApp] Smart delay cancelled for ${chatKey} — manual reply detected`
+      );
+    }
+  }
+
+  markBotOutbound(chatId, ttlMs = 8000) {
+    const key = String(chatId || '').trim();
+    if (!key) return;
+    this._botOutboundIgnoreUntil.set(key, Date.now() + ttlMs);
+  }
+
+  getSmartDelayMs() {
+    const fromEnv = Number(process.env.WA_SMART_DELAY_MS);
+    if (Number.isFinite(fromEnv) && fromEnv >= 0) return fromEnv;
+    try {
+      const raw = Settings.get('smart_reply_delay_ms');
+      const n = Number(raw);
+      if (Number.isFinite(n) && n >= 0) return n;
+    } catch (_) {}
+    return 10000;
+  }
+
+  /**
+   * Wait N seconds before access-code / form flow.
+   * If a human replies in that chat during the wait → stay silent.
+   */
+  scheduleSmartAccessDelay({ message, peerKey, body, chatId, msgId }) {
+    const key = String(chatId || peerKey || '').trim();
+    if (!key) {
+      console.warn('[WhatsApp] Smart delay skipped — no chat key');
+      return;
+    }
+
+    const delayMs = this.getSmartDelayMs();
+    const existing = this._pendingSmartDelay.get(key);
+    if (existing?.timer) clearTimeout(existing.timer);
+
+    const inboundAt = Date.now();
+    console.log(
+      `[WhatsApp] Smart delay ${delayMs}ms for ${key} — will check for manual reply before access-code flow`
+    );
+
+    if (delayMs <= 0) {
+      this.runAccessWorkflowAfterDelay({
+        message,
+        peerKey,
+        body,
+        chatId,
+        inboundAt,
+        msgId,
+      }).catch((err) => {
+        console.error('[WhatsApp] Smart delay process error:', err.message);
+      });
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      this._pendingSmartDelay.delete(key);
+      this.runAccessWorkflowAfterDelay({
+        message,
+        peerKey,
+        body,
+        chatId,
+        inboundAt,
+        msgId,
+      }).catch((err) => {
+        console.error('[WhatsApp] Smart delay process error:', err.message);
+      });
+    }, delayMs);
+
+    this._pendingSmartDelay.set(key, {
+      timer,
+      message,
+      peerKey,
+      body,
+      chatId: key,
+      inboundAt,
+      msgId,
+    });
+  }
+
+  async hadManualReplySince(chatId, sinceMs) {
+    const key = String(chatId || '').trim();
+    if (!key) return false;
+
+    const noted = this._manualReplyAt.get(key);
+    if (noted && noted >= sinceMs) return true;
+
+    // Confirm via recent chat history (fromMe after inbound)
+    try {
+      if (!this.client) return false;
+      const chat = await this.client.getChatById(key);
+      if (!chat?.fetchMessages) return false;
+      const recent = await chat.fetchMessages({ limit: 15 });
+      const ignoreUntil = this._botOutboundIgnoreUntil.get(key) || 0;
+
+      for (const m of recent) {
+        if (!m?.fromMe) continue;
+        const msgAt = Number(m.timestamp || 0) * 1000;
+        if (!msgAt || msgAt < sinceMs - 500) continue;
+        // Skip sends we initiated (bot form link / workflow replies)
+        if (ignoreUntil && msgAt <= ignoreUntil && msgAt >= ignoreUntil - 20000) {
+          continue;
+        }
+        return true;
+      }
+    } catch (err) {
+      console.warn('[WhatsApp] Manual-reply history check failed:', err.message);
+    }
+    return false;
+  }
+
+  async runAccessWorkflowAfterDelay({
+    message,
+    peerKey,
+    body,
+    chatId,
+    inboundAt,
+  }) {
+    const key = String(chatId || peerKey || '').trim();
+    console.log(`[WhatsApp] Smart delay elapsed for ${key} — checking manual replies…`);
+
+    const manual = await this.hadManualReplySince(key, inboundAt);
+    if (manual) {
+      console.log(
+        `[WhatsApp] Manual reply detected in ${key} within smart-delay window — staying silent`
+      );
+      return { handled: true, reason: 'manual_reply_silent', silent: true };
+    }
+
+    // Also check the simple map one more time
+    const noted = this._manualReplyAt.get(key);
+    if (noted && noted >= inboundAt) {
+      console.log(
+        `[WhatsApp] Manual reply map hit for ${key} — staying silent`
+      );
+      return { handled: true, reason: 'manual_reply_silent', silent: true };
+    }
+
+    console.log(
+      `[WhatsApp] No manual reply in ${key} — running access-code workflow`
+    );
+
+    try {
+      const result = await this.engine.handleIncomingMessage({
+        phone: peerKey,
+        body,
+        chatId: key || message.from,
+        replyTo: message,
+      });
+      console.log(
+        `[WhatsApp] Workflow result:`,
+        result?.reason || result?.status || result?.handled || result
+      );
+      return result;
+    } catch (err) {
+      console.error('[Workflow] handleIncomingMessage:', err.message);
+      console.error(err.stack);
+      return { handled: false, error: err.message };
+    }
   }
 
   /**
@@ -848,22 +1051,15 @@ class WhatsAppService {
       );
     }
 
-    // 2) Common access-code workflow — does NOT require a whitelist phone
-    try {
-      const result = await this.engine.handleIncomingMessage({
-        phone: peerKey,
-        body,
-        chatId: chatId || message.from,
-        replyTo: message,
-      });
-      console.log(
-        `[WhatsApp] Workflow result:`,
-        result?.reason || result?.status || result?.handled || result
-      );
-    } catch (err) {
-      console.error('[Workflow] handleIncomingMessage:', err.message);
-      console.error(err.stack);
-    }
+    // 2) Smart delay: wait ~10s; if we manually reply in that chat, stay silent.
+    //    Otherwise run common access-code → form flow.
+    this.scheduleSmartAccessDelay({
+      message,
+      peerKey,
+      body,
+      chatId: chatId || message.from,
+      msgId,
+    });
   }
 
   /**
@@ -1258,6 +1454,10 @@ class WhatsAppService {
       await this.simulatePresenceTyping(chatId, rawText, timing);
     }
 
+    // Mark before send so fromMe echo is not treated as a manual takeover
+    if (chatId) this.markBotOutbound(chatId, 20000);
+    if (options.replyTo?.from) this.markBotOutbound(options.replyTo.from, 20000);
+
     let result;
     try {
       if (options.replyTo && typeof options.replyTo.reply === 'function') {
@@ -1278,6 +1478,7 @@ class WhatsAppService {
           chatId ||
           (digits ? await this.resolveOutboundChatId(digits) : null) ||
           phoneOrChat;
+        if (fallbackId) this.markBotOutbound(fallbackId, 20000);
         const chat = await this.client.getChatById(fallbackId);
         result = await chat.sendMessage(rawText);
         chatId = fallbackId;
@@ -1286,6 +1487,7 @@ class WhatsAppService {
 
     this._lastOutboundChatId = chatId;
     if (result) result._outboundChatId = chatId;
+    if (chatId) this.markBotOutbound(chatId, 20000);
 
     try {
       MessageLog.add({
