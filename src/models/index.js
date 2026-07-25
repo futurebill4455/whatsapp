@@ -29,49 +29,62 @@ function runInTransaction(fn) {
 /** Strip non-digits. Also strips WhatsApp JID suffixes (@c.us / @lid / @s.whatsapp.net). */
 function digitsOnly(phone) {
   let s = String(phone || '').trim();
-  // Common WA JID / URL shapes
   s = s.replace(/@.+$/, '');
   s = s.replace(/^whatsapp:/i, '');
   return s.replace(/\D/g, '');
 }
 
+/** Real mobile MSISDN (E.164-ish), not an opaque WhatsApp @lid user id. */
+function looksLikeMsisdn(digits) {
+  const d = String(digits || '');
+  return d.length >= 10 && d.length <= 15;
+}
+
+/** Opaque LID / internal ids — must never fuzzy-match to phone numbers. */
+function looksLikeOpaqueId(digits) {
+  const d = String(digits || '');
+  return d.length > 15;
+}
+
 /**
- * Build comparable phone keys so +91 / 91 / local 10-digit / spaces / @c.us all match.
+ * Build comparable phone keys for real MSISDNs only.
  * Example: +919562233772, 919562233772@c.us, 9562233772 → share key 9562233772
  */
 function phoneMatchKeys(phone) {
   const d = digitsOnly(phone);
-  if (!d) return [];
-  // LID-like opaque ids are often 14–16+ digits and are NOT phone numbers — keep as-is only
+  if (!d || looksLikeOpaqueId(d)) return d ? [d] : [];
+  if (!looksLikeMsisdn(d)) return [d];
+
   const keys = new Set([d]);
-
-  if (d.length >= 10) keys.add(d.slice(-10));
-
+  // Local 10-digit ↔ country-prefixed forms of the SAME number only
   if (d.length === 10) {
     keys.add(`91${d}`);
-    keys.add(`0${d}`);
   }
-  if (d.startsWith('91') && d.length >= 12 && d.length <= 15) {
+  if (d.startsWith('91') && d.length === 12) {
     keys.add(d.slice(2));
-    keys.add(d.slice(-10));
   }
-  if (d.startsWith('0') && d.length >= 11) {
+  if (d.startsWith('0') && d.length === 11) {
     keys.add(d.slice(1));
-    keys.add(d.slice(-10));
+    keys.add(`91${d.slice(1)}`);
   }
-  // India mobile often starts with 6–9 after country code
-  if (d.length > 10 && d.length <= 15) {
-    keys.add(d.slice(-10));
-  }
-
   return [...keys].filter(Boolean);
 }
 
-/** True when two phone strings refer to the same handset. */
+/**
+ * True when two strings refer to the same handset.
+ * Opaque @lid ids only match exactly — never via last-10 suffix (avoids cross-user collisions).
+ */
 function phonesMatch(a, b) {
-  const ka = phoneMatchKeys(a);
-  if (!ka.length) return false;
-  const kb = new Set(phoneMatchKeys(b));
+  const da = digitsOnly(a);
+  const db = digitsOnly(b);
+  if (!da || !db) return false;
+  if (da === db) return true;
+  // Never fuzzy-match LID / opaque ids to each other or to MSISDNs
+  if (looksLikeOpaqueId(da) || looksLikeOpaqueId(db)) return false;
+  if (!looksLikeMsisdn(da) || !looksLikeMsisdn(db)) return false;
+
+  const ka = phoneMatchKeys(da);
+  const kb = new Set(phoneMatchKeys(db));
   return ka.some((k) => kb.has(k));
 }
 
@@ -673,8 +686,11 @@ const WorkflowRuns = {
     return { ...row, context: safeJson(row.context_json, {}) };
   },
 
-  findWaiting(phone, waitingFor) {
+  findWaiting(phone, waitingFor, { chatId = null } = {}) {
     const digits = digitsOnly(phone);
+    const chat = String(chatId || '').trim();
+
+    // 1) Exact phone match (preferred)
     if (digits) {
       const exact = db
         .prepare(
@@ -685,15 +701,43 @@ const WorkflowRuns = {
         .get(digits, waitingFor);
       if (exact) return exact;
     }
-    const recent = db
-      .prepare(
-        `SELECT * FROM workflow_runs
-         WHERE status = 'waiting' AND waiting_for = ?
-         ORDER BY updated_at DESC LIMIT 40`
-      )
-      .all(waitingFor);
-    const row = recent.find((r) => phonesMatch(r.customer_phone, phone));
-    return row || null;
+
+    // 2) Same WhatsApp chat id stored in run context (critical for @lid peers)
+    if (chat) {
+      const recent = db
+        .prepare(
+          `SELECT * FROM workflow_runs
+           WHERE status = 'waiting' AND waiting_for = ?
+           ORDER BY updated_at DESC LIMIT 80`
+        )
+        .all(waitingFor);
+      const byChat = recent.find((r) => {
+        const ctx = safeJson(r.context_json, {});
+        const ctxChat = String(ctx.chatId || ctx.customer_chat_id || '').trim();
+        return ctxChat && ctxChat === chat;
+      });
+      if (byChat) return byChat;
+    }
+
+    // 3) MSISDN fuzzy match only (never LID↔phone). Scoped — do not steal other users' waiters.
+    if (digits && looksLikeMsisdn(digits) && !looksLikeOpaqueId(digits)) {
+      const recent = db
+        .prepare(
+          `SELECT * FROM workflow_runs
+           WHERE status = 'waiting' AND waiting_for = ?
+           ORDER BY updated_at DESC LIMIT 40`
+        )
+        .all(waitingFor);
+      const row = recent.find(
+        (r) =>
+          looksLikeMsisdn(r.customer_phone) &&
+          !looksLikeOpaqueId(r.customer_phone) &&
+          phonesMatch(r.customer_phone, digits)
+      );
+      if (row) return row;
+    }
+
+    return null;
   },
 
   findWaitingBySubmissionToken(token, waitingFor = 'form_submit') {
@@ -826,12 +870,21 @@ const ChatSessions = {
       )
       .get(digits);
     if (exact) return exact;
+    // Fuzzy MSISDN only — never match opaque LID ids across users
+    if (!looksLikeMsisdn(digits) || looksLikeOpaqueId(digits)) return null;
     const active = db
       .prepare(
         `SELECT * FROM chat_sessions WHERE status = 'active' ORDER BY opened_at DESC LIMIT 50`
       )
       .all();
-    return active.find((s) => phonesMatch(s.customer_phone, phone)) || null;
+    return (
+      active.find(
+        (s) =>
+          looksLikeMsisdn(s.customer_phone) &&
+          !looksLikeOpaqueId(s.customer_phone) &&
+          phonesMatch(s.customer_phone, digits)
+      ) || null
+    );
   },
 
   /** Active session for a WhatsApp chat id (supports @lid peers). */
@@ -1127,4 +1180,6 @@ module.exports = {
   digitsOnly,
   phoneMatchKeys,
   phonesMatch,
+  looksLikeMsisdn,
+  looksLikeOpaqueId,
 };

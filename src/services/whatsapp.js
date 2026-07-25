@@ -698,8 +698,9 @@ class WhatsAppService {
   }
 
   /**
-   * Wait N seconds before access-code / form flow.
-   * If a human replies in that chat during the wait → stay silent.
+   * Wait before access-code / form flow.
+   * Exact common access code always proceeds (never aborted as "manual reply")
+   * so every phone/LID can unlock universally.
    */
   scheduleSmartAccessDelay({ message, peerKey, body, chatId, msgId }) {
     const key = String(chatId || peerKey || '').trim();
@@ -708,24 +709,38 @@ class WhatsAppService {
       return;
     }
 
-    const delayMs = this.getSmartDelayMs();
+    let isAccessCode = false;
+    try {
+      const { AccessGate } = require('../models');
+      isAccessCode = !!AccessGate.tryUnlock(peerKey || key, body).ok;
+    } catch (_) {}
+
+    const delayMs = isAccessCode
+      ? Math.min(this.getSmartDelayMs(), Number(process.env.WA_ACCESS_CODE_DELAY_MS) || 2500)
+      : this.getSmartDelayMs();
+
     const existing = this._pendingSmartDelay.get(key);
     if (existing?.timer) clearTimeout(existing.timer);
 
     const inboundAt = Date.now();
     console.log(
-      `[WhatsApp] Smart delay ${delayMs}ms for ${key} — will check for manual reply before access-code flow`
+      `[WhatsApp] Smart delay ${delayMs}ms for ${key}` +
+        (isAccessCode ? ' [access-code — will not abort for manual-reply false positives]' : '') +
+        ' — will check before access-code flow'
     );
 
+    const payload = {
+      message,
+      peerKey,
+      body,
+      chatId: key,
+      inboundAt,
+      msgId,
+      forceAccessCode: isAccessCode,
+    };
+
     if (delayMs <= 0) {
-      this.runAccessWorkflowAfterDelay({
-        message,
-        peerKey,
-        body,
-        chatId,
-        inboundAt,
-        msgId,
-      }).catch((err) => {
+      this.runAccessWorkflowAfterDelay(payload).catch((err) => {
         console.error('[WhatsApp] Smart delay process error:', err.message);
       });
       return;
@@ -733,27 +748,12 @@ class WhatsAppService {
 
     const timer = setTimeout(() => {
       this._pendingSmartDelay.delete(key);
-      this.runAccessWorkflowAfterDelay({
-        message,
-        peerKey,
-        body,
-        chatId,
-        inboundAt,
-        msgId,
-      }).catch((err) => {
+      this.runAccessWorkflowAfterDelay(payload).catch((err) => {
         console.error('[WhatsApp] Smart delay process error:', err.message);
       });
     }, delayMs);
 
-    this._pendingSmartDelay.set(key, {
-      timer,
-      message,
-      peerKey,
-      body,
-      chatId: key,
-      inboundAt,
-      msgId,
-    });
+    this._pendingSmartDelay.set(key, { timer, ...payload });
   }
 
   async hadManualReplySince(chatId, sinceMs) {
@@ -763,7 +763,6 @@ class WhatsAppService {
     const noted = this._manualReplyAt.get(key);
     if (noted && noted >= sinceMs) return true;
 
-    // Confirm via recent chat history (fromMe after inbound)
     try {
       if (!this.client) return false;
       const chat = await this.client.getChatById(key);
@@ -775,10 +774,8 @@ class WhatsAppService {
         if (!m?.fromMe) continue;
         const msgAt = Number(m.timestamp || 0) * 1000;
         if (!msgAt || msgAt < sinceMs - 500) continue;
-        // Skip sends we initiated (bot form link / workflow replies)
-        if (ignoreUntil && msgAt <= ignoreUntil && msgAt >= ignoreUntil - 20000) {
-          continue;
-        }
+        // Skip bot-initiated sends (ignore window covers from send time → send+ttl)
+        if (ignoreUntil && msgAt <= ignoreUntil) continue;
         return true;
       }
     } catch (err) {
@@ -793,29 +790,42 @@ class WhatsAppService {
     body,
     chatId,
     inboundAt,
+    forceAccessCode = false,
   }) {
     const key = String(chatId || peerKey || '').trim();
     console.log(`[WhatsApp] Smart delay elapsed for ${key} — checking manual replies…`);
 
-    const manual = await this.hadManualReplySince(key, inboundAt);
-    if (manual) {
-      console.log(
-        `[WhatsApp] Manual reply detected in ${key} within smart-delay window — staying silent`
-      );
-      return { handled: true, reason: 'manual_reply_silent', silent: true };
+    // Exact common access code must never be swallowed by manual-reply heuristics
+    let isAccessCode = forceAccessCode;
+    if (!isAccessCode) {
+      try {
+        const { AccessGate } = require('../models');
+        isAccessCode = !!AccessGate.tryUnlock(peerKey || key, body).ok;
+      } catch (_) {}
     }
 
-    // Also check the simple map one more time
-    const noted = this._manualReplyAt.get(key);
-    if (noted && noted >= inboundAt) {
+    if (!isAccessCode) {
+      const manual = await this.hadManualReplySince(key, inboundAt);
+      if (manual) {
+        console.log(
+          `[WhatsApp] Manual reply detected in ${key} within smart-delay window — staying silent`
+        );
+        return { handled: true, reason: 'manual_reply_silent', silent: true };
+      }
+
+      const noted = this._manualReplyAt.get(key);
+      if (noted && noted >= inboundAt) {
+        console.log(`[WhatsApp] Manual reply map hit for ${key} — staying silent`);
+        return { handled: true, reason: 'manual_reply_silent', silent: true };
+      }
+    } else {
       console.log(
-        `[WhatsApp] Manual reply map hit for ${key} — staying silent`
+        `[WhatsApp] Access code confirmed for ${key} — running unlock for any peer (no phone whitelist)`
       );
-      return { handled: true, reason: 'manual_reply_silent', silent: true };
     }
 
     console.log(
-      `[WhatsApp] No manual reply in ${key} — running access-code workflow`
+      `[WhatsApp] Running access-code workflow for peer=${peerKey || '?'} chat=${key}`
     );
 
     try {
@@ -1090,7 +1100,29 @@ class WhatsAppService {
       });
     } catch (_) {}
 
-    // 1) Active bridge first (needs a digit phone when possible)
+    // 1) Exact common access code → always start form flow for THIS chat
+    //    (never blocked by another user's bridge / waiter / whitelist leftovers)
+    let isAccessCode = false;
+    try {
+      const { AccessGate } = require('../models');
+      isAccessCode = !!AccessGate.tryUnlock(phone || peerKey, body).ok;
+    } catch (_) {}
+
+    if (isAccessCode) {
+      console.log(
+        `[WhatsApp] Common access code from peer=${peerKey} chatId=${chatId || '—'} — universal unlock (any number)`
+      );
+      this.scheduleSmartAccessDelay({
+        message,
+        peerKey,
+        body,
+        chatId: chatId || message.from,
+        msgId,
+      });
+      return;
+    }
+
+    // 2) Active two-way bridge (non-code messages only)
     try {
       const bridged = await this.handleChatBridge(message, phone || peerKey, chatId, body);
       if (bridged) return;
@@ -1109,8 +1141,7 @@ class WhatsAppService {
       );
     }
 
-    // 2) Smart delay: wait ~10s; if we manually reply in that chat, stay silent.
-    //    Otherwise run common access-code → form flow.
+    // 3) Non-code chatter → smart delay then silent ignore (unless waiter resumes)
     this.scheduleSmartAccessDelay({
       message,
       peerKey,

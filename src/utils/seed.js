@@ -96,9 +96,10 @@ function seed() {
       if (cleaned !== String(cur)) Settings.set(key, cleaned);
     }
   } catch (_) {}
-  // Ensure wrong-code replies stay disabled (silent unless exact code)
+  // Ensure wrong-code / "not authorized" replies stay disabled (silent unless exact code)
   Settings.set('access_wrong_code_message', '');
   Settings.set('access_denied_message', '');
+  Settings.set('access_control_enabled', '0');
 
   if (InsuranceTypes.list().length === 0) {
     const health = InsuranceTypes.create({ name: 'Health', sort_order: 1 });

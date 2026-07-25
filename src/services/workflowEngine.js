@@ -277,42 +277,51 @@ class WorkflowEngine {
   /**
    * Inbound WhatsApp text. Starts when the shared common access code matches
    * (or a yes/no wait is pending for an already-running run).
+   * Any phone / @lid chat can unlock — no per-number whitelist.
    */
   async handleIncomingMessage({ phone, body, chatId, replyTo }) {
     const text = String(body || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+    // Stable peer id: real MSISDN when known, otherwise chat JID / opaque id
+    const peerId =
+      String(phone || '').trim() ||
+      String(chatId || '')
+        .replace(/@.+$/, '')
+        .replace(/\D/g, '') ||
+      String(chatId || 'unknown');
+
     const baseCtx = {
-      phone,
-      chatId,
+      phone: peerId,
+      chatId: chatId || undefined,
       replyTo,
       message: text,
       inboundText: text,
     };
 
     console.log(
-      `[Workflow] Inbound peer=${phone || '?'} chatId=${chatId || '?'} text="${text.slice(0, 60)}"`
+      `[Workflow] Inbound peer=${peerId || '?'} chatId=${chatId || '?'} text="${text.slice(0, 60)}"`
     );
 
     const active = this.getActiveGraph();
+    const waitOpts = { chatId: chatId || null };
 
-    // Resume Yes/No waiters first (already authorized flows)
+    // Resume Yes/No waiters first (already unlocked flows) — scoped to this peer/chat
     if (active) {
-      const waitingYn = WorkflowRuns.findWaiting(phone, 'yes_no');
+      const waitingYn = WorkflowRuns.findWaiting(peerId, 'yes_no', waitOpts);
       if (waitingYn) {
         return this.resumeYesNo(waitingYn, text, active.nodes, baseCtx);
       }
 
       // Waiting for form — stay silent on chatter UNLESS they re-send the access code
-      const waitingForm = WorkflowRuns.findWaiting(phone, 'form_submit');
+      const waitingForm = WorkflowRuns.findWaiting(peerId, 'form_submit', waitOpts);
       if (waitingForm) {
-        const reUnlock = AccessGate.tryUnlock(phone, text);
+        const reUnlock = AccessGate.tryUnlock(peerId, text);
         if (!reUnlock.ok) {
-          console.log(`[Workflow] Awaiting form submit for ${phone} — silent`);
+          console.log(`[Workflow] Awaiting form submit for ${peerId} — silent`);
           return { handled: true, reason: 'awaiting_form_submit', silent: true };
         }
-        // Re-send form link for the same waiting run
         console.log(`[Workflow] Access code re-sent while awaiting form — resending link`);
         const profileName = await resolveSenderProfileName(replyTo);
-        await this.whatsapp.sendFormLinkOnly(phone, {
+        await this.whatsapp.sendFormLinkOnly(peerId, {
           chatId,
           replyTo,
           inboundText: text,
@@ -322,31 +331,28 @@ class WorkflowEngine {
       }
     }
 
-    // Common access code only — any other text is ignored (no error replies)
-    const unlock = AccessGate.tryUnlock(phone, text);
+    // Common access code — universal for every sender (phone / LID / new number)
+    const unlock = AccessGate.tryUnlock(peerId, text);
     console.log(
-      `[Workflow] AccessGate → ok=${unlock.ok} reason=${unlock.reason} matched=${unlock.matchedCode || ''}`
+      `[Workflow] AccessGate → ok=${unlock.ok} reason=${unlock.reason} matched=${unlock.matchedCode || ''} peer=${peerId}`
     );
 
     if (!unlock.ok) {
-      // Completely silent: no "wrong code" / greeting replies
       return { handled: true, reason: 'ignored_silent', silent: true };
     }
 
     baseCtx.matched_code = unlock.matchedCode;
     baseCtx.access_ok = true;
 
-    // WhatsApp profile name for natural replies (skip robotic "Access verified")
     const profileName = await resolveSenderProfileName(replyTo);
     if (profileName) {
       baseCtx.name = profileName;
       baseCtx.profile_name = profileName;
     }
 
-    // No active workflow → still send form link so the user always gets a reply
     if (!active) {
       console.warn('[Workflow] No active workflow — form-link fallback');
-      await this.whatsapp.sendFormLinkOnly(phone, {
+      await this.whatsapp.sendFormLinkOnly(peerId, {
         chatId,
         replyTo,
         inboundText: text,
@@ -358,7 +364,7 @@ class WorkflowEngine {
     const triggers = findAccessTriggerNodes(active.nodes);
     if (!triggers.length) {
       console.warn('[Workflow] No access_code trigger node; sending form link directly');
-      await this.whatsapp.sendFormLinkOnly(phone, {
+      await this.whatsapp.sendFormLinkOnly(peerId, {
         chatId,
         replyTo,
         inboundText: text,
@@ -370,17 +376,18 @@ class WorkflowEngine {
     const start = triggers[0];
     const run = WorkflowRuns.create({
       workflow_id: active.workflow.id,
-      customer_phone: phone || String(chatId || 'unknown'),
+      customer_phone: peerId,
       context: {
         ...baseCtx,
         matched_code: unlock.matchedCode,
         access_ok: true,
         name: profileName || undefined,
+        chatId: chatId || undefined,
       },
     });
 
     console.log(
-      `[Workflow] Common access unlock code=${unlock.matchedCode} → run #${run.id} (${phone}) name=${profileName || '—'}`
+      `[Workflow] Common access unlock code=${unlock.matchedCode} → run #${run.id} peer=${peerId} chatId=${chatId || '—'} name=${profileName || '—'}`
     );
     console.log(`[Workflow] Form links use base URL: ${getBaseUrl()}`);
 

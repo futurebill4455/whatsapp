@@ -1,6 +1,6 @@
 /**
  * Common access-code gate (Settings.common_access_code).
- * Only an exact match of the shared code unlocks the flow — everything else is ignored.
+ * Shared code only — NO per-phone whitelist. Any sender with the exact code unlocks.
  */
 const db = require('../config/db');
 
@@ -24,7 +24,8 @@ const AccessGate = {
   },
 
   /**
-   * Unlock only when the entire inbound message is exactly the common access code.
+   * Unlock when the entire inbound message is exactly the common access code.
+   * `_phone` is accepted for API compatibility but never used for authorization.
    * Greetings, wrong codes, and random chat → silent (ok: false).
    */
   tryUnlock(_phone, codeInput) {
@@ -39,10 +40,9 @@ const AccessGate = {
     }
 
     if (got === expected) {
-      return { ok: true, reason: 'unlocked', matchedCode: expected };
+      return { ok: true, reason: 'unlocked', matchedCode: expected, phoneIgnored: true };
     }
 
-    // Never treat as a soft "wrong code" — caller must stay silent
     return { ok: false, reason: 'ignored', matchedCode: null };
   },
 };
