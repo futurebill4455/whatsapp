@@ -70,11 +70,10 @@ function humanActionDelayMs(minMs = 2000, maxMs = 5000) {
 
 function scrubForbidden(text) {
   let out = String(text || '');
-  for (const w of FORBIDDEN_WORDS) {
-    const re = new RegExp(`\\b${w}\\b`, 'gi');
-    out = out.replace(re, '');
-  }
-  return out.replace(/\s{2,}/g, ' ').trim();
+  // Remove every case-insensitive "future" token (legacy brand leak)
+  out = out.replace(/\bfuture\b/gi, '');
+  out = out.replace(/\s{2,}/g, ' ').trim();
+  return out;
 }
 
 const STOP_WORDS = new Set([
@@ -191,13 +190,19 @@ function pickFreshOpener(short) {
  * @returns {{ text: string, link: string }}
  */
 function buildNaturalFormParts({ name, formLink, customTemplate } = {}) {
-  const link = scrubForbidden(String(formLink || '').trim());
+  // Keep URL intact — never run scrubForbidden on the link itself
+  const link = String(formLink || '').trim();
   const short = firstName(name);
   const custom = scrubForbidden(String(customTemplate || '').trim());
 
   let text;
   if (custom && custom !== '{{form_link}}' && !/^access verified/i.test(custom)) {
     text = applyName(custom, short);
+    // If custom accidentally still contains a URL, strip it — link is sent separately
+    if (link) {
+      text = text.replace(link, '').replace(/\s{2,}/g, ' ').trim();
+    }
+    text = text.replace(/https?:\/\/\S+/gi, '').replace(/\s{2,}/g, ' ').trim();
     if (!text || text === link) {
       text = applyName(pickFreshOpener(short), short);
     }

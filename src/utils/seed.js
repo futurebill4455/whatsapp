@@ -70,14 +70,10 @@ function seed() {
     console.log('Seeded common access code: INSU2026');
   }
 
-  // Clear robotic default opener if still stored from older seeds
-  const granted = Settings.get('access_granted_message');
-  if (
-    granted &&
-    /^access verified/i.test(String(granted))
-  ) {
-    Settings.set('access_granted_message', '');
-  }
+  // Always clear robotic / unused granted message (never auto-send it)
+  Settings.set('access_granted_message', '');
+  Settings.set('flow_welcome_message', '');
+
   if (Settings.get('form_link_message') === '{{form_link}}') {
     Settings.set('form_link_message', '');
   }
@@ -95,9 +91,9 @@ function seed() {
       'flow_welcome_message',
     ]) {
       const cur = Settings.get(key);
-      if (cur && /\bfuture\b/i.test(String(cur))) {
-        Settings.set(key, scrubForbidden(String(cur)));
-      }
+      if (cur == null || cur === '') continue;
+      const cleaned = scrubForbidden(String(cur));
+      if (cleaned !== String(cur)) Settings.set(key, cleaned);
     }
   } catch (_) {}
   // Ensure wrong-code replies stay disabled (silent unless exact code)

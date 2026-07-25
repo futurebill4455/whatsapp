@@ -638,33 +638,52 @@ class WhatsAppService {
     const chatKey = this.chatKeyFromMessage(message);
     if (!chatKey) return;
 
-    const ignoreUntil = this._botOutboundIgnoreUntil.get(chatKey) || 0;
-    if (Date.now() < ignoreUntil) {
-      // Likely our own automated send — not a manual takeover
-      return;
+    const altKeys = [
+      chatKey,
+      message.to,
+      message.from,
+      message.author,
+      message.id?.remote,
+    ]
+      .map((k) => String(k || '').trim())
+      .filter(Boolean);
+
+    const now = Date.now();
+    for (const key of altKeys) {
+      const ignoreUntil = this._botOutboundIgnoreUntil.get(key) || 0;
+      if (now < ignoreUntil) {
+        // Likely our own automated send — not a manual takeover
+        return;
+      }
     }
 
-    const at = Date.now();
-    this._manualReplyAt.set(chatKey, at);
+    const at = now;
+    for (const key of altKeys) this._manualReplyAt.set(key, at);
     console.log(
       `[WhatsApp] Manual/outbound fromMe noted in ${chatKey} — pending smart delays will stay silent if still waiting`
     );
 
     // If a smart delay is pending for this chat, cancel it immediately (human took over)
-    const pending = this._pendingSmartDelay.get(chatKey);
-    if (pending?.timer) {
-      clearTimeout(pending.timer);
-      this._pendingSmartDelay.delete(chatKey);
-      console.log(
-        `[WhatsApp] Smart delay cancelled for ${chatKey} — manual reply detected`
-      );
+    for (const key of altKeys) {
+      const pending = this._pendingSmartDelay.get(key);
+      if (pending?.timer) {
+        clearTimeout(pending.timer);
+        this._pendingSmartDelay.delete(key);
+        console.log(
+          `[WhatsApp] Smart delay cancelled for ${key} — manual reply detected`
+        );
+      }
     }
   }
 
-  markBotOutbound(chatId, ttlMs = 8000) {
-    const key = String(chatId || '').trim();
-    if (!key) return;
-    this._botOutboundIgnoreUntil.set(key, Date.now() + ttlMs);
+  markBotOutbound(chatIdOrIds, ttlMs = 8000) {
+    const until = Date.now() + ttlMs;
+    const list = Array.isArray(chatIdOrIds) ? chatIdOrIds : [chatIdOrIds];
+    for (const raw of list) {
+      const key = String(raw || '').trim();
+      if (!key) continue;
+      this._botOutboundIgnoreUntil.set(key, until);
+    }
   }
 
   getSmartDelayMs() {
@@ -1465,7 +1484,12 @@ class WhatsAppService {
       }
     }
 
-    await antiBan.outboundLimiter.waitTurn();
+    if (!options.skipLimiter) {
+      await antiBan.outboundLimiter.waitTurn();
+    } else {
+      // Tiny breath so two bubbles in a pair don't collide on the WA socket
+      await sleep(antiBan.randInt(120, 400));
+    }
 
     if (!chatId) {
       try {
@@ -1498,39 +1522,89 @@ class WhatsAppService {
     }
 
     // Mark before send so fromMe echo is not treated as a manual takeover
-    if (chatId) this.markBotOutbound(chatId, 20000);
-    if (options.replyTo?.from) this.markBotOutbound(options.replyTo.from, 20000);
+    this.markBotOutbound(
+      [
+        chatId,
+        options.replyTo?.from,
+        options.replyTo?.to,
+        options.replyTo?.author,
+        options.replyTo?.id?.remote,
+      ],
+      25000
+    );
+
+    const canReply =
+      options.replyTo && typeof options.replyTo.reply === 'function';    // preferChat: send as a normal bubble (no quote) — needed for bare form URLs
+    const preferChat = !!options.preferChat;
 
     let result;
+    const tryChatSend = async (id) => {
+      if (!id) throw new Error('No chat id for send');
+      // client.sendMessage is more reliable than getChatById for some @lid peers
+      if (typeof this.client.sendMessage === 'function') {
+        return this.client.sendMessage(id, rawText);
+      }
+      const chat = await this.client.getChatById(id);
+      return chat.sendMessage(rawText);
+    };
+
     try {
-      if (options.replyTo && typeof options.replyTo.reply === 'function') {
-        console.log(`[WhatsApp] Sending via msg.reply → ${options.replyTo.from || chatId}`);
-        result = await options.replyTo.reply(rawText);
-      } else {
+      if (preferChat || !canReply) {
         console.log(`[WhatsApp] Sending via chat → ${chatId}`);
-        const chat = await this.client.getChatById(chatId);
-        result = await chat.sendMessage(rawText);
+        result = await tryChatSend(chatId);
+      } else {
+        console.log(
+          `[WhatsApp] Sending via msg.reply → ${options.replyTo.from || chatId}`
+        );
+        result = await options.replyTo.reply(rawText);
       }
     } catch (err) {
       console.warn('[WhatsApp] send retry:', err.message);
-      // Prefer reply again, then chatId, then number resolve
-      if (options.replyTo && typeof options.replyTo.reply === 'function') {
-        result = await options.replyTo.reply(rawText);
-      } else {
+      const errors = [err.message];
+      result = null;
+
+      // Fallback order: reply (works for @lid) → client.sendMessage → getChatById
+      if (canReply) {
+        try {
+          console.log('[WhatsApp] Fallback: msg.reply');
+          result = await options.replyTo.reply(rawText);
+        } catch (e2) {
+          errors.push(e2.message);
+        }
+      }
+
+      if (!result) {
         const fallbackId =
           chatId ||
-          (digits ? await this.resolveOutboundChatId(digits) : null) ||
+          options.replyTo?.from ||
+          (digits ? await this.resolveOutboundChatId(digits).catch(() => null) : null) ||
           phoneOrChat;
-        if (fallbackId) this.markBotOutbound(fallbackId, 20000);
-        const chat = await this.client.getChatById(fallbackId);
-        result = await chat.sendMessage(rawText);
-        chatId = fallbackId;
+        this.markBotOutbound(fallbackId, 25000);
+        try {
+          console.log(`[WhatsApp] Fallback: chat → ${fallbackId}`);
+          result = await tryChatSend(fallbackId);
+          chatId = fallbackId;
+        } catch (e3) {
+          errors.push(e3.message);
+          throw new Error(`WhatsApp send failed: ${errors.join(' | ')}`);
+        }
       }
     }
 
+    // Capture chat id from WA message model when possible
+    const resultChat =
+      result?.id?.remote ||
+      result?.to ||
+      result?._data?.to ||
+      chatId;
+    chatId = resultChat || chatId;
+
     this._lastOutboundChatId = chatId;
     if (result) result._outboundChatId = chatId;
-    if (chatId) this.markBotOutbound(chatId, 20000);
+    this.markBotOutbound(
+      [chatId, options.replyTo?.from, options.replyTo?.to, result?.to],
+      25000
+    );
 
     try {
       MessageLog.add({
@@ -1628,12 +1702,18 @@ class WhatsAppService {
    * 1) typing → natural text
    * 2) pause
    * 3) typing → bare clickable form URL (separate message)
+   *
+   * Important: never drop replyTo fallback — @lid peers often fail getChatById
+   * after the first bubble if we only rely on phone/@c.us resolution.
    */
   async sendNaturalFormPair(phone, formLink, opts = {}) {
     const { buildNaturalFormParts, humanActionDelayMs } = require('../utils/naturalReply');
     const { getBaseUrl } = require('../config/baseUrl');
+    // Never run scrubForbidden on URLs — only sanitize format
     const link = sanitizeFormLink(String(formLink || '').trim());
-    if (!link) throw new Error('Empty form link');
+    if (!link || !/^https?:\/\//i.test(link)) {
+      throw new Error(`Empty/invalid form link: ${formLink || '(blank)'}`);
+    }
 
     const customTemplate = String(
       opts.customTemplate != null
@@ -1658,36 +1738,62 @@ class WhatsAppService {
       } catch (_) {}
     }
 
-    const baseOpts = {
+    this.markBotOutbound(
+      [chatId, opts.replyTo?.from, opts.replyTo?.to, opts.replyTo?.author],
+      60000
+    );
+
+    const pairOpts = {
       chatId,
       replyTo: opts.replyTo,
       skipTyping: true,
       skipPacing: true,
+      skipCaps: true,
+      skipLimiter: true, // pair already has typing + gap; don't stack anti-ban queue waits
+    };
+
+    const sendBubble = async (body, { preferChat = false, label = 'msg' } = {}) => {
+      console.log(
+        `[WhatsApp] Form flow send ${label}: preferChat=${preferChat} chatId=${chatId || '—'} body="${String(body).slice(0, 80)}"`
+      );
+      try {
+        const result = await this.sendMessage(phone, body, {
+          ...pairOpts,
+          chatId,
+          preferChat,
+          // Keep replyTo always — sendMessage uses it as fallback when preferChat fails
+          replyTo: opts.replyTo,
+        });
+        if (result?._outboundChatId) {
+          chatId = result._outboundChatId;
+          pairOpts.chatId = chatId;
+        }
+        return result;
+      } catch (err) {
+        console.error(`[WhatsApp] Form flow ${label} failed:`, err.message);
+        throw err;
+      }
     };
 
     // 1) Typing, then human text (no URL)
     const typing1 = humanActionDelayMs(2000, 5000);
     console.log(`[WhatsApp] Form flow: typing ${typing1}ms → text`);
     await this.showTypingFor(chatId, typing1);
-    await this.sendMessage(phone, text, baseOpts);
+    await sendBubble(text, { preferChat: false, label: 'text' });
 
     // 2) Natural pause between bubbles
     const gap = humanActionDelayMs(2000, 5000);
     console.log(`[WhatsApp] Form flow: pause ${gap}ms before link`);
     await sleep(gap);
 
-    // 3) Typing, then bare link alone (clickable)
+    // 3) Typing, then bare URL alone (clickable blue link, not quoted if chat send works)
     const typing2 = humanActionDelayMs(2000, 5000);
     console.log(`[WhatsApp] Form flow: typing ${typing2}ms → link`);
     await this.showTypingFor(chatId, typing2);
-    // Prefer chat.sendMessage for the bare URL (cleaner than reply quote)
-    await this.sendMessage(phone, link, {
-      ...baseOpts,
-      replyTo: undefined,
-    });
+    await sendBubble(link, { preferChat: true, label: 'link' });
 
     console.log(
-      `[WhatsApp] Form pair → ${phone}: "${text}" + ${link} (base=${getBaseUrl()})`
+      `[WhatsApp] Form pair OK → ${phone}: "${text}" + ${link} (base=${getBaseUrl()})`
     );
     return { text, link };
   }
