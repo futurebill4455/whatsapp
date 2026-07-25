@@ -1297,7 +1297,7 @@ class WhatsAppService {
   }
 
   /**
-   * Send only the bare form URL — no welcome / greeting text.
+   * Send form URL using Settings.form_link_message (supports {{form_link}}).
    */
   async sendFormLinkOnly(phone, opts = {}) {
     const existing = Submissions.findLatestOpen(phone);
@@ -1319,12 +1319,22 @@ class WhatsAppService {
     }
 
     const formLink = this.buildFormUrl(submission.token);
-    await this.sendMessage(phone, formLink, {
+    const { renderTemplate } = require('../utils/leadSummary');
+    const template =
+      String(Settings.get('form_link_message') || '').trim() || '{{form_link}}';
+    const outbound =
+      renderTemplate(template, {
+        form_link: formLink,
+        business_name: Settings.get('business_name') || '',
+        phone,
+      }).trim() || formLink;
+
+    await this.sendMessage(phone, outbound, {
       chatId: opts.chatId,
       replyTo: opts.replyTo,
       inboundText: opts.inboundText,
     });
-    console.log(`[WhatsApp] Bare form link → ${phone}: ${formLink}`);
+    console.log(`[WhatsApp] Form link → ${phone}: ${formLink}`);
     return true;
   }
 

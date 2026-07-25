@@ -23,18 +23,6 @@ db.exec(`
     value TEXT
   );
 
-  CREATE TABLE IF NOT EXISTS access_users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    phone TEXT NOT NULL,
-    access_code TEXT NOT NULL UNIQUE,
-    is_active INTEGER NOT NULL DEFAULT 1,
-    status TEXT NOT NULL DEFAULT 'waiting_code',
-    verified_at TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
-  );
-
   CREATE TABLE IF NOT EXISTS insurance_types (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
@@ -165,7 +153,11 @@ db.exec(`
   );
 `);
 
-db.exec(`CREATE INDEX IF NOT EXISTS idx_access_phone ON access_users(phone)`);
+// Legacy cleanup — per-user whitelist removed in favour of Settings.common_access_code
+try {
+  db.exec('DROP TABLE IF EXISTS access_users');
+} catch (_) {}
+
 db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_customer ON chat_sessions(customer_phone, status)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_desk ON chat_sessions(desk_phone, status)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_submissions_token ON submissions(token)`);

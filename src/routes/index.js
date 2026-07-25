@@ -6,7 +6,6 @@ const { requireAdmin, guestOnly } = require('../middleware/auth');
 const {
   Admins,
   Settings,
-  AccessUsers,
   InsuranceTypes,
   Companies,
   PremiumOptions,
@@ -332,15 +331,21 @@ router.post('/admin/settings', requireAdmin, (req, res) => {
 
   Settings.setMany({
     business_name: String(req.body.business_name || '').trim() || 'SecureLife Insurance',
+    common_access_code: String(req.body.common_access_code || 'INSU2026')
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '') || 'INSU2026',
     close_keywords: String(req.body.close_keywords || 'close,cls').trim(),
     form_intro: String(req.body.form_intro || ''),
     success_message: String(req.body.success_message || ''),
+    form_link_message: String(req.body.form_link_message || '{{form_link}}'),
     forward_template: String(req.body.forward_template || ''),
     chat_close_message: String(req.body.chat_close_message || ''),
     company_close_notify_message: String(req.body.company_close_notify_message || ''),
     access_denied_message: String(req.body.access_denied_message || ''),
     access_wrong_code_message: String(req.body.access_wrong_code_message || ''),
     access_granted_message: String(req.body.access_granted_message || ''),
+    flow_welcome_message: String(req.body.flow_welcome_message || ''),
     anti_ban_jitter_min_ms: String(jitterMin),
     anti_ban_jitter_max_ms: String(jitterMax),
     anti_ban_min_gap_ms: String(
@@ -358,74 +363,6 @@ router.post('/admin/settings', requireAdmin, (req, res) => {
 
   req.session.flash = { type: 'success', message: 'Settings saved.' };
   res.redirect('/admin/settings');
-});
-
-// ——— Access users ———
-
-router.get('/admin/access', requireAdmin, (req, res) => {
-  const users = AccessUsers.list().map((u) => ({
-    ...u,
-    display_status: AccessUsers.displayStatus(u),
-  }));
-  res.render(
-    'admin/access',
-    layoutLocals(req, { title: 'Access Users', users })
-  );
-});
-
-router.post('/admin/access', requireAdmin, (req, res) => {
-  try {
-    AccessUsers.create({
-      name: req.body.name,
-      phone: req.body.phone,
-      access_code: req.body.access_code,
-    });
-    req.session.flash = { type: 'success', message: 'User added (Waiting for code).' };
-  } catch (err) {
-    req.session.flash = { type: 'error', message: err.message || 'Could not add user.' };
-  }
-  res.redirect('/admin/access');
-});
-
-router.post('/admin/access/:id', requireAdmin, (req, res) => {
-  const id = Number(req.params.id);
-  const action = String(req.body._action || 'update');
-
-  try {
-    if (action === 'delete') {
-      AccessUsers.remove(id);
-      req.session.flash = { type: 'success', message: 'User deleted.' };
-    } else if (action === 'lock') {
-      const user = AccessUsers.get(id);
-      if (user) AccessUsers.lock(user.phone);
-      req.session.flash = { type: 'success', message: 'User locked (Waiting).' };
-    } else if (action === 'unlock') {
-      AccessUsers.update(id, { clear_verified: false });
-      const user = AccessUsers.get(id);
-      if (user) {
-        const db = require('../config/db');
-        db.prepare(
-          `UPDATE access_users
-           SET status = 'active',
-               verified_at = COALESCE(verified_at, datetime('now')),
-               updated_at = datetime('now')
-           WHERE id = ?`
-        ).run(id);
-      }
-      req.session.flash = { type: 'success', message: 'User unlocked (Active).' };
-    } else {
-      AccessUsers.update(id, {
-        name: req.body.name,
-        phone: req.body.phone,
-        access_code: req.body.access_code,
-        is_active: req.body.is_active === '0' ? 0 : 1,
-      });
-      req.session.flash = { type: 'success', message: 'User updated.' };
-    }
-  } catch (err) {
-    req.session.flash = { type: 'error', message: err.message || 'Update failed.' };
-  }
-  res.redirect('/admin/access');
 });
 
 // ——— Catalog ———

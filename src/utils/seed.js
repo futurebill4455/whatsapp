@@ -4,7 +4,6 @@ const db = require('../config/db');
 const {
   Admins,
   Settings,
-  AccessUsers,
   InsuranceTypes,
   Companies,
   PremiumOptions,
@@ -28,6 +27,7 @@ function seed() {
 
   const defaults = {
     business_name: 'SecureLife Insurance',
+    common_access_code: 'INSU2026',
     forward_template: DEFAULT_FORWARD_TEMPLATE,
     anti_ban_jitter_min_ms: '4000',
     anti_ban_jitter_max_ms: '30000',
@@ -41,14 +41,16 @@ function seed() {
       'Select Health or Vehicle insurance. The form guides you step-by-step.',
     success_message:
       'Thank you! Your details have been forwarded to our team.\n\nYou can now chat with the insurance desk. Send *close* (or *cls*) anytime to end the chat.',
+    form_link_message: '{{form_link}}',
     chat_close_message: 'Thank you! Your conversation has been ended. Have a good day!',
     company_close_notify_message:
       'Customer ended the chat [#{{session_code}}] ({{customer_phone}}).\nSession closed.',
     access_denied_message:
-      'This number is not authorized. Please contact your advisor for an access code.',
+      'Please send the correct access code to continue.',
     access_wrong_code_message:
       'That access code does not match. Please check with your advisor and try again.',
     access_granted_message: 'Access verified. Sending your form link…',
+    flow_welcome_message: '',
   };
 
   for (const [key, value] of Object.entries(defaults)) {
@@ -61,6 +63,12 @@ function seed() {
   const closeKw = Settings.get('close_keywords');
   if (closeKw == null || String(closeKw).trim() === '') {
     Settings.set('close_keywords', 'close,cls');
+  }
+
+  // Always ensure a common access code exists
+  if (!Settings.get('common_access_code')) {
+    Settings.set('common_access_code', 'INSU2026');
+    console.log('Seeded common access code: INSU2026');
   }
 
   if (InsuranceTypes.list().length === 0) {
@@ -176,19 +184,10 @@ function seed() {
     });
   }
 
-  if (AccessUsers.list().length === 0) {
-    AccessUsers.create({
-      name: 'Demo User',
-      phone: '919999999999',
-      access_code: 'INSU2026',
-    });
-    console.log('Seeded demo access user: Demo User / 919999999999 / INSU2026');
-  }
-
   if (Workflows.count() === 0) {
     const wf = Workflows.create({
       name: 'Insurance Lead Intake',
-      description: 'Unique ACCESS_CODE → bare form → company desk',
+      description: 'Common ACCESS_CODE → form link → company desk',
       graph: buildDefaultWorkflowGraph(),
       is_active: 1,
     });

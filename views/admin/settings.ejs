@@ -13,7 +13,7 @@
     <div>
       <p class="text-sm font-semibold uppercase tracking-wider text-sea mb-1">Configuration</p>
       <h1 class="font-display text-3xl font-bold">Settings</h1>
-      <p class="text-ink/55 mt-1 text-sm">Business identity, message templates, and anti-ban pacing.</p>
+      <p class="text-ink/55 mt-1 text-sm">Common access code, chat flow messages, and anti-ban pacing.</p>
     </div>
 
     <% if (typeof flash !== 'undefined' && flash) { %>
@@ -23,6 +23,26 @@
     <% } %>
 
     <form method="post" action="/admin/settings" class="space-y-6">
+      <section class="panel p-5 md:p-6 space-y-4 bg-gradient-to-br from-sea/5 via-white to-violet/5">
+        <div class="flex items-center gap-2">
+          <span class="chip bg-sea/15 text-sea">Access</span>
+          <h2 class="font-display text-lg font-semibold">Common access code</h2>
+        </div>
+        <p class="text-sm text-ink/55">
+          Anyone who sends this code on WhatsApp starts the insurance form flow. No per-user phone list.
+        </p>
+        <div>
+          <label class="label">Access code</label>
+          <input class="field font-mono tracking-wider uppercase"
+                 name="common_access_code"
+                 required
+                 minlength="3"
+                 maxlength="64"
+                 value="<%= settings.common_access_code || 'INSU2026' %>"
+                 placeholder="INSU2026" />
+        </div>
+      </section>
+
       <section class="panel p-5 md:p-6 space-y-4">
         <h2 class="font-display text-lg font-semibold">Business</h2>
         <div>
@@ -34,19 +54,48 @@
           <input class="field" name="close_keywords" value="<%= settings.close_keywords || 'close,cls' %>" />
         </div>
         <div>
-          <label class="label">Form intro</label>
+          <label class="label">Form intro (web form page)</label>
           <textarea class="field" name="form_intro" rows="3"><%= settings.form_intro || '' %></textarea>
         </div>
         <div>
-          <label class="label">Success message</label>
+          <label class="label">Success message (after form submit)</label>
           <textarea class="field" name="success_message" rows="3"><%= settings.success_message || '' %></textarea>
         </div>
       </section>
 
       <section class="panel p-5 md:p-6 space-y-4">
-        <h2 class="font-display text-lg font-semibold">Templates</h2>
+        <div class="flex items-center gap-2">
+          <span class="chip bg-violet/15 text-violet">Chat flow</span>
+          <h2 class="font-display text-lg font-semibold">Messages &amp; responses</h2>
+        </div>
+        <p class="text-sm text-ink/55">
+          Edit bot replies here. Use <code class="text-xs bg-mist px-1 rounded">{{form_link}}</code>,
+          <code class="text-xs bg-mist px-1 rounded">{{business_name}}</code>,
+          <code class="text-xs bg-mist px-1 rounded">{{phone}}</code>,
+          <code class="text-xs bg-mist px-1 rounded">{{session_code}}</code> where noted.
+        </p>
         <div>
-          <label class="label">Forward template</label>
+          <label class="label">Access granted (sent before the form link)</label>
+          <textarea class="field" name="access_granted_message" rows="2"><%= settings.access_granted_message || '' %></textarea>
+        </div>
+        <div>
+          <label class="label">Form link message (WhatsApp). Use {{form_link}}</label>
+          <textarea class="field font-mono text-xs" name="form_link_message" rows="3"><%= settings.form_link_message || '{{form_link}}' %></textarea>
+        </div>
+        <div>
+          <label class="label">Wrong access code reply</label>
+          <textarea class="field" name="access_wrong_code_message" rows="2"><%= settings.access_wrong_code_message || '' %></textarea>
+        </div>
+        <div>
+          <label class="label">Access denied (optional / unused for noise)</label>
+          <textarea class="field" name="access_denied_message" rows="2"><%= settings.access_denied_message || '' %></textarea>
+        </div>
+        <div>
+          <label class="label">Flow welcome (optional extra note)</label>
+          <textarea class="field" name="flow_welcome_message" rows="2"><%= settings.flow_welcome_message || '' %></textarea>
+        </div>
+        <div>
+          <label class="label">Forward template (desk lead summary)</label>
           <textarea class="field font-mono text-xs" name="forward_template" rows="6"><%= settings.forward_template || '' %></textarea>
         </div>
         <div>
@@ -56,18 +105,6 @@
         <div>
           <label class="label">Company close notify</label>
           <textarea class="field" name="company_close_notify_message" rows="2"><%= settings.company_close_notify_message || '' %></textarea>
-        </div>
-        <div>
-          <label class="label">Access denied</label>
-          <textarea class="field" name="access_denied_message" rows="2"><%= settings.access_denied_message || '' %></textarea>
-        </div>
-        <div>
-          <label class="label">Wrong access code</label>
-          <textarea class="field" name="access_wrong_code_message" rows="2"><%= settings.access_wrong_code_message || '' %></textarea>
-        </div>
-        <div>
-          <label class="label">Access granted</label>
-          <textarea class="field" name="access_granted_message" rows="2"><%= settings.access_granted_message || '' %></textarea>
         </div>
       </section>
 

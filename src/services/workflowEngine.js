@@ -1,7 +1,7 @@
 /**
  * Visual workflow engine for insurance lead intake (Drawflow graphs).
- * Inbound starts when AccessUsers.tryUnlock matches a live DB access_code
- * (admin-created dynamic codes). No hardcoded codes / hi-hello keywords.
+ * Inbound starts when AccessGate matches Settings.common_access_code.
+ * No per-user phone whitelist.
  */
 const crypto = require('crypto');
 const {
@@ -9,7 +9,7 @@ const {
   Workflows,
   WorkflowRuns,
   Submissions,
-  AccessUsers,
+  AccessGate,
 } = require('../models');
 const {
   buildLeadVars,
@@ -198,7 +198,7 @@ class WorkflowEngine {
   }
 
   /**
-   * Inbound WhatsApp text. Silent unless a live DB access_code unlocks the session
+   * Inbound WhatsApp text. Starts when the shared common access code matches
    * (or a yes/no wait is pending for an already-running run).
    */
   async handleIncomingMessage({ phone, body, chatId, replyTo }) {
@@ -228,37 +228,52 @@ class WorkflowEngine {
       return { handled: true, reason: 'awaiting_form_submit', silent: true };
     }
 
-    // Dynamic access: match inbound text against ANY active user's DB access_code
-    const unlock = AccessUsers.tryUnlock(phone, text);
+    // Common access code (Settings.common_access_code) — no user/phone whitelist
+    const unlock = AccessGate.tryUnlock(phone, text);
     if (!unlock.ok) {
       if (unlock.reason === 'wrong_code') {
-        console.warn(`[Workflow] Wrong access code from ${phone} (silent)`);
-      } else if (unlock.reason === 'unknown_code' || unlock.reason === 'unknown_phone') {
-        console.warn(
-          `[Workflow] No DB access_code match for "${text.slice(0, 40)}" (resolved phone="${phone}", chatId="${chatId || ''}")`
-        );
-      } else if (unlock.reason === 'phone_code_mismatch') {
-        console.warn(`[Workflow] Access code / phone mismatch for ${phone} (silent)`);
+        console.warn(`[Workflow] Wrong access code from ${phone}`);
+        const wrongMsg = String(Settings.get('access_wrong_code_message') || '').trim();
+        if (wrongMsg) {
+          try {
+            await this.whatsapp.sendMessage(phone, wrongMsg, sendOpts(baseCtx));
+          } catch (err) {
+            console.error('[Workflow] wrong-code reply failed:', err.message);
+          }
+          return { handled: true, reason: 'wrong_code_replied' };
+        }
+      } else if (unlock.reason === 'not_configured') {
+        console.warn('[Workflow] common_access_code is not configured');
       }
-      // Already unlocked users sending random text → silent
-      if (AccessUsers.isUnlocked(phone) || unlock.reason === 'unlocked_noise') {
-        return { handled: true, reason: 'unlocked_silent', silent: true };
-      }
+      // Noise / unrelated text — silent
       return { handled: true, reason: unlock.reason || 'unauthorized', silent: true };
     }
 
-    // Prefer the DB user's phone for persistence; keep inbound chatId for replies
-    const userPhone = unlock.user?.phone || phone;
-    baseCtx.phone = userPhone;
-    baseCtx.access_user_id = unlock.user?.id;
-    baseCtx.access_name = unlock.user?.name;
-    baseCtx.name = unlock.user?.name;
-    baseCtx.matched_code = unlock.matchedCode || AccessUsers.normalizeCode(unlock.user?.access_code);
+    baseCtx.matched_code = unlock.matchedCode;
+    baseCtx.access_ok = true;
+
+    const granted = String(Settings.get('access_granted_message') || '').trim();
+    if (granted) {
+      try {
+        await this.whatsapp.sendMessage(phone, granted, sendOpts(baseCtx));
+      } catch (err) {
+        console.error('[Workflow] access-granted reply failed:', err.message);
+      }
+    }
+
+    const welcome = String(Settings.get('flow_welcome_message') || '').trim();
+    if (welcome) {
+      try {
+        await this.whatsapp.sendMessage(phone, welcome, sendOpts(baseCtx));
+      } catch (err) {
+        console.error('[Workflow] flow-welcome reply failed:', err.message);
+      }
+    }
 
     const triggers = findAccessTriggerNodes(active.nodes);
     if (!triggers.length) {
       console.warn('[Workflow] No access_code trigger node; sending form link directly');
-      await this.whatsapp.sendFormLinkOnly(userPhone, {
+      await this.whatsapp.sendFormLinkOnly(phone, {
         chatId,
         replyTo,
         inboundText: text,
@@ -269,24 +284,19 @@ class WorkflowEngine {
     const start = triggers[0];
     const run = WorkflowRuns.create({
       workflow_id: active.workflow.id,
-      customer_phone: userPhone,
+      customer_phone: phone,
       context: {
         ...baseCtx,
-        access_user_id: unlock.user?.id,
-        access_name: unlock.user?.name,
-        name: unlock.user?.name,
+        matched_code: unlock.matchedCode,
+        access_ok: true,
       },
     });
 
     console.log(
-      `[Workflow] Access unlock (${unlock.reason}) code=${baseCtx.matched_code} → run #${run.id} (${userPhone})`
+      `[Workflow] Common access unlock code=${unlock.matchedCode} → run #${run.id} (${phone})`
     );
 
-    return this.continueFrom(run, start.id, active.nodes, {
-      ...baseCtx,
-      name: unlock.user?.name,
-      access_name: unlock.user?.name,
-    });
+    return this.continueFrom(run, start.id, active.nodes, baseCtx);
   }
 
   async resumeYesNo(run, body, nodes, baseCtx) {
@@ -463,9 +473,20 @@ class WorkflowEngine {
         }
 
         const formLink = sanitizeFormLink(buildFormUrl(submission.token));
-        // Bare URL only — no welcome fluff
-        await this.whatsapp.sendMessage(phone, formLink, sendOpts(ctx));
-        console.log(`[Workflow] Bare form link → ${phone}: ${formLink}`);
+        const vars = {
+          ...ctx,
+          form_link: formLink,
+          business_name: Settings.get('business_name') || '',
+          phone,
+        };
+        // Prefer node message, then Settings.form_link_message, then bare URL
+        const template =
+          String(node.data?.message || '').trim() ||
+          String(Settings.get('form_link_message') || '').trim() ||
+          '{{form_link}}';
+        const outbound = renderTemplate(template, vars).trim() || formLink;
+        await this.whatsapp.sendMessage(phone, outbound, sendOpts(ctx));
+        console.log(`[Workflow] Form link → ${phone}: ${formLink}`);
 
         return {
           output: 'output_1',
@@ -523,7 +544,12 @@ class WorkflowEngine {
       }
 
       case 'condition_access': {
-        const unlocked = AccessUsers.isUnlocked(phone);
+        // Authorized if this turn matched the common code, or an open form/session exists
+        const unlocked =
+          !!ctx.access_ok ||
+          !!ctx.matched_code ||
+          !!WorkflowRuns.findWaiting(phone, 'form_submit') ||
+          !!Submissions.findLatestOpen(phone);
         return {
           output: unlocked ? 'output_1' : 'output_2',
           context: ctx,

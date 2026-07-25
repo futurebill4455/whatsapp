@@ -5,7 +5,7 @@
 
 const NODE_META = {
   trigger_message: {
-    title: 'When unique access code received',
+    title: 'When common access code received',
     category: 'trigger',
     inputs: 0,
     outputs: 1,
@@ -13,7 +13,7 @@ const NODE_META = {
     color: '#f59e0b',
     fields: [
       { key: 'trigger_mode', label: 'Mode', type: 'select', options: ['access_code'] },
-      { key: 'keywords', label: 'Keywords (unused for access_code)', type: 'text' },
+      { key: 'keywords', label: 'Keywords (unused — code comes from Settings)', type: 'text' },
     ],
   },
   send_form_link: {
@@ -51,7 +51,7 @@ const NODE_META = {
     fields: [{ key: 'message', label: 'Message', type: 'textarea' }],
   },
   condition_access: {
-    title: 'Check User / Access Code',
+    title: 'Check Access Code / Session',
     category: 'condition',
     inputs: 1,
     outputs: 2,
