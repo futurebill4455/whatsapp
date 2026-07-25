@@ -13,7 +13,7 @@
     <div>
       <p class="text-sm font-semibold uppercase tracking-wider text-sea mb-1">Products</p>
       <h1 class="font-display text-3xl font-bold">Catalog</h1>
-      <p class="text-ink/55 mt-1 text-sm">Insurance types, companies (with desk phones), premiums & durations.</p>
+      <p class="text-ink/55 mt-1 text-sm">Insurance types, companies (with desk phones), Life plans, premiums &amp; durations.</p>
     </div>
 
     <% if (typeof flash !== 'undefined' && flash) { %>
@@ -76,6 +76,7 @@
         <span class="chip bg-sea/15 text-sea">Companies</span>
         <h2 class="font-display text-lg font-semibold">Companies & desk phones</h2>
       </div>
+      <p class="text-sm text-ink/55">Assign companies to <strong>Life</strong> (or Health / Vehicle) so they appear in the customer form dropdown / company list for that type.</p>
       <form method="post" action="/admin/companies" class="grid sm:grid-cols-2 lg:grid-cols-5 gap-3 items-end">
         <div>
           <label class="label">Name</label>
@@ -207,6 +208,42 @@
         </ul>
       </section>
     </div>
+
+    <!-- Life plans -->
+    <section class="panel p-5 md:p-6 space-y-4">
+      <div class="flex items-center gap-2">
+        <span class="chip bg-sea/15 text-sea">Life</span>
+        <h2 class="font-display text-lg font-semibold">Life insurance plan names</h2>
+      </div>
+      <p class="text-sm text-ink/55">These options populate the <strong>Plan name</strong> dropdown on the Life customer form. Manage Life <em>companies</em> in the Companies section above (type = Life).</p>
+      <form method="post" action="/admin/life-plans" class="grid sm:grid-cols-3 gap-2 items-end">
+        <div>
+          <label class="label">Plan name</label>
+          <input class="field" name="label" required placeholder="Term Protect" />
+        </div>
+        <div>
+          <label class="label">Value (optional)</label>
+          <input class="field" name="value" placeholder="Same as name if blank" />
+        </div>
+        <button type="submit" class="btn-primary">Add plan</button>
+      </form>
+      <ul class="space-y-2">
+        <% (typeof lifePlans !== 'undefined' ? lifePlans : []).forEach(function (p) { %>
+          <li>
+            <form method="post" action="/admin/life-plans/<%= p.id %>" class="flex flex-wrap gap-2 items-center">
+              <input class="field flex-1 min-w-[140px]" name="label" value="<%= p.label %>" />
+              <input class="field w-32" name="value" value="<%= p.value %>" />
+              <select class="field w-24" name="is_active">
+                <option value="1" <%= p.is_active ? 'selected' : '' %>>On</option>
+                <option value="0" <%= !p.is_active ? 'selected' : '' %>>Off</option>
+              </select>
+              <button class="btn-ghost text-xs" name="_action" value="update">Save</button>
+              <button class="btn-ghost text-xs text-coral border-coral/25" name="_action" value="delete" onclick="return confirm('Delete plan?');">Del</button>
+            </form>
+          </li>
+        <% }) %>
+      </ul>
+    </section>
   </main>
 </body>
 </html>

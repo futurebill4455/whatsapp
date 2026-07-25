@@ -26,9 +26,10 @@
       <h2 class="font-display font-semibold mb-2">Form structure note</h2>
       <ul class="text-sm text-ink/65 space-y-1.5 list-disc pl-5">
         <li>Step 1: Insurance type (Health / Vehicle / Life from catalog)</li>
-        <li>Step 2: Company filtered by type (desk phone used for forwarding)</li>
-        <li>Step 3: Health → premium + duration · Vehicle → vehicle number + policy type · Life → DOB + plan + yearly premium</li>
+        <li>Step 2: Company filtered by type (desk phone used for forwarding) — skipped for Life</li>
+        <li>Step 3: Health → premium + duration · Vehicle → number + manufacturing year + age-based policy type · Life → company/plan dropdowns + yearly premium</li>
         <li>Step 4: Customer name, advisor, and member rows for Health only</li>
+        <li>Admin Catalog: manage Life companies + Life plan names (dropdown source)</li>
         <li>Special field types: <code class="text-xs bg-mist px-1 rounded">select_insurance_type</code>, <code class="text-xs bg-mist px-1 rounded">select_company</code>, <code class="text-xs bg-mist px-1 rounded">select_premium</code>, <code class="text-xs bg-mist px-1 rounded">select_duration</code></li>
       </ul>
     </section>

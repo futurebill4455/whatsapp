@@ -98,10 +98,24 @@
                    placeholder="e.g. MH12AB1234" autocomplete="off" />
           </div>
           <div>
+            <label class="label">Year of manufacturing</label>
+            <select class="field" name="manufacturing_year" id="manufacturingYear">
+              <option value="">Select year…</option>
+              <% 
+                const _cy = new Date().getFullYear();
+                for (let y = _cy; y >= _cy - 40; y--) { 
+              %>
+                <option value="<%= y %>"><%= y %></option>
+              <% } %>
+            </select>
+          </div>
+          <div>
             <label class="label">Policy type</label>
-            <div class="grid gap-2 mt-1">
+            <p id="policyAgeHint" class="text-xs text-ink/50 mb-2 hidden"></p>
+            <div class="grid gap-2 mt-1" id="policyTypeList">
               <% ['Full Cover', 'Third Party', 'Bumper to Bumper'].forEach(function (pt) { %>
-                <label class="flex items-center gap-3 rounded-xl border border-ink/10 px-4 py-3 cursor-pointer hover:border-sea/40 has-[:checked]:border-sea has-[:checked]:bg-sea/5">
+                <label class="policy-type-opt flex items-center gap-3 rounded-xl border border-ink/10 px-4 py-3 cursor-pointer hover:border-sea/40 has-[:checked]:border-sea has-[:checked]:bg-sea/5"
+                       data-policy="<%= pt %>">
                   <input type="radio" name="policy_type" value="<%= pt %>" class="accent-sea vehicle-policy-type" />
                   <span class="font-semibold"><%= pt %></span>
                 </label>
@@ -114,6 +128,26 @@
         <!-- Life add-on -->
         <div id="lifeFields" class="hidden space-y-4">
           <div>
+            <label class="label">Insurance company</label>
+            <select class="field" name="company" id="lifeCompanySelect" disabled>
+              <option value="">Select company…</option>
+              <% companies.forEach(function (c) { %>
+                <% 
+                  const _isLifeCo = c.insurance_type_name && /life/i.test(String(c.insurance_type_name));
+                  const _noType = !c.insurance_type_id;
+                %>
+                <% if (_isLifeCo || _noType) { %>
+                  <option value="<%= c.name %>"
+                          data-type-id="<%= c.insurance_type_id || '' %>"
+                          data-type-name="<%= c.insurance_type_name || '' %>"
+                          class="life-company-opt">
+                    <%= c.name %>
+                  </option>
+                <% } %>
+              <% }) %>
+            </select>
+          </div>
+          <div>
             <label class="label">Date of birth</label>
             <input class="field dob-input" type="text" name="date_of_birth" id="lifeDob"
                    inputmode="numeric" placeholder="DD/MM/YYYY" autocomplete="bday" maxlength="10"
@@ -121,12 +155,17 @@
           </div>
           <div>
             <label class="label">Plan name</label>
-            <input class="field" name="plan_name" id="planName" placeholder="e.g. Term Protect" />
+            <select class="field" name="plan_name" id="planName">
+              <option value="">Select plan…</option>
+              <% (typeof lifePlans !== 'undefined' ? lifePlans : []).forEach(function (p) { %>
+                <option value="<%= p.value %>"><%= p.label %></option>
+              <% }) %>
+            </select>
           </div>
           <div>
             <label class="label">Yearly premium amount</label>
             <input class="field" name="yearly_premium_amount" id="yearlyPremium"
-                   placeholder="e.g. ₹25,000" inputmode="decimal" />
+                   placeholder="e.g. 25000" inputmode="decimal" />
           </div>
         </div>
 
@@ -172,15 +211,21 @@
         typeMap[<%- JSON.stringify(t.name) %>] = <%- JSON.stringify(String(t.id)) %>;
       <% }) %>
 
+      const CURRENT_YEAR = new Date().getFullYear();
+      const BUMPER_MAX_AGE = 5;
+
       let step = 1;
       const steps = Array.from(document.querySelectorAll('.form-step'));
       const dots = Array.from(document.querySelectorAll('.step-dot'));
       const premiumEl = document.getElementById('premiumAmount');
       const durationEl = document.getElementById('policyDuration');
       const vehicleNumberEl = document.getElementById('vehicleNumber');
+      const manufacturingYearEl = document.getElementById('manufacturingYear');
       const lifeDobEl = document.getElementById('lifeDob');
       const planNameEl = document.getElementById('planName');
       const yearlyPremiumEl = document.getElementById('yearlyPremium');
+      const lifeCompanyEl = document.getElementById('lifeCompanySelect');
+      const policyAgeHint = document.getElementById('policyAgeHint');
 
       function showStep(n) {
         step = n;
@@ -228,6 +273,54 @@
         });
       }
 
+      /** Age = current year − manufacturing year. Bumper only if age ≤ 5. */
+      function updatePolicyTypeOptions() {
+        const year = Number(manufacturingYearEl && manufacturingYearEl.value);
+        const hasYear = Number.isFinite(year) && year > 0;
+        const age = hasYear ? CURRENT_YEAR - year : null;
+        const allowBumper = age == null || age <= BUMPER_MAX_AGE;
+
+        document.querySelectorAll('.policy-type-opt').forEach(function (lab) {
+          const policy = lab.getAttribute('data-policy') || '';
+          const isBumper = /bumper/i.test(policy);
+          const hide = isBumper && !allowBumper;
+          lab.classList.toggle('hidden', hide);
+          const radio = lab.querySelector('input');
+          if (radio) {
+            radio.disabled = hide;
+            if (hide && radio.checked) radio.checked = false;
+          }
+        });
+
+        if (policyAgeHint) {
+          if (hasYear && age > BUMPER_MAX_AGE) {
+            policyAgeHint.textContent =
+              'Vehicle age is ' + age + ' years — Bumper to Bumper is not available. Choose Full Cover or Third Party.';
+            policyAgeHint.classList.remove('hidden');
+          } else if (hasYear) {
+            policyAgeHint.textContent =
+              'Vehicle age is ' + age + ' years — Bumper to Bumper, Full Cover, and Third Party are available.';
+            policyAgeHint.classList.remove('hidden');
+          } else {
+            policyAgeHint.classList.add('hidden');
+            policyAgeHint.textContent = '';
+          }
+        }
+      }
+
+      function syncCompanyInputs() {
+        const life = isLife();
+        // Life uses dropdown; Health/Vehicle use step-2 radios
+        document.querySelectorAll('.company-opt input[name="company"]').forEach(function (r) {
+          r.disabled = life;
+          if (life) r.checked = false;
+        });
+        if (lifeCompanyEl) {
+          lifeCompanyEl.disabled = !life;
+          if (!life) lifeCompanyEl.value = '';
+        }
+      }
+
       /** Show the correct step-3 / step-4 blocks for the selected insurance type. */
       function applyTypeUi() {
         const health = isHealth();
@@ -250,17 +343,20 @@
                 : '3. Details';
         }
 
-        // Required attrs — only for the active type (Health structure unchanged when selected)
         if (premiumEl) premiumEl.required = health;
         if (durationEl) durationEl.required = health;
         if (vehicleNumberEl) vehicleNumberEl.required = vehicle;
+        if (manufacturingYearEl) manufacturingYearEl.required = vehicle;
         document.querySelectorAll('.vehicle-policy-type').forEach(function (r) {
-          r.required = vehicle;
+          r.required = vehicle && !r.disabled;
         });
         if (lifeDobEl) lifeDobEl.required = life;
         if (planNameEl) planNameEl.required = life;
         if (yearlyPremiumEl) yearlyPremiumEl.required = life;
+        if (lifeCompanyEl) lifeCompanyEl.required = life;
 
+        syncCompanyInputs();
+        if (vehicle) updatePolicyTypeOptions();
         if (health) renderMembers();
       }
 
@@ -286,7 +382,6 @@
         wrap.querySelectorAll('.dob-input').forEach(bindDobTyping);
       }
 
-      /** Allow keyboard typing of DOB; light auto-slash formatting (no calendar popup). */
       function bindDobTyping(input) {
         if (!input || input._dobBound) return;
         input._dobBound = true;
@@ -302,6 +397,18 @@
       }
 
       if (lifeDobEl) bindDobTyping(lifeDobEl);
+      if (manufacturingYearEl) {
+        manufacturingYearEl.addEventListener('change', updatePolicyTypeOptions);
+      }
+
+      function nextStepFrom(current) {
+        if (current === 1 && isLife()) return 3; // Life: company is a dropdown in step 3
+        return Math.min(4, current + 1);
+      }
+      function prevStepFrom(current) {
+        if (current === 3 && isLife()) return 1;
+        return Math.max(1, current - 1);
+      }
 
       document.querySelectorAll('.next-step').forEach(function (btn) {
         btn.addEventListener('click', function () {
@@ -310,8 +417,8 @@
             filterCompanies();
             applyTypeUi();
           }
-          if (step === 2) {
-            if (!document.querySelector('input[name="company"]:checked')) {
+          if (step === 2 && !isLife()) {
+            if (!document.querySelector('input[name="company"]:checked:not(:disabled)')) {
               return alert('Please select a company.');
             }
           }
@@ -324,28 +431,38 @@
               if (!String(vehicleNumberEl.value || '').trim()) {
                 return alert('Please enter the vehicle number.');
               }
-              if (!document.querySelector('input[name="policy_type"]:checked')) {
+              if (!manufacturingYearEl.value) {
+                return alert('Please select the year of manufacturing.');
+              }
+              updatePolicyTypeOptions();
+              const checked = document.querySelector(
+                'input[name="policy_type"]:checked:not(:disabled)'
+              );
+              if (!checked) {
                 return alert('Please select a policy type.');
               }
             } else if (isLife()) {
+              if (!lifeCompanyEl || !lifeCompanyEl.value) {
+                return alert('Please select an insurance company.');
+              }
               if (!String(lifeDobEl.value || '').trim()) {
                 return alert('Please enter date of birth (DD/MM/YYYY).');
               }
-              if (!String(planNameEl.value || '').trim()) {
-                return alert('Please enter the plan name.');
+              if (!planNameEl.value) {
+                return alert('Please select a plan name.');
               }
               if (!String(yearlyPremiumEl.value || '').trim()) {
                 return alert('Please enter the yearly premium amount.');
               }
             }
           }
-          showStep(Math.min(4, step + 1));
+          showStep(nextStepFrom(step));
         });
       });
 
       document.querySelectorAll('.prev-step').forEach(function (btn) {
         btn.addEventListener('click', function () {
-          showStep(Math.max(1, step - 1));
+          showStep(prevStepFrom(step));
         });
       });
 

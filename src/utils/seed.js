@@ -8,6 +8,7 @@ const {
   Companies,
   PremiumOptions,
   DurationOptions,
+  LifePlanOptions,
   FormFields,
   Workflows,
 } = require('../models');
@@ -237,6 +238,18 @@ function seed() {
     DurationOptions.create({ label: '1 Year', value: '1', sort_order: 1 });
     DurationOptions.create({ label: '2 Year', value: '2', sort_order: 2 });
     DurationOptions.create({ label: '3 Year', value: '3', sort_order: 3 });
+  }
+
+  if (LifePlanOptions.list().length === 0) {
+    const plans = [
+      { label: 'Term Protect', value: 'Term Protect', sort_order: 1 },
+      { label: 'Endowment Plan', value: 'Endowment Plan', sort_order: 2 },
+      { label: 'Whole Life', value: 'Whole Life', sort_order: 3 },
+      { label: 'ULIP', value: 'ULIP', sort_order: 4 },
+      { label: 'Money Back', value: 'Money Back', sort_order: 5 },
+    ];
+    for (const p of plans) LifePlanOptions.create(p);
+    console.log('Seeded Life plan options');
   }
 
   if (FormFields.list().length === 0) {

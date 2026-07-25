@@ -10,6 +10,7 @@ const {
   Companies,
   PremiumOptions,
   DurationOptions,
+  LifePlanOptions,
   FormFields,
   Submissions,
   MessageLog,
@@ -55,6 +56,7 @@ function catalogPayload() {
     companies: Companies.list(true),
     premiums: PremiumOptions.list(true),
     durations: DurationOptions.list(true),
+    lifePlans: LifePlanOptions.list(true),
     fields: FormFields.list(true),
   };
 }
@@ -147,6 +149,7 @@ router.post('/form/:token', async (req, res) => {
 
   // Vehicle / Life add-on fields
   const vehicle_number = String(req.body.vehicle_number || '').trim();
+  const manufacturing_year = String(req.body.manufacturing_year || '').trim();
   const policy_type = String(req.body.policy_type || '').trim();
   const date_of_birth = String(req.body.date_of_birth || '').trim();
   const plan_name = String(req.body.plan_name || '').trim();
@@ -163,6 +166,11 @@ router.post('/form/:token', async (req, res) => {
     typeNameLower.includes('vehicle') || typeNameLower.includes('motor');
   const isLife = typeNameLower.includes('life');
 
+  const currentYear = new Date().getFullYear();
+  const mfgYearNum = Number(manufacturing_year);
+  const vehicleAge =
+    isVehicle && Number.isFinite(mfgYearNum) ? currentYear - mfgYearNum : null;
+
   const errors = [];
   if (!customer_name) errors.push('Full name / customer name is required.');
   if (!insurance_type) errors.push('Insurance type is required.');
@@ -174,18 +182,48 @@ router.post('/form/:token', async (req, res) => {
   }
   if (isVehicle) {
     if (!vehicle_number) errors.push('Vehicle number is required.');
+    if (!manufacturing_year) {
+      errors.push('Year of manufacturing is required.');
+    } else if (
+      !Number.isFinite(mfgYearNum) ||
+      mfgYearNum < 1980 ||
+      mfgYearNum > currentYear
+    ) {
+      errors.push('Invalid year of manufacturing.');
+    }
     if (!policy_type) errors.push('Policy type is required.');
-    const allowedPolicy = ['full cover', 'third party', 'bumper to bumper'];
+    const allowedYoung = ['full cover', 'third party', 'bumper to bumper'];
+    const allowedOlder = ['full cover', 'third party'];
+    const allowed =
+      vehicleAge != null && vehicleAge > 5 ? allowedOlder : allowedYoung;
     if (
       policy_type &&
-      !allowedPolicy.includes(policy_type.toLowerCase())
+      !allowed.includes(policy_type.toLowerCase())
     ) {
-      errors.push('Invalid policy type.');
+      if (/bumper/i.test(policy_type) && vehicleAge != null && vehicleAge > 5) {
+        errors.push(
+          'Bumper to Bumper is only available for vehicles 5 years old or newer.'
+        );
+      } else {
+        errors.push('Invalid policy type.');
+      }
     }
   }
   if (isLife) {
     if (!date_of_birth) errors.push('Date of birth is required.');
     if (!plan_name) errors.push('Plan name is required.');
+    if (
+      plan_name &&
+      catalog.lifePlans.length &&
+      !catalog.lifePlans.some(
+        (p) =>
+          p.value === plan_name ||
+          p.label === plan_name ||
+          String(p.id) === plan_name
+      )
+    ) {
+      errors.push('Invalid plan name.');
+    }
     if (!yearly_premium_amount) {
       errors.push('Yearly premium amount is required.');
     }
@@ -267,12 +305,20 @@ router.post('/form/:token', async (req, res) => {
   };
   if (isVehicle) {
     extra.vehicle_number = vehicle_number;
+    extra.manufacturing_year = manufacturing_year;
+    extra.vehicle_age = vehicleAge;
     extra.policy_type = policy_type;
     extra.insurance_company_name = companyRow ? companyRow.name : company;
   }
   if (isLife) {
+    const planRow = catalog.lifePlans.find(
+      (p) =>
+        p.value === plan_name ||
+        p.label === plan_name ||
+        String(p.id) === plan_name
+    );
     extra.date_of_birth = date_of_birth;
-    extra.plan_name = plan_name;
+    extra.plan_name = planRow ? planRow.label : plan_name;
     extra.yearly_premium_amount = yearly_premium_amount;
   }
 
@@ -498,6 +544,7 @@ router.get('/admin/catalog', requireAdmin, (req, res) => {
       companies: Companies.list(),
       premiums: PremiumOptions.list(),
       durations: DurationOptions.list(),
+      lifePlans: LifePlanOptions.list(),
     })
   );
 });
@@ -622,6 +669,41 @@ router.post('/admin/durations/:id', requireAdmin, (req, res) => {
       sort_order: Number(req.body.sort_order) || 0,
     });
     req.session.flash = { type: 'success', message: 'Duration updated.' };
+  }
+  res.redirect('/admin/catalog');
+});
+
+router.post('/admin/life-plans', requireAdmin, (req, res) => {
+  if (!req.body.label) {
+    req.session.flash = { type: 'error', message: 'Plan name required.' };
+    return res.redirect('/admin/catalog');
+  }
+  const label = String(req.body.label).trim();
+  const value = String(req.body.value || label).trim() || label;
+  LifePlanOptions.create({
+    label,
+    value,
+    sort_order: Number(req.body.sort_order) || 0,
+  });
+  req.session.flash = { type: 'success', message: 'Life plan added.' };
+  res.redirect('/admin/catalog');
+});
+
+router.post('/admin/life-plans/:id', requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  if (req.body._action === 'delete') {
+    LifePlanOptions.remove(id);
+    req.session.flash = { type: 'success', message: 'Life plan deleted.' };
+  } else {
+    const label = String(req.body.label || '').trim();
+    const value = String(req.body.value || label).trim() || label;
+    LifePlanOptions.update(id, {
+      label,
+      value,
+      is_active: req.body.is_active === '0' ? 0 : 1,
+      sort_order: Number(req.body.sort_order) || 0,
+    });
+    req.session.flash = { type: 'success', message: 'Life plan updated.' };
   }
   res.redirect('/admin/catalog');
 });

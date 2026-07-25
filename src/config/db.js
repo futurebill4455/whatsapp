@@ -57,6 +57,14 @@ db.exec(`
     sort_order INTEGER DEFAULT 0
   );
 
+  CREATE TABLE IF NOT EXISTS life_plan_options (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT NOT NULL,
+    value TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER DEFAULT 0
+  );
+
   CREATE TABLE IF NOT EXISTS form_fields (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     field_key TEXT NOT NULL UNIQUE,

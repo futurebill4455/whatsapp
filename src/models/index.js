@@ -326,6 +326,45 @@ const DurationOptions = {
   },
 };
 
+/** Admin-managed Life insurance plan names shown as customer-form dropdowns. */
+const LifePlanOptions = {
+  list(activeOnly = false) {
+    const sql = activeOnly
+      ? 'SELECT * FROM life_plan_options WHERE is_active = 1 ORDER BY sort_order, id'
+      : 'SELECT * FROM life_plan_options ORDER BY sort_order, id';
+    return db.prepare(sql).all();
+  },
+
+  get(id) {
+    return db.prepare('SELECT * FROM life_plan_options WHERE id = ?').get(id);
+  },
+
+  create({ label, value, sort_order = 0 }) {
+    const result = db
+      .prepare(
+        'INSERT INTO life_plan_options (label, value, sort_order) VALUES (?, ?, ?)'
+      )
+      .run(label, value, sort_order);
+    return this.get(result.lastInsertRowid);
+  },
+
+  update(id, { label, value, is_active, sort_order }) {
+    db.prepare(`
+      UPDATE life_plan_options
+      SET label = COALESCE(?, label),
+          value = COALESCE(?, value),
+          is_active = COALESCE(?, is_active),
+          sort_order = COALESCE(?, sort_order)
+      WHERE id = ?
+    `).run(label ?? null, value ?? null, is_active ?? null, sort_order ?? null, id);
+    return this.get(id);
+  },
+
+  remove(id) {
+    return db.prepare('DELETE FROM life_plan_options WHERE id = ?').run(id);
+  },
+};
+
 const FormFields = {
   list(activeOnly = false) {
     const sql = activeOnly
@@ -1171,6 +1210,7 @@ module.exports = {
   Companies,
   PremiumOptions,
   DurationOptions,
+  LifePlanOptions,
   FormFields,
   Submissions,
   Workflows,

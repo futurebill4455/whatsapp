@@ -84,6 +84,9 @@ function formatExtraDetails(submission, extra) {
     if (extra.manufacturing_year) {
       lines.push(`• Year                 : ${extra.manufacturing_year}`);
     }
+    if (extra.vehicle_age != null && extra.vehicle_age !== '') {
+      lines.push(`• Vehicle age          : ${extra.vehicle_age} years`);
+    }
     if (extra.policy_type) {
       lines.push(`• Policy type          : ${extra.policy_type}`);
     }
@@ -137,6 +140,7 @@ function formatExtraDetails(submission, extra) {
     'vehicle_model',
     'vehicle_number',
     'manufacturing_year',
+    'vehicle_age',
     'policy_type',
     'insurance_company_name',
     'date_of_birth',
