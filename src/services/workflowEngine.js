@@ -10,6 +10,7 @@ const {
   WorkflowRuns,
   Submissions,
   AccessGate,
+  ChatSessions,
 } = require('../models');
 const {
   buildLeadVars,
@@ -176,16 +177,22 @@ class WorkflowEngine {
 
   /**
    * Form POST → resume form_submit waiters or forward immediately.
+   * Always ensures the lead is forwarded to the company desk + bridge opens.
    */
   async handleFormSubmit(submission) {
     if (!submission) return { handled: false, reason: 'no_submission' };
 
     const phone = submission.customer_phone;
     const active = this.getActiveGraph();
+    let workflowResult = null;
 
-    // Resume any waiting form_submit run
-    if (active && phone) {
-      const waiting = WorkflowRuns.findWaiting(phone, 'form_submit');
+    // Resume any waiting form_submit run (by phone or submission token)
+    if (active) {
+      const waiting =
+        WorkflowRuns.findWaitingBySubmissionToken?.(submission.token, 'form_submit') ||
+        (phone && WorkflowRuns.findWaiting(phone, 'form_submit')) ||
+        null;
+
       if (waiting) {
         const ctx = {
           ...parseRunContext(waiting),
@@ -195,24 +202,72 @@ class WorkflowEngine {
           submission,
           message: '',
         };
-        const result = await this.continueFrom(
-          waiting,
-          waiting.current_node_id,
-          active.nodes,
-          ctx,
-          { skipCurrentWait: true }
+        console.log(
+          `[Workflow] Form submit resume run #${waiting.id} for ${phone || submission.token}`
         );
-        return { handled: true, ...result };
+        try {
+          workflowResult = await this.continueFrom(
+            waiting,
+            waiting.current_node_id,
+            active.nodes,
+            ctx,
+            { skipCurrentWait: true }
+          );
+        } catch (err) {
+          console.error('[Workflow] Form submit resume failed:', err.message);
+        }
       }
     }
 
-    // No waiter — forward lead + open bridge
-    const result = await this.forwardLeadToDesk(submission, {
-      phone,
-      chatId: submission.customer_chat_id,
-      notifyCustomer: false,
-    });
-    return { handled: true, forward: result };
+    // Safety net: always forward if lead is not yet at desk
+    const fresh = Submissions.get(submission.id) || submission;
+    if (fresh.status !== 'forwarded') {
+      console.log(
+        `[Workflow] Ensuring desk forward for lead #${fresh.id} (status=${fresh.status})`
+      );
+      const forward = await this.forwardLeadToDesk(fresh, {
+        phone,
+        chatId: fresh.customer_chat_id || submission.customer_chat_id,
+        notifyCustomer: false,
+      });
+      return {
+        handled: true,
+        forward,
+        workflow: workflowResult || undefined,
+      };
+    }
+
+    // Already forwarded by workflow — ensure bridge exists
+    const existing =
+      ChatSessions.findActiveByCustomer(phone) ||
+      (fresh.customer_chat_id
+        ? ChatSessions.findActiveByCustomerChatId(fresh.customer_chat_id)
+        : null);
+    if (!existing) {
+      console.warn(
+        `[Workflow] Lead #${fresh.id} forwarded but no active bridge — re-opening`
+      );
+      const forward = await this.forwardLeadToDesk(fresh, {
+        phone,
+        chatId: fresh.customer_chat_id,
+        notifyCustomer: false,
+        force: true,
+        bridgeOnly: true,
+      });
+      return { handled: true, forward, workflow: workflowResult || undefined };
+    }
+
+    return {
+      handled: true,
+      forward: {
+        ok: true,
+        reason: 'already_forwarded',
+        session_id: existing.id,
+        session_code: existing.session_code,
+        desk: existing.desk_phone,
+      },
+      workflow: workflowResult || undefined,
+    };
   }
 
   async notifyFormSubmitted(submission) {

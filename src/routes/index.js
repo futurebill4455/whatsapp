@@ -240,20 +240,39 @@ router.post('/form/:token', async (req, res) => {
     },
   });
 
+  let notifyResult = null;
   try {
-    await whatsapp.notifyFormSubmitted(updated);
+    console.log(
+      `[Form] Submitted lead #${updated.id} token=${token} company=${updated.company} → notifying WhatsApp desk forward`
+    );
+    notifyResult = await whatsapp.notifyFormSubmitted(updated);
+    console.log(
+      `[Form] notifyFormSubmitted result:`,
+      JSON.stringify({
+        handled: notifyResult?.handled,
+        forwardOk: notifyResult?.forward?.ok,
+        forwardReason: notifyResult?.forward?.reason,
+        desk: notifyResult?.forward?.desk,
+        session: notifyResult?.forward?.session_code || notifyResult?.forward?.session_id,
+      })
+    );
   } catch (err) {
     console.error('[Form] notifyFormSubmitted failed:', err.message);
+    console.error(err.stack);
   }
+
+  // Re-read so form-done reflects forwarded status when desk send succeeded
+  const finalSubmission = Submissions.getByToken(token) || updated;
 
   return res.render(
     'form-done',
     layoutLocals(req, {
       title: 'Submitted',
-      submission: updated,
+      submission: finalSubmission,
       successMessage:
         Settings.get('success_message') ||
         'Thank you! Your details have been received.',
+      forwardOk: notifyResult?.forward?.ok !== false,
     })
   );
 });

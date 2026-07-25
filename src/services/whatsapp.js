@@ -1125,14 +1125,16 @@ class WhatsAppService {
    */
   async handleChatBridge(message, phone, chatId, body) {
     const digits = this.formatPhone(phone);
-    if (!digits) return false;
-
     const mediaTypes = new Set(['image', 'video', 'document', 'ptt', 'audio', 'sticker']);
     const hasMedia =
       !!message.hasMedia || mediaTypes.has(String(message.type || '').toLowerCase());
 
-    // ── Customer side ──
-    const customerSession = ChatSessions.findActiveByCustomer(digits);
+    // ── Customer side (phone match OR stored WhatsApp chat id / @lid) ──
+    let customerSession =
+      (digits && ChatSessions.findActiveByCustomer(digits)) ||
+      (chatId && ChatSessions.findActiveByCustomerChatId(chatId)) ||
+      null;
+
     if (customerSession) {
       if (body && isCloseCommand(body)) {
         await this.closeChatSession(customerSession, {
@@ -1146,6 +1148,9 @@ class WhatsAppService {
         customer_chat_id: chatId,
         side: 'customer',
       });
+      console.log(
+        `[ChatBridge] Customer→Desk session #${customerSession.id}[${customerSession.session_code}]`
+      );
       await this.relayMessageAcrossBridge(
         message,
         customerSession,
@@ -1157,12 +1162,19 @@ class WhatsAppService {
     }
 
     // ── Desk side ──
-    if (!ChatSessions.isDeskPhone(digits) && !ChatSessions.listActiveByDesk(digits).length) {
-      // Also match by desk_chat_id for LID desks
-      const byChat = ChatSessions.listActive().filter(
-        (s) => s.desk_chat_id && s.desk_chat_id === chatId
-      );
-      if (!byChat.length) return false;
+    const deskCandidates =
+      (digits && ChatSessions.listActiveByDesk(digits)) || [];
+    const deskByChat =
+      chatId && ChatSessions.findActiveByDeskChatId
+        ? ChatSessions.findActiveByDeskChatId(chatId)
+        : null;
+
+    if (
+      !deskCandidates.length &&
+      !deskByChat &&
+      !(digits && ChatSessions.isDeskPhone(digits))
+    ) {
+      return false;
     }
 
     let quotedWaId = null;
@@ -1174,14 +1186,31 @@ class WhatsAppService {
       }
     } catch (_) {}
 
-    const deskSession = ChatSessions.resolveDeskInbound(digits, {
+    const resolved = ChatSessions.resolveDeskInbound(digits || phone, {
       quotedWaId,
       body,
       chatId,
     });
+    // resolveDeskInbound returns { session, method } — unwrap carefully
+    const deskSession = resolved?.session || null;
+    if (!deskSession?.id) {
+      if (deskByChat?.id) {
+        // Fall back to desk chat id match
+        return this._relayDeskSession(message, deskByChat, chatId, body, hasMedia);
+      }
+      console.warn(
+        `[ChatBridge] Desk inbound unmatched phone=${digits || '?'} chatId=${chatId || '?'} method=${resolved?.method || 'none'}`
+      );
+      return false;
+    }
 
-    if (!deskSession) return false;
+    console.log(
+      `[ChatBridge] Desk→Customer session #${deskSession.id}[${deskSession.session_code}] via ${resolved.method || 'resolve'}`
+    );
+    return this._relayDeskSession(message, deskSession, chatId, body, hasMedia);
+  }
 
+  async _relayDeskSession(message, deskSession, chatId, body, hasMedia) {
     if (body && isCloseCommand(body)) {
       await this.closeChatSession(deskSession, {
         closedBy: 'desk',

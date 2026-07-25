@@ -696,6 +696,19 @@ const WorkflowRuns = {
     return row || null;
   },
 
+  findWaitingBySubmissionToken(token, waitingFor = 'form_submit') {
+    if (!token) return null;
+    return (
+      db
+        .prepare(
+          `SELECT * FROM workflow_runs
+           WHERE status = 'waiting' AND waiting_for = ? AND submission_token = ?
+           ORDER BY updated_at DESC LIMIT 1`
+        )
+        .get(waitingFor, String(token)) || null
+    );
+  },
+
   update(id, fields) {
     const run = this.get(id);
     if (!run) return null;
@@ -819,6 +832,50 @@ const ChatSessions = {
       )
       .all();
     return active.find((s) => phonesMatch(s.customer_phone, phone)) || null;
+  },
+
+  /** Active session for a WhatsApp chat id (supports @lid peers). */
+  findActiveByCustomerChatId(chatId) {
+    const id = String(chatId || '').trim();
+    if (!id) return null;
+    const lidUser = id.replace(/@.+$/, '');
+    return (
+      db
+        .prepare(
+          `SELECT * FROM chat_sessions
+           WHERE status = 'active'
+             AND customer_chat_id IS NOT NULL
+             AND (
+               customer_chat_id = ?
+               OR customer_chat_id = ?
+               OR customer_chat_id LIKE ?
+             )
+           ORDER BY opened_at DESC LIMIT 1`
+        )
+        .get(id, `${lidUser}@lid`, `${lidUser}@%`) || null
+    );
+  },
+
+  findActiveByDeskChatId(chatId) {
+    const id = String(chatId || '').trim();
+    if (!id) return null;
+    const lidUser = id.replace(/@.+$/, '');
+    return (
+      db
+        .prepare(
+          `SELECT * FROM chat_sessions
+           WHERE status = 'active'
+             AND desk_chat_id IS NOT NULL
+             AND (
+               desk_chat_id = ?
+               OR desk_chat_id = ?
+               OR desk_chat_id LIKE ?
+             )
+           ORDER BY COALESCE(last_customer_at, last_desk_at, opened_at) DESC
+           LIMIT 1`
+        )
+        .get(id, `${lidUser}@lid`, `${lidUser}@%`) || null
+    );
   },
 
   listActiveByDesk(phone) {
