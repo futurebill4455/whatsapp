@@ -50,10 +50,17 @@ function formatExtraDetails(submission, extra) {
   const duration =
     submission?.policy_duration || extra.policy_duration || extra.duration;
 
-  if (premium) lines.push(`• Sum insured / Premium : ${premium}`);
-  if (duration) lines.push(`• Duration             : ${duration}`);
+  const isHealth = type.includes('health') || members.length || memberCount;
+  const isVehicle = type.includes('vehicle') || type.includes('motor');
+  const isLife = type.includes('life');
 
-  if (type.includes('health') || members.length || memberCount) {
+  // Health keeps sum insured / duration lines
+  if (isHealth && !isVehicle && !isLife) {
+    if (premium) lines.push(`• Sum insured / Premium : ${premium}`);
+    if (duration) lines.push(`• Duration             : ${duration}`);
+  }
+
+  if (isHealth) {
     if (memberCount) lines.push(`• Members              : ${memberCount}`);
     if (members.length) {
       lines.push('• Member details');
@@ -67,12 +74,49 @@ function formatExtraDetails(submission, extra) {
     }
   }
 
-  if (type.includes('vehicle') || type.includes('motor')) {
-    if (extra.vehicle_model) lines.push(`• Vehicle              : ${extra.vehicle_model}`);
+  if (isVehicle) {
+    if (extra.vehicle_number) {
+      lines.push(`• Vehicle number       : ${extra.vehicle_number}`);
+    }
+    if (extra.vehicle_model) {
+      lines.push(`• Vehicle              : ${extra.vehicle_model}`);
+    }
     if (extra.manufacturing_year) {
       lines.push(`• Year                 : ${extra.manufacturing_year}`);
     }
-    if (extra.policy_type) lines.push(`• Policy type          : ${extra.policy_type}`);
+    if (extra.policy_type) {
+      lines.push(`• Policy type          : ${extra.policy_type}`);
+    }
+    if (extra.insurance_company_name) {
+      lines.push(
+        `• Insurance company    : ${extra.insurance_company_name}`
+      );
+    }
+  }
+
+  if (isLife) {
+    if (extra.date_of_birth) {
+      lines.push(`• Date of birth        : ${extra.date_of_birth}`);
+    }
+    if (extra.plan_name) {
+      lines.push(`• Plan name            : ${extra.plan_name}`);
+    }
+    const yearly =
+      extra.yearly_premium_amount ||
+      (premium && premium !== '—' ? premium : null);
+    if (yearly) {
+      lines.push(`• Yearly premium       : ${yearly}`);
+    }
+  }
+
+  // Generic premium/duration for unknown types
+  if (!isHealth && !isVehicle && !isLife) {
+    if (premium && premium !== '—') {
+      lines.push(`• Sum insured / Premium : ${premium}`);
+    }
+    if (duration && duration !== '—') {
+      lines.push(`• Duration             : ${duration}`);
+    }
   }
 
   if (submission?.advisor_name || extra.advisor_name) {
@@ -91,8 +135,13 @@ function formatExtraDetails(submission, extra) {
     'duration',
     'advisor_name',
     'vehicle_model',
+    'vehicle_number',
     'manufacturing_year',
     'policy_type',
+    'insurance_company_name',
+    'date_of_birth',
+    'plan_name',
+    'yearly_premium_amount',
     'company_id',
     'insurance_type_id',
     'phone',

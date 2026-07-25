@@ -13,7 +13,7 @@
     <div>
       <p class="text-sm font-semibold uppercase tracking-wider text-violet mb-1">Intake</p>
       <h1 class="font-display text-3xl font-bold">Form builder</h1>
-      <p class="text-ink/55 mt-1 text-sm">Manage optional metadata fields. The public form still uses the fixed multi-step structure (type → company → premium → duration → details).</p>
+      <p class="text-ink/55 mt-1 text-sm">Manage optional metadata fields. The public form still uses the fixed multi-step structure (type → company → type-specific fields → details).</p>
     </div>
 
     <% if (typeof flash !== 'undefined' && flash) { %>
@@ -25,10 +25,10 @@
     <section class="panel p-5 md:p-6 bg-gradient-to-br from-sea/5 via-white to-violet/5">
       <h2 class="font-display font-semibold mb-2">Form structure note</h2>
       <ul class="text-sm text-ink/65 space-y-1.5 list-disc pl-5">
-        <li>Step 1: Insurance type (Health / Vehicle from catalog)</li>
+        <li>Step 1: Insurance type (Health / Vehicle / Life from catalog)</li>
         <li>Step 2: Company filtered by type (desk phone used for forwarding)</li>
-        <li>Step 3: Premium / sum insured + policy duration</li>
-        <li>Step 4: Customer name, advisor, and member rows for Health</li>
+        <li>Step 3: Health → premium + duration · Vehicle → vehicle number + policy type · Life → DOB + plan + yearly premium</li>
+        <li>Step 4: Customer name, advisor, and member rows for Health only</li>
         <li>Special field types: <code class="text-xs bg-mist px-1 rounded">select_insurance_type</code>, <code class="text-xs bg-mist px-1 rounded">select_company</code>, <code class="text-xs bg-mist px-1 rounded">select_premium</code>, <code class="text-xs bg-mist px-1 rounded">select_duration</code></li>
       </ul>
     </section>

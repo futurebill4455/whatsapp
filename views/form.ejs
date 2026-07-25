@@ -64,13 +64,15 @@
         </div>
       </section>
 
-      <!-- Step 3: Premium + duration -->
+      <!-- Step 3: Type-specific cover / vehicle / life fields -->
       <section class="panel p-5 form-step hidden" data-step="3">
-        <h2 class="font-display font-semibold mb-3">3. Cover & duration</h2>
-        <div class="space-y-4">
+        <h2 class="font-display font-semibold mb-3" id="step3Title">3. Cover & duration</h2>
+
+        <!-- Health (unchanged) -->
+        <div id="healthCover" class="space-y-4">
           <div>
             <label class="label">Sum insured / premium</label>
-            <select class="field" name="premium_amount" required>
+            <select class="field" name="premium_amount" id="premiumAmount">
               <option value="">Select…</option>
               <% premiums.forEach(function (p) { %>
                 <option value="<%= p.value %>"><%= p.label %></option>
@@ -79,7 +81,7 @@
           </div>
           <div>
             <label class="label">Policy duration</label>
-            <select class="field" name="policy_duration" required>
+            <select class="field" name="policy_duration" id="policyDuration">
               <option value="">Select…</option>
               <% durations.forEach(function (d) { %>
                 <option value="<%= d.value %>"><%= d.label %></option>
@@ -87,6 +89,47 @@
             </select>
           </div>
         </div>
+
+        <!-- Vehicle add-on -->
+        <div id="vehicleFields" class="hidden space-y-4">
+          <div>
+            <label class="label">Vehicle number</label>
+            <input class="field" name="vehicle_number" id="vehicleNumber"
+                   placeholder="e.g. MH12AB1234" autocomplete="off" />
+          </div>
+          <div>
+            <label class="label">Policy type</label>
+            <div class="grid gap-2 mt-1">
+              <% ['Full Cover', 'Third Party', 'Bumper to Bumper'].forEach(function (pt) { %>
+                <label class="flex items-center gap-3 rounded-xl border border-ink/10 px-4 py-3 cursor-pointer hover:border-sea/40 has-[:checked]:border-sea has-[:checked]:bg-sea/5">
+                  <input type="radio" name="policy_type" value="<%= pt %>" class="accent-sea vehicle-policy-type" />
+                  <span class="font-semibold"><%= pt %></span>
+                </label>
+              <% }) %>
+            </div>
+          </div>
+          <p class="text-sm text-ink/55">Insurance company was selected in the previous step.</p>
+        </div>
+
+        <!-- Life add-on -->
+        <div id="lifeFields" class="hidden space-y-4">
+          <div>
+            <label class="label">Date of birth</label>
+            <input class="field dob-input" type="text" name="date_of_birth" id="lifeDob"
+                   inputmode="numeric" placeholder="DD/MM/YYYY" autocomplete="bday" maxlength="10"
+                   pattern="\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}" title="Type date as DD/MM/YYYY" />
+          </div>
+          <div>
+            <label class="label">Plan name</label>
+            <input class="field" name="plan_name" id="planName" placeholder="e.g. Term Protect" />
+          </div>
+          <div>
+            <label class="label">Yearly premium amount</label>
+            <input class="field" name="yearly_premium_amount" id="yearlyPremium"
+                   placeholder="e.g. ₹25,000" inputmode="decimal" />
+          </div>
+        </div>
+
         <div class="flex gap-2 mt-5">
           <button type="button" class="btn-ghost prev-step">Back</button>
           <button type="button" class="btn-primary next-step">Continue</button>
@@ -98,13 +141,14 @@
         <h2 class="font-display font-semibold mb-3">4. Your details</h2>
         <div class="space-y-4">
           <div>
-            <label class="label">Full name</label>
+            <label class="label" id="customerNameLabel">Full name / Customer name</label>
             <input class="field" name="customer_name" required />
           </div>
-          <div>
+          <div id="advisorWrap">
             <label class="label">Advisor name (optional)</label>
             <input class="field" name="advisor_name" />
           </div>
+          <!-- Health members — unchanged structure -->
           <div id="healthMembers" class="hidden space-y-3">
             <div>
               <label class="label">Number of members</label>
@@ -131,6 +175,12 @@
       let step = 1;
       const steps = Array.from(document.querySelectorAll('.form-step'));
       const dots = Array.from(document.querySelectorAll('.step-dot'));
+      const premiumEl = document.getElementById('premiumAmount');
+      const durationEl = document.getElementById('policyDuration');
+      const vehicleNumberEl = document.getElementById('vehicleNumber');
+      const lifeDobEl = document.getElementById('lifeDob');
+      const planNameEl = document.getElementById('planName');
+      const yearlyPremiumEl = document.getElementById('yearlyPremium');
 
       function showStep(n) {
         step = n;
@@ -148,6 +198,16 @@
       function selectedType() {
         const el = document.querySelector('input[name="insurance_type"]:checked');
         return el ? el.value : '';
+      }
+
+      function isHealth() {
+        return /health/i.test(selectedType());
+      }
+      function isVehicle() {
+        return /vehicle|motor/i.test(selectedType());
+      }
+      function isLife() {
+        return /life/i.test(selectedType());
       }
 
       function filterCompanies() {
@@ -168,8 +228,40 @@
         });
       }
 
-      function isHealth() {
-        return /health/i.test(selectedType());
+      /** Show the correct step-3 / step-4 blocks for the selected insurance type. */
+      function applyTypeUi() {
+        const health = isHealth();
+        const vehicle = isVehicle();
+        const life = isLife();
+
+        document.getElementById('healthCover').classList.toggle('hidden', !health);
+        document.getElementById('vehicleFields').classList.toggle('hidden', !vehicle);
+        document.getElementById('lifeFields').classList.toggle('hidden', !life);
+        document.getElementById('healthMembers').classList.toggle('hidden', !health);
+
+        const title = document.getElementById('step3Title');
+        if (title) {
+          title.textContent = health
+            ? '3. Cover & duration'
+            : vehicle
+              ? '3. Vehicle details'
+              : life
+                ? '3. Life plan details'
+                : '3. Details';
+        }
+
+        // Required attrs — only for the active type (Health structure unchanged when selected)
+        if (premiumEl) premiumEl.required = health;
+        if (durationEl) durationEl.required = health;
+        if (vehicleNumberEl) vehicleNumberEl.required = vehicle;
+        document.querySelectorAll('.vehicle-policy-type').forEach(function (r) {
+          r.required = vehicle;
+        });
+        if (lifeDobEl) lifeDobEl.required = life;
+        if (planNameEl) planNameEl.required = life;
+        if (yearlyPremiumEl) yearlyPremiumEl.required = life;
+
+        if (health) renderMembers();
       }
 
       function renderMembers() {
@@ -196,6 +288,8 @@
 
       /** Allow keyboard typing of DOB; light auto-slash formatting (no calendar popup). */
       function bindDobTyping(input) {
+        if (!input || input._dobBound) return;
+        input._dobBound = true;
         input.addEventListener('input', function () {
           let v = input.value.replace(/[^\d]/g, '').slice(0, 8);
           if (v.length >= 5) {
@@ -207,13 +301,14 @@
         });
       }
 
+      if (lifeDobEl) bindDobTyping(lifeDobEl);
+
       document.querySelectorAll('.next-step').forEach(function (btn) {
         btn.addEventListener('click', function () {
           if (step === 1) {
             if (!selectedType()) return alert('Please select an insurance type.');
             filterCompanies();
-            document.getElementById('healthMembers').classList.toggle('hidden', !isHealth());
-            if (isHealth()) renderMembers();
+            applyTypeUi();
           }
           if (step === 2) {
             if (!document.querySelector('input[name="company"]:checked')) {
@@ -221,9 +316,27 @@
             }
           }
           if (step === 3) {
-            const form = document.getElementById('leadForm');
-            if (!form.premium_amount.value || !form.policy_duration.value) {
-              return alert('Please select premium and duration.');
+            if (isHealth()) {
+              if (!premiumEl.value || !durationEl.value) {
+                return alert('Please select premium and duration.');
+              }
+            } else if (isVehicle()) {
+              if (!String(vehicleNumberEl.value || '').trim()) {
+                return alert('Please enter the vehicle number.');
+              }
+              if (!document.querySelector('input[name="policy_type"]:checked')) {
+                return alert('Please select a policy type.');
+              }
+            } else if (isLife()) {
+              if (!String(lifeDobEl.value || '').trim()) {
+                return alert('Please enter date of birth (DD/MM/YYYY).');
+              }
+              if (!String(planNameEl.value || '').trim()) {
+                return alert('Please enter the plan name.');
+              }
+              if (!String(yearlyPremiumEl.value || '').trim()) {
+                return alert('Please enter the yearly premium amount.');
+              }
             }
           }
           showStep(Math.min(4, step + 1));
@@ -233,6 +346,13 @@
       document.querySelectorAll('.prev-step').forEach(function (btn) {
         btn.addEventListener('click', function () {
           showStep(Math.max(1, step - 1));
+        });
+      });
+
+      document.querySelectorAll('input[name="insurance_type"]').forEach(function (r) {
+        r.addEventListener('change', function () {
+          filterCompanies();
+          applyTypeUi();
         });
       });
 

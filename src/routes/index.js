@@ -112,7 +112,7 @@ router.get('/form/:token', (req, res) => {
       submission,
       formIntro:
         Settings.get('form_intro') ||
-        'Select Health or Vehicle insurance. The form guides you step-by-step.',
+        'Select Health, Vehicle, or Life insurance. The form guides you step-by-step.',
       ...catalog,
     })
   );
@@ -145,16 +145,52 @@ router.post('/form/:token', async (req, res) => {
   const member_count = Number(req.body.member_count) || null;
   const members = parseMembers(req.body);
 
-  const errors = [];
-  if (!customer_name) errors.push('Full name is required.');
-  if (!insurance_type) errors.push('Insurance type is required.');
-  if (!company) errors.push('Company is required.');
-  if (!premium_amount) errors.push('Premium / sum insured is required.');
-  if (!policy_duration) errors.push('Policy duration is required.');
+  // Vehicle / Life add-on fields
+  const vehicle_number = String(req.body.vehicle_number || '').trim();
+  const policy_type = String(req.body.policy_type || '').trim();
+  const date_of_birth = String(req.body.date_of_birth || '').trim();
+  const plan_name = String(req.body.plan_name || '').trim();
+  const yearly_premium_amount = String(
+    req.body.yearly_premium_amount || ''
+  ).trim();
 
   const typeRow = catalog.insuranceTypes.find(
     (t) => t.name.toLowerCase() === insurance_type.toLowerCase()
   );
+  const typeNameLower = String(typeRow?.name || insurance_type).toLowerCase();
+  const isHealth = typeNameLower.includes('health');
+  const isVehicle =
+    typeNameLower.includes('vehicle') || typeNameLower.includes('motor');
+  const isLife = typeNameLower.includes('life');
+
+  const errors = [];
+  if (!customer_name) errors.push('Full name / customer name is required.');
+  if (!insurance_type) errors.push('Insurance type is required.');
+  if (!company) errors.push('Company is required.');
+
+  if (isHealth) {
+    if (!premium_amount) errors.push('Premium / sum insured is required.');
+    if (!policy_duration) errors.push('Policy duration is required.');
+  }
+  if (isVehicle) {
+    if (!vehicle_number) errors.push('Vehicle number is required.');
+    if (!policy_type) errors.push('Policy type is required.');
+    const allowedPolicy = ['full cover', 'third party', 'bumper to bumper'];
+    if (
+      policy_type &&
+      !allowedPolicy.includes(policy_type.toLowerCase())
+    ) {
+      errors.push('Invalid policy type.');
+    }
+  }
+  if (isLife) {
+    if (!date_of_birth) errors.push('Date of birth is required.');
+    if (!plan_name) errors.push('Plan name is required.');
+    if (!yearly_premium_amount) {
+      errors.push('Yearly premium amount is required.');
+    }
+  }
+
   if (insurance_type && !typeRow) {
     errors.push('Invalid insurance type.');
   }
@@ -176,26 +212,21 @@ router.post('/form/:token', async (req, res) => {
   }
 
   if (
+    isHealth &&
     premium_amount &&
-    !catalog.premiums.some(
+    catalog.premiums.length
+  ) {
+    const ok = catalog.premiums.some(
       (p) =>
         p.value === premium_amount ||
         p.label === premium_amount ||
         String(p.id) === premium_amount
-    )
-  ) {
-    // allow free-text fallback if catalog empty; otherwise soft-check labels/values
-    if (catalog.premiums.length) {
-      const ok = catalog.premiums.some(
-        (p) =>
-          p.value === premium_amount ||
-          p.label === premium_amount
-      );
-      if (!ok) errors.push('Invalid premium option.');
-    }
+    );
+    if (!ok) errors.push('Invalid premium option.');
   }
 
   if (
+    isHealth &&
     policy_duration &&
     catalog.durations.length &&
     !catalog.durations.some(
@@ -205,8 +236,6 @@ router.post('/form/:token', async (req, res) => {
     errors.push('Invalid policy duration.');
   }
 
-  const isHealth =
-    typeRow && String(typeRow.name).toLowerCase().includes('health');
   if (isHealth && member_count && members.length < member_count) {
     errors.push('Please fill details for each member.');
   }
@@ -216,14 +245,36 @@ router.post('/form/:token', async (req, res) => {
     return res.redirect(`/form/${token}`);
   }
 
-  const premiumLabel =
-    catalog.premiums.find(
-      (p) => p.value === premium_amount || p.label === premium_amount
-    )?.label || premium_amount;
-  const durationLabel =
-    catalog.durations.find(
-      (d) => d.value === policy_duration || d.label === policy_duration
-    )?.label || policy_duration;
+  const premiumLabel = isLife
+    ? yearly_premium_amount
+    : isVehicle
+      ? null
+      : catalog.premiums.find(
+          (p) => p.value === premium_amount || p.label === premium_amount
+        )?.label || premium_amount;
+
+  const durationLabel = isLife
+    ? 'Yearly'
+    : isVehicle
+      ? null
+      : catalog.durations.find(
+          (d) => d.value === policy_duration || d.label === policy_duration
+        )?.label || policy_duration;
+
+  const extra = {
+    insurance_type_id: typeRow?.id || null,
+    company_id: companyRow?.id || null,
+  };
+  if (isVehicle) {
+    extra.vehicle_number = vehicle_number;
+    extra.policy_type = policy_type;
+    extra.insurance_company_name = companyRow ? companyRow.name : company;
+  }
+  if (isLife) {
+    extra.date_of_birth = date_of_birth;
+    extra.plan_name = plan_name;
+    extra.yearly_premium_amount = yearly_premium_amount;
+  }
 
   const updated = Submissions.submitForm(token, {
     customer_name,
@@ -234,10 +285,7 @@ router.post('/form/:token', async (req, res) => {
     policy_duration: durationLabel,
     member_count: isHealth ? member_count || members.length || null : null,
     members: isHealth && members.length ? members : null,
-    extra: {
-      insurance_type_id: typeRow?.id || null,
-      company_id: companyRow?.id || null,
-    },
+    extra,
   });
 
   let notifyResult = null;

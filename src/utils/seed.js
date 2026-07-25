@@ -129,6 +129,7 @@ function seed() {
   if (InsuranceTypes.list().length === 0) {
     const health = InsuranceTypes.create({ name: 'Health', sort_order: 1 });
     const vehicle = InsuranceTypes.create({ name: 'Vehicle', sort_order: 2 });
+    const life = InsuranceTypes.create({ name: 'Life', sort_order: 3 });
 
     Companies.create({
       name: 'Star Health',
@@ -166,6 +167,57 @@ function seed() {
       desk_phone: '919777777777',
       sort_order: 3,
     });
+    Companies.create({
+      name: 'LIC',
+      insurance_type_id: life.id,
+      desk_phone: '919666666666',
+      sort_order: 1,
+    });
+    Companies.create({
+      name: 'HDFC Life',
+      insurance_type_id: life.id,
+      desk_phone: '919666666666',
+      sort_order: 2,
+    });
+    Companies.create({
+      name: 'Max Life',
+      insurance_type_id: life.id,
+      desk_phone: '919666666666',
+      sort_order: 3,
+    });
+  } else {
+    // Existing DBs: ensure Life type + sample companies exist (idempotent)
+    let life = InsuranceTypes.list().find((t) =>
+      /life/i.test(String(t.name || ''))
+    );
+    if (!life) {
+      life = InsuranceTypes.create({ name: 'Life', sort_order: 3 });
+      console.log('Seeded insurance type: Life');
+    }
+    const lifeCompanies = Companies.list(false, life.id).filter(
+      (c) => Number(c.insurance_type_id) === Number(life.id)
+    );
+    if (lifeCompanies.length === 0) {
+      Companies.create({
+        name: 'LIC',
+        insurance_type_id: life.id,
+        desk_phone: '919666666666',
+        sort_order: 1,
+      });
+      Companies.create({
+        name: 'HDFC Life',
+        insurance_type_id: life.id,
+        desk_phone: '919666666666',
+        sort_order: 2,
+      });
+      Companies.create({
+        name: 'Max Life',
+        insurance_type_id: life.id,
+        desk_phone: '919666666666',
+        sort_order: 3,
+      });
+      console.log('Seeded Life insurance companies');
+    }
   }
 
   if (PremiumOptions.list().length === 0) {
