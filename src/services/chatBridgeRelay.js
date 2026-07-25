@@ -399,22 +399,32 @@ class ChatBridgeRelay {
     const voice = isVoiceType(msgType, null);
     let liveMessage = message;
 
-    // Background download as secondary path (does not block primary forward)
     console.log(
-      `[BridgeRelay] Media relay PRIMARY=native-forward type=${msgType} (${direction})`
+      `[BridgeRelay] Media relay PRIMARY=buffer-download+sendMessage type=${msgType} (${direction})`
     );
+
+    // Refresh message in Store while we start download (helps downloadMedia)
+    try {
+      liveMessage =
+        (await this.wa.pm.waitForMessageInStore(liveMessage, 5000)) ||
+        liveMessage;
+    } catch (err) {
+      console.warn('[BridgeRelay] pre-download store wait:', err.message);
+    }
+
+    // Download buffer IN PARALLEL with human presence delay
     const downloadPromise = (async () => {
       try {
+        console.log(
+          `[BridgeRelay] Downloading media buffer (${direction}) type=${msgType}…`
+        );
         const media = await this.wa.prepareRelayMedia(liveMessage);
         console.log(
-          `[BridgeRelay] Background download buffer=${media?.data ? String(media.data).length : 0} mime=${media?.mimetype || '—'}`
+          `[BridgeRelay] Download result buffer=${media?.data ? String(media.data).length : 0} mime=${media?.mimetype || '—'} file=${media?.filename || '—'}`
         );
         return media;
       } catch (err) {
-        console.error(
-          '[BridgeRelay] background prepareRelayMedia:',
-          err.message
-        );
+        console.error('[BridgeRelay] prepareRelayMedia:', err.message);
         console.error(err.stack);
         return null;
       }
@@ -429,39 +439,7 @@ class ChatBridgeRelay {
       console.warn('[BridgeRelay] pre-send presence:', err.message);
     }
 
-    // ── Path A (PRIMARY): native / page forward ──
-    try {
-      console.log(
-        `[BridgeRelay] PRIMARY native forward → ${destCandidates.length} candidate(s)`
-      );
-      try {
-        liveMessage =
-          (await this.wa.pm.waitForMessageInStore(liveMessage, 6000)) ||
-          liveMessage;
-      } catch (err) {
-        console.warn('[BridgeRelay] pre-forward store wait:', err.message);
-      }
-
-      const forwarded = await this.nativeForward(liveMessage, destCandidates, {
-        skipTyping: true,
-      });
-      if (forwarded) {
-        bindDest(forwarded._outboundChatId);
-        console.log(
-          `[BridgeRelay] NATIVE FORWARD OK (${direction}) → ${forwarded._outboundChatId}`
-        );
-        downloadPromise.catch(() => null);
-        return;
-      }
-      console.warn(
-        `[BridgeRelay] Primary native forward missed (${direction}) — buffer fallback`
-      );
-    } catch (err) {
-      console.error('[BridgeRelay] primary forward error:', err.message);
-      console.error(err.stack);
-    }
-
-    // ── Path B: buffer re-send ──
+    // ── Path A (PRIMARY): download buffer → Client.sendMessage(media, { caption }) ──
     let media = null;
     try {
       media = await downloadPromise;
@@ -470,15 +448,36 @@ class ChatBridgeRelay {
       console.error(err.stack);
     }
 
+    // One more download attempt if first returned empty
+    if (!media?.data) {
+      try {
+        console.log('[BridgeRelay] Buffer empty — retry prepareRelayMedia…');
+        try {
+          liveMessage =
+            (await this.wa.pm.reloadMessageForMedia(liveMessage)) ||
+            liveMessage;
+        } catch (_) {}
+        media = await this.wa.prepareRelayMedia(liveMessage);
+        console.log(
+          `[BridgeRelay] Retry download buffer=${media?.data ? String(media.data).length : 0}`
+        );
+      } catch (err) {
+        console.error('[BridgeRelay] retry prepareRelayMedia:', err.message);
+        console.error(err.stack);
+      }
+    }
+
     if (media?.data) {
+      const sendErrors = [];
       for (const candidate of destCandidates) {
         try {
           if (voice) await this.wa.pm.sendRecordingPresence(candidate);
           else await this.wa.sendTypingPresence(candidate);
 
           console.log(
-            `[BridgeRelay] FALLBACK sendMedia → ${candidate} type=${msgType} mime=${media.mimetype} b64=${String(media.data).length}`
+            `[BridgeRelay] sendMessage(media) → ${candidate} type=${msgType} mime=${media.mimetype} file=${media.filename || '—'} b64=${String(media.data).length} captionLen=${String(cleanBody || '').length}`
           );
+
           const sent = await this.wa.sendMedia(destPhone, media, {
             caption: cleanBody || undefined,
             chatId: candidate,
@@ -487,74 +486,78 @@ class ChatBridgeRelay {
             skipLimiter: true,
             msgType,
           });
-          bindDest(sent?._outboundChatId || candidate);
-          console.log(
-            `[BridgeRelay] MEDIA BUFFER SEND OK (${direction}) → ${candidate}`
+
+          if (sent) {
+            bindDest(sent._outboundChatId || candidate);
+            console.log(
+              `[BridgeRelay] MEDIA BUFFER SEND OK (${direction}) → ${candidate} — skipping native forward`
+            );
+            return;
+          }
+          console.warn(
+            `[BridgeRelay] sendMedia returned null/undefined for ${candidate}`
           );
-          return;
+          sendErrors.push(`${candidate}:null_result`);
         } catch (err) {
           console.error(
             `[BridgeRelay] sendMedia → ${candidate} FAILED:`,
             err.message
           );
           console.error(err.stack);
+          sendErrors.push(`${candidate}:${err.message}`);
         }
       }
       console.warn(
-        `[BridgeRelay] Buffer send failed — retrying native forward`
+        `[BridgeRelay] All buffer send candidates failed: ${sendErrors.join(' | ')}`
       );
     } else {
       console.warn(
-        `[BridgeRelay] No media buffer — retrying native forward`
+        `[BridgeRelay] No media buffer after download (${direction}) type=${msgType}`
       );
     }
 
-    // ── Path C: native forward retry ──
+    // ── Path B (OPTIONAL): native forward ONLY with a valid serialized id ──
+    let canNativeForward = false;
     try {
-      console.log('[BridgeRelay] SECONDARY native forward retry…');
-      try {
-        liveMessage =
-          (await this.wa.pm.reloadMessageForMedia(liveMessage)) || liveMessage;
-      } catch (_) {}
-      const forwarded = await this.nativeForward(liveMessage, destCandidates, {
-        skipTyping: true,
-      });
-      if (forwarded) {
-        bindDest(forwarded._outboundChatId);
-        console.log(
-          `[BridgeRelay] NATIVE FORWARD RETRY OK (${direction}) → ${forwarded._outboundChatId}`
+      const sid = this.wa.pm.getSerializedMsgId
+        ? this.wa.pm.getSerializedMsgId(liveMessage)
+        : null;
+      canNativeForward = !!(
+        sid &&
+        this.wa.pm.isValidSerializedMsgId &&
+        this.wa.pm.isValidSerializedMsgId(sid)
+      );
+      if (!canNativeForward) {
+        console.warn(
+          `[BridgeRelay] Skipping native forward — invalid/missing serialized id (buffer path preferred)`
         );
-        return;
       }
-    } catch (err) {
-      console.error('[BridgeRelay] forward retry error:', err.message);
-      console.error(err.stack);
+    } catch (_) {
+      canNativeForward = false;
     }
 
-    // ── Path D: final download+send ──
-    try {
-      console.log('[BridgeRelay] Final download+send attempt…');
-      media = await this.wa.prepareRelayMedia(liveMessage);
-      if (media?.data) {
-        if (voice) await this.wa.pm.sendRecordingPresence(destChatId);
-        else await this.wa.sendTypingPresence(destChatId);
-        const sent = await this.wa.sendMedia(destPhone, media, {
-          caption: cleanBody || undefined,
-          chatId: destChatId,
-          skipTyping: true,
-          skipPacing: true,
-          skipLimiter: true,
-          msgType,
-        });
-        bindDest(sent?._outboundChatId || destChatId);
-        console.log(`[BridgeRelay] MEDIA FINAL SEND OK (${direction})`);
-        return;
+    if (canNativeForward) {
+      try {
+        console.log('[BridgeRelay] Soft fallback: native forward (valid id)…');
+        const forwarded = await this.nativeForward(
+          liveMessage,
+          destCandidates,
+          { skipTyping: true }
+        );
+        if (forwarded) {
+          bindDest(forwarded._outboundChatId);
+          console.log(
+            `[BridgeRelay] NATIVE FORWARD OK (${direction}) → ${forwarded._outboundChatId}`
+          );
+          return;
+        }
+      } catch (err) {
+        console.error('[BridgeRelay] native forward error:', err.message);
+        console.error(err.stack);
       }
-    } catch (err) {
-      console.error('[BridgeRelay] final media send failed:', err.message);
-      console.error(err.stack);
     }
 
+    // ── Path C: caption-only last resort ──
     if (cleanBody) {
       console.warn(
         `[BridgeRelay] Media failed (${direction}) — caption text only`
@@ -574,7 +577,7 @@ class ChatBridgeRelay {
     }
 
     console.error(
-      `[BridgeRelay] MEDIA RELAY FAILED (${msgType}) ${direction} — forward + buffer both failed`
+      `[BridgeRelay] MEDIA RELAY FAILED (${msgType}) ${direction} — buffer send did not succeed`
     );
     this.unsee(waId);
   }
@@ -595,27 +598,50 @@ class ChatBridgeRelay {
         ? this.wa.pm.getSerializedMsgId(message)
         : null;
       if (
-        !msgId &&
-        message.id?._serialized &&
-        /^(true|false)_.+@.+_.+/.test(String(message.id._serialized))
+        msgId &&
+        this.wa.pm.isValidSerializedMsgId &&
+        !this.wa.pm.isValidSerializedMsgId(msgId)
       ) {
-        msgId = String(message.id._serialized);
+        msgId = null;
       }
     } catch (_) {
-      msgId =
-        message.id?._serialized &&
-        /^(true|false)_/.test(String(message.id._serialized))
-          ? String(message.id._serialized)
-          : null;
+      msgId = null;
     }
 
     if (!msgId) {
+      // Do not spam forwardMessageById with invalid ids
       console.warn(
-        '[BridgeRelay] nativeForward: no valid serialized id — message.forward() only'
+        '[BridgeRelay] nativeForward aborted — no valid serialized id'
       );
-    } else {
-      console.log(`[BridgeRelay] nativeForward msgId=${msgId}`);
+      // Still try message.forward() which may work without our id string
+      for (const chatId of destChatIds) {
+        if (!chatId || typeof message.forward !== 'function') continue;
+        try {
+          if (opts.skipTyping) await this.wa.sendTypingPresence(chatId);
+          console.log(
+            `[BridgeRelay] message.forward (no page id) → ${chatId}`
+          );
+          await message.forward(chatId);
+          this.wa._lastOutboundChatId = chatId;
+          this.wa.markBotOutbound(chatId, 20000);
+          console.log(`[BridgeRelay] message.forward OK → ${chatId}`);
+          return {
+            ok: true,
+            _outboundChatId: chatId,
+            via: 'message.forward',
+          };
+        } catch (err) {
+          console.error(
+            `[BridgeRelay] message.forward → ${chatId} failed:`,
+            err.message
+          );
+          console.error(err.stack);
+        }
+      }
+      return null;
     }
+
+    console.log(`[BridgeRelay] nativeForward msgId=${msgId}`);
 
     for (const chatId of destChatIds) {
       if (!chatId) continue;
@@ -626,17 +652,15 @@ class ChatBridgeRelay {
           await this.wa.sendTypingPresence(chatId);
         }
 
-        if (msgId) {
-          console.log(
-            `[BridgeRelay] page forwardMessage → ${chatId} id=${msgId}`
-          );
-          const ok = await this.wa.pm.forwardMessageById(msgId, chatId);
-          if (ok) {
-            this.wa._lastOutboundChatId = chatId;
-            this.wa.markBotOutbound(chatId, 20000);
-            console.log(`[BridgeRelay] page forward OK → ${chatId}`);
-            return { ok: true, _outboundChatId: chatId, via: 'page' };
-          }
+        console.log(
+          `[BridgeRelay] page forwardMessage → ${chatId} id=${msgId}`
+        );
+        const ok = await this.wa.pm.forwardMessageById(msgId, chatId);
+        if (ok) {
+          this.wa._lastOutboundChatId = chatId;
+          this.wa.markBotOutbound(chatId, 20000);
+          console.log(`[BridgeRelay] page forward OK → ${chatId}`);
+          return { ok: true, _outboundChatId: chatId, via: 'page' };
         }
 
         if (typeof message.forward === 'function') {
@@ -651,10 +675,6 @@ class ChatBridgeRelay {
             via: 'message.forward',
           };
         }
-
-        console.warn(
-          `[BridgeRelay] no forward method available for ${chatId}`
-        );
       } catch (err) {
         console.error(
           `[BridgeRelay] forward → ${chatId} failed:`,

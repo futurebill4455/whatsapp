@@ -1282,8 +1282,9 @@ function createPresenceMediaHelpers(wa) {
     // Normalize / validate id (never pass bare hash)
     let id = msgId;
     if (!isValidSerializedMsgId(id)) {
+      // Soft skip — callers prefer buffer send; do not throw
       console.warn(
-        `[Media] forwardMessageById: invalid id "${String(msgId || '').slice(0, 80)}" — abort page forward`
+        `[Media] forwardMessageById skipped (invalid id): ${String(msgId || '').slice(0, 80)}`
       );
       return false;
     }
