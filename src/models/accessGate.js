@@ -1,6 +1,6 @@
 /**
  * Common access-code gate (Settings.common_access_code).
- * No per-user phone whitelist — any sender with the shared code starts the flow.
+ * Only an exact match of the shared code unlocks the flow — everything else is ignored.
  */
 const db = require('../config/db');
 
@@ -10,6 +10,7 @@ function settingsGet(key, fallback = null) {
 }
 
 const AccessGate = {
+  /** Strip zero-width chars / spaces / punctuation; uppercase. " insu-2026 " → "INSU2026" */
   normalizeCode(code) {
     return String(code || '')
       .replace(/[\u200B-\u200D\uFEFF]/g, '')
@@ -18,47 +19,31 @@ const AccessGate = {
       .replace(/[^A-Z0-9]/g, '');
   },
 
-  codeCandidatesFromMessage(raw) {
-    const text = String(raw || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
-    const out = [];
-    const push = (v) => {
-      const n = this.normalizeCode(v);
-      if (n && n.length >= 3 && !out.includes(n)) out.push(n);
-    };
-    if (!text) return out;
-    push(text);
-    for (const tok of text.split(/[\s,;|:@#]+/)) push(tok);
-    const parts = text.split(/\s+/).filter(Boolean);
-    if (parts.length > 1) push(parts[parts.length - 1]);
-    return out;
-  },
-
   getCommonCode() {
     return this.normalizeCode(settingsGet('common_access_code', 'INSU2026'));
   },
 
-  /** Compare inbound WhatsApp text to the shared admin-configured code. */
+  /**
+   * Unlock only when the entire inbound message is exactly the common access code.
+   * Greetings, wrong codes, and random chat → silent (ok: false).
+   */
   tryUnlock(_phone, codeInput) {
     const expected = this.getCommonCode();
     if (!expected) {
       return { ok: false, reason: 'not_configured' };
     }
 
-    const candidates = this.codeCandidatesFromMessage(codeInput);
-    if (!candidates.length) {
-      return { ok: false, reason: 'invalid_input' };
+    const got = this.normalizeCode(codeInput);
+    if (!got) {
+      return { ok: false, reason: 'ignored' };
     }
 
-    if (candidates.includes(expected)) {
+    if (got === expected) {
       return { ok: true, reason: 'unlocked', matchedCode: expected };
     }
 
-    const looksLikeCode = candidates.some((c) => c.length >= 4);
-    return {
-      ok: false,
-      reason: looksLikeCode ? 'wrong_code' : 'noise',
-      matchedCode: null,
-    };
+    // Never treat as a soft "wrong code" — caller must stay silent
+    return { ok: false, reason: 'ignored', matchedCode: null };
   },
 };
 

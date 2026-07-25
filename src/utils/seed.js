@@ -45,10 +45,8 @@ function seed() {
     chat_close_message: 'Thank you! Your conversation has been ended. Have a good day!',
     company_close_notify_message:
       'Customer ended the chat [#{{session_code}}] ({{customer_phone}}).\nSession closed.',
-    access_denied_message:
-      'Please send the correct access code to continue.',
-    access_wrong_code_message:
-      'Hmm, that code doesn’t look right. Can you double-check and send again?',
+    access_denied_message: '',
+    access_wrong_code_message: '',
     access_granted_message: '',
     flow_welcome_message: '',
     public_base_url: '',
@@ -83,6 +81,9 @@ function seed() {
   if (Settings.get('form_link_message') === '{{form_link}}') {
     Settings.set('form_link_message', '');
   }
+  // Ensure wrong-code replies stay disabled (silent unless exact code)
+  Settings.set('access_wrong_code_message', '');
+  Settings.set('access_denied_message', '');
 
   if (InsuranceTypes.list().length === 0) {
     const health = InsuranceTypes.create({ name: 'Health', sort_order: 1 });

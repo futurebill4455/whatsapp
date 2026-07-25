@@ -270,27 +270,15 @@ class WorkflowEngine {
       }
     }
 
-    // Common access code — any sender, no phone whitelist
+    // Common access code only — any other text is ignored (no error replies)
     const unlock = AccessGate.tryUnlock(phone, text);
     console.log(
       `[Workflow] AccessGate → ok=${unlock.ok} reason=${unlock.reason} matched=${unlock.matchedCode || ''}`
     );
 
     if (!unlock.ok) {
-      if (unlock.reason === 'wrong_code') {
-        const wrongMsg = String(Settings.get('access_wrong_code_message') || '').trim();
-        if (wrongMsg) {
-          try {
-            await this.whatsapp.sendMessage(phone, wrongMsg, sendOpts(baseCtx));
-          } catch (err) {
-            console.error('[Workflow] wrong-code reply failed:', err.message);
-          }
-          return { handled: true, reason: 'wrong_code_replied' };
-        }
-      } else if (unlock.reason === 'not_configured') {
-        console.warn('[Workflow] common_access_code is not configured in Settings');
-      }
-      return { handled: true, reason: unlock.reason || 'unauthorized', silent: true };
+      // Completely silent: no "wrong code" / greeting replies
+      return { handled: true, reason: 'ignored_silent', silent: true };
     }
 
     baseCtx.matched_code = unlock.matchedCode;

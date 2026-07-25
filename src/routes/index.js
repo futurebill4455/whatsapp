@@ -383,15 +383,15 @@ router.post('/admin/chat-flow', requireAdmin, (req, res) => {
     common_access_code: code,
     public_base_url: publicBase,
     form_link_message: String(req.body.form_link_message || '').trim(),
-    access_wrong_code_message: String(req.body.access_wrong_code_message || ''),
     form_intro: String(req.body.form_intro || ''),
     success_message: String(req.body.success_message || ''),
     chat_close_message: String(req.body.chat_close_message || ''),
     company_close_notify_message: String(req.body.company_close_notify_message || ''),
     forward_template: String(req.body.forward_template || ''),
-    // Keep legacy keys empty so old robotic openers never fire
+    // Never auto-reply on wrong/random messages
     access_granted_message: '',
     flow_welcome_message: '',
+    access_wrong_code_message: '',
   });
 
   req.session.flash = {
