@@ -26,6 +26,7 @@ const {
   isMediaLikeMessage,
   buildMediaSendOptionSets,
 } = require('./waPresenceMedia');
+const { createChatBridgeRelay } = require('./chatBridgeRelay');
 
 const AUTH_PATH = path.join(process.cwd(), '.wwebjs_auth');
 const CACHE_PATH = path.join(process.cwd(), '.wwebjs_cache');
@@ -126,6 +127,7 @@ class WhatsAppService {
     this._pendingQrRaw = null;
     this._lastQrEmitAt = 0;
     this._presenceMedia = null;
+    this._bridgeRelay = null;
     this.engine = bindEngine(this);
   }
 
@@ -178,6 +180,13 @@ class WhatsAppService {
       this._presenceMedia = createPresenceMediaHelpers(this);
     }
     return this._presenceMedia;
+  }
+
+  get bridge() {
+    if (!this._bridgeRelay) {
+      this._bridgeRelay = createChatBridgeRelay(this);
+    }
+    return this._bridgeRelay;
   }
 
   attachSocket(io) {
@@ -568,24 +577,42 @@ class WhatsAppService {
     });
 
     client.on('disconnected', async (reason) => {
-      this.stopUnreadPoller();
-      this.status = 'disconnected';
-      this.ready = false;
-      this.info = null;
-      this.lastError = String(reason || 'disconnected');
-      this.clearQr('disconnected');
-      this.emit('whatsapp:status', this.getPublicStatus());
-      console.warn('[WhatsApp] Disconnected:', reason);
-      const reasonStr = String(reason || '').toUpperCase();
-      if (reasonStr.includes('LOGOUT') || reasonStr.includes('CONFLICT')) {
-        await this.destroyClient();
-        this.clearSessionFiles();
-      }
-      await sleep(4000);
       try {
-        await this.init({ force: true });
+        this.stopUnreadPoller();
+        this.status = 'disconnected';
+        this.ready = false;
+        this.info = null;
+        this.lastError = String(reason || 'disconnected');
+        this.clearQr('disconnected');
+        this.emit('whatsapp:status', this.getPublicStatus());
+        console.warn('[WhatsApp] Disconnected:', reason);
+
+        const reasonStr = String(reason || '').toUpperCase();
+        if (reasonStr.includes('LOGOUT') || reasonStr.includes('CONFLICT')) {
+          try {
+            await this.destroyClient();
+          } catch (err) {
+            console.error('[WhatsApp] destroyClient on disconnect:', err.message);
+          }
+          try {
+            this.clearSessionFiles();
+          } catch (err) {
+            console.error('[WhatsApp] clearSessionFiles:', err.message);
+          }
+        }
+
+        await sleep(4000);
+        try {
+          console.log('[WhatsApp] Auto-reconnecting after disconnect…');
+          await this.init({ force: true });
+        } catch (err) {
+          console.error('[WhatsApp] Reconnect failed (will retry on next event):', err.message);
+          console.error(err.stack);
+          // Never rethrow — keep PM2 process alive
+        }
       } catch (err) {
-        console.error('[WhatsApp] Reconnect failed:', err.message);
+        console.error('[WhatsApp] disconnected handler FATAL (swallowed):', err.message);
+        console.error(err.stack);
       }
     });
 
@@ -733,9 +760,8 @@ class WhatsAppService {
       isAccessCode = !!AccessGate.tryUnlock(peerKey || key, body).ok;
     } catch (_) {}
 
-    const delayMs = isAccessCode
-      ? Math.min(this.getSmartDelayMs(), Number(process.env.WA_ACCESS_CODE_DELAY_MS) || 2500)
-      : this.getSmartDelayMs();
+    // Always use unique 1–45s human delay (never instant)
+    const delayMs = antiBan.nextVariableDelayMs();
 
     const existing = this._pendingSmartDelay.get(key);
     if (existing?.timer) clearTimeout(existing.timer);
@@ -744,7 +770,7 @@ class WhatsAppService {
     console.log(
       `[WhatsApp] Smart delay ${delayMs}ms for ${key}` +
         (isAccessCode ? ' [access-code — will not abort for manual-reply false positives]' : '') +
-        ' — will check before access-code flow'
+        ' — typing presence during wait'
     );
 
     const payload = {
@@ -757,9 +783,15 @@ class WhatsAppService {
       forceAccessCode: isAccessCode,
     };
 
+    // Show live typing for the full human window (cancel clears timer only)
+    this.showTypingFor(key, delayMs).catch((err) => {
+      console.warn('[WhatsApp] Smart-delay typing failed:', err.message);
+    });
+
     if (delayMs <= 0) {
       this.runAccessWorkflowAfterDelay(payload).catch((err) => {
         console.error('[WhatsApp] Smart delay process error:', err.message);
+        console.error(err.stack);
       });
       return;
     }
@@ -768,6 +800,7 @@ class WhatsAppService {
       this._pendingSmartDelay.delete(key);
       this.runAccessWorkflowAfterDelay(payload).catch((err) => {
         console.error('[WhatsApp] Smart delay process error:', err.message);
+        console.error(err.stack);
       });
     }, delayMs);
 
@@ -1204,129 +1237,12 @@ class WhatsAppService {
   }
 
   /**
-   * Two-way live relay. Close/CLS from either side → silent session end.
+   * Two-way live relay — delegated to ChatBridgeRelay controller.
    */
   async handleChatBridge(message, phone, chatId, body) {
-    const digits = this.formatPhone(phone);
-    const msgType = String(message.type || '').toLowerCase();
-    // Never drop image/pdf/document — detect beyond fragile hasMedia/directPath
-    const hasMedia = isMediaLikeMessage(message);
-
-    // ── Customer side (phone match OR stored WhatsApp chat id / @lid) ──
-    let customerSession =
-      (digits && ChatSessions.findActiveByCustomer(digits)) ||
-      (chatId && ChatSessions.findActiveByCustomerChatId(chatId)) ||
-      null;
-
-    if (customerSession) {
-      // Close only on plain text keywords — never treat media captions as close
-      if (!hasMedia && body && isCloseCommand(body)) {
-        await this.closeChatSession(customerSession, {
-          closedBy: 'customer',
-          silent: true,
-        });
-        return true;
-      }
-
-      ChatSessions.touch(customerSession.id, {
-        customer_chat_id: chatId,
-        side: 'customer',
-      });
-      console.log(
-        `[ChatBridge] Customer→Desk session #${customerSession.id}[${customerSession.session_code}] media=${hasMedia} type=${msgType || 'text'} hasMediaFlag=${!!message.hasMedia}`
-      );
-      await this.relayMessageAcrossBridge(
-        message,
-        customerSession,
-        'customer_to_desk',
-        body,
-        hasMedia
-      );
-      return true;
-    }
-
-    // ── Desk side ──
-    const deskCandidates =
-      (digits && ChatSessions.listActiveByDesk(digits)) || [];
-    const deskByChat =
-      chatId && ChatSessions.findActiveByDeskChatId
-        ? ChatSessions.findActiveByDeskChatId(chatId)
-        : null;
-
-    if (
-      !deskCandidates.length &&
-      !deskByChat &&
-      !(digits && ChatSessions.isDeskPhone(digits))
-    ) {
-      return false;
-    }
-
-    let quotedWaId = null;
-    try {
-      if (message.hasQuotedMsg) {
-        const quoted = await message.getQuotedMessage();
-        quotedWaId =
-          quoted?.id?._serialized || quoted?.id?.id || null;
-      }
-    } catch (err) {
-      console.warn('[ChatBridge] getQuotedMessage failed:', err.message);
-    }
-
-    const resolved = ChatSessions.resolveDeskInbound(digits || phone, {
-      quotedWaId,
-      body,
-      chatId,
-    });
-    // resolveDeskInbound returns { session, method } — unwrap carefully
-    const deskSession = resolved?.session || null;
-    if (!deskSession?.id) {
-      if (deskByChat?.id) {
-        // Fall back to desk chat id match
-        return this._relayDeskSession(message, deskByChat, chatId, body, hasMedia);
-      }
-      console.warn(
-        `[ChatBridge] Desk inbound unmatched phone=${digits || '?'} chatId=${chatId || '?'} method=${resolved?.method || 'none'}`
-      );
-      return false;
-    }
-
-    console.log(
-      `[ChatBridge] Desk→Customer session #${deskSession.id}[${deskSession.session_code}] via ${resolved.method || 'resolve'}`
-    );
-    return this._relayDeskSession(message, deskSession, chatId, body, hasMedia);
+    return this.bridge.handleInbound(message, phone, chatId, body);
   }
 
-  async _relayDeskSession(message, deskSession, chatId, body, hasMedia) {
-    const media = !!(hasMedia || isMediaLikeMessage(message));
-
-    if (!media && body && isCloseCommand(body)) {
-      await this.closeChatSession(deskSession, {
-        closedBy: 'desk',
-        silent: true,
-      });
-      return true;
-    }
-
-    ChatSessions.touch(deskSession.id, {
-      desk_chat_id: chatId,
-      side: 'desk',
-    });
-    console.log(
-      `[ChatBridge] Desk→Customer session #${deskSession.id}[${deskSession.session_code}] media=${!!media} type=${message?.type || 'text'} hasMediaFlag=${!!message?.hasMedia} bodyLen=${String(body || '').length}`
-    );
-    await this.relayMessageAcrossBridge(
-      message,
-      deskSession,
-      'desk_to_customer',
-      body,
-      media
-    );
-    return true;
-  }
-
-  /**
-   * Close bridge. Desk gets a red status dot only — no long text notices.
-   */
   async closeChatSession(session, { closedBy = 'system', silent = true } = {}) {
     if (!session?.id) return;
     try {
@@ -1337,10 +1253,9 @@ class WhatsAppService {
       );
     } catch (err) {
       console.error('[ChatBridge] close failed:', err.message);
+      console.error(err.stack);
       return;
     }
-
-    // Company status: red dot only
     try {
       await this.sendMessage(session.desk_phone, '🔴', {
         chatId: session.desk_chat_id || undefined,
@@ -1355,348 +1270,19 @@ class WhatsAppService {
   }
 
   async resolveBridgeDestChatIds(destPhone, preferredChatId = null) {
-    const candidates = [];
-    const push = (id) => {
-      const s = String(id || '').trim();
-      if (s && !candidates.includes(s)) candidates.push(s);
-    };
-
-    // Prefer stored chat id (@lid or @c.us) — critical for desk→customer media
-    push(preferredChatId);
-    if (preferredChatId) {
-      const user = String(preferredChatId).replace(/@.+$/, '');
-      if (user) {
-        if (String(preferredChatId).endsWith('@lid')) {
-          push(`${user}@lid`);
-        } else {
-          push(`${user}@c.us`);
-          push(`${user}@lid`);
-        }
-      }
-    }
-
-    const digits = this.formatPhone(destPhone);
-    if (digits) {
-      push(`${digits}@c.us`);
-      try {
-        const resolved = await this.resolveOutboundChatId(digits);
-        push(resolved);
-      } catch (err) {
-        console.warn(
-          `[ChatBridge] resolveOutboundChatId(${digits}):`,
-          err.message
-        );
-      }
-    }
-
-    console.log(
-      `[ChatBridge] dest candidates phone=${digits || destPhone || '—'} → ${candidates.join(' | ') || '(none)'}`
-    );
-    return candidates;
+    return this.bridge.resolveDestChatIds(destPhone, preferredChatId);
   }
 
-  /**
-   * Download inbound media as MessageMedia (images, PDFs, docs, audio, video, stickers).
-   */
   async prepareRelayMedia(message) {
     return this.pm.prepareRelayMedia(message);
   }
 
   async relayMessageAcrossBridge(message, session, direction, body, hasMediaFlag = null) {
-    try {
-      this.normalizeIncomingMessageIds(message);
-
-      const toCustomer = direction === 'desk_to_customer';
-      const destPhone = toCustomer ? session.customer_phone : session.desk_phone;
-      const preferredChatId = toCustomer
-        ? session.customer_chat_id
-        : session.desk_chat_id;
-      const msgType = String(message.type || '').toLowerCase();
-      const hasMedia =
-        hasMediaFlag != null ? !!hasMediaFlag : isMediaLikeMessage(message);
-
-      const destCandidates = await this.resolveBridgeDestChatIds(
-        destPhone,
-        preferredChatId
-      );
-      if (!destCandidates.length) {
-        console.error(
-          `[ChatBridge] No dest chat ids for ${direction} phone=${destPhone} preferred=${preferredChatId || '—'}`
-        );
-        return;
-      }
-
-      const destChatId = preferredChatId || destCandidates[0];
-      const waId = message.id?._serialized || message.id?.id || null;
-      if (waId) {
-        try {
-          ChatSessions.trackMessage(
-            session.id,
-            direction,
-            String(waId),
-            body || `[${msgType || 'msg'}]`
-          );
-        } catch (err) {
-          console.warn('[ChatBridge] trackMessage:', err.message);
-        }
-      }
-
-      const cleanBody = antiBan.cleanRelayText(body);
-      console.log(
-        `[ChatBridge] ${direction} media=${hasMedia} type=${msgType || 'text'} dest=${destChatId} candidates=${destCandidates.length} captionLen=${String(cleanBody || '').length}`
-      );
-
-      const bindDest = (bound) => {
-        const id = bound || destChatId;
-        if (!id) return;
-        try {
-          if (toCustomer) ChatSessions.bindCustomerChatId(session.id, id);
-          else ChatSessions.bindDeskChatId(session.id, id);
-        } catch (err) {
-          console.warn('[ChatBridge] bindDest:', err.message);
-        }
-      };
-
-      // ── MEDIA PATH: download FIRST (before 1–30s typing) so CDN keys don't go stale ──
-      if (hasMedia) {
-        let media = null;
-        try {
-          console.log(
-            `[ChatBridge] Downloading media BEFORE presence delay (${direction}) type=${msgType}…`
-          );
-          media = await this.prepareRelayMedia(message);
-        } catch (err) {
-          console.error('[ChatBridge] prepareRelayMedia:', err.message);
-          console.error(err.stack);
-        }
-
-        const delayMs = antiBan.nextVariableDelayMs();
-        const isVoice =
-          msgType === 'ptt' ||
-          msgType === 'audio' ||
-          /^audio\//i.test(String(media?.mimetype || ''));
-        console.log(
-          `[ChatBridge] Media buffer=${media?.data ? String(media.data).length : 0} → ${isVoice ? 'recording' : 'typing'} ${delayMs}ms → ${destChatId}`
-        );
-        try {
-          if (isVoice) {
-            await this.pm.showRecordingFor(destChatId, delayMs);
-          } else {
-            await this.showTypingFor(destChatId, delayMs);
-          }
-        } catch (err) {
-          console.error('[ChatBridge] presence delay error:', err.message);
-          console.error(err.stack);
-          await antiBan.sleep(delayMs);
-        }
-
-        const markMediaFailedForRetry = (reason) => {
-          console.error(
-            `[ChatBridge] MEDIA RELAY FAILED (${msgType}) ${direction}: ${reason}`
-          );
-          if (waId && this._seenIds?.has(waId)) {
-            this._seenIds.delete(waId);
-            console.warn(
-              `[ChatBridge] Un-saw ${waId} so media can retry on next event`
-            );
-          }
-        };
-
-        if (media?.data) {
-          let sentOk = false;
-          for (const candidate of destCandidates) {
-            try {
-              if (isVoice) await this.pm.sendRecordingPresence(candidate);
-              else await this.sendTypingPresence(candidate);
-
-              console.log(
-                `[ChatBridge] sendMedia → ${candidate} mime=${media.mimetype} file=${media.filename || '—'} type=${msgType}`
-              );
-              const sent = await this.sendMedia(destPhone, media, {
-                caption: cleanBody || undefined,
-                chatId: candidate,
-                skipTyping: true,
-                skipPacing: true,
-                skipLimiter: true,
-                msgType,
-              });
-              bindDest(sent?._outboundChatId || candidate);
-              console.log(
-                `[ChatBridge] Media relay OK (${direction}) → ${candidate}`
-              );
-              sentOk = true;
-              return;
-            } catch (err) {
-              console.error(
-                `[ChatBridge] sendMedia to ${candidate} failed:`,
-                err.message
-              );
-              console.error(err.stack);
-            }
-          }
-          if (!sentOk) {
-            console.error(
-              `[ChatBridge] All sendMedia candidates failed (${direction}) — trying forward`
-            );
-          }
-        } else {
-          console.error(
-            `[ChatBridge] Media download empty (${direction}) type=${msgType} — trying native/page forward`
-          );
-        }
-
-        // Fallback 1: message.forward / page forward (still after presence)
-        try {
-          console.log('[ChatBridge] Trying native/page forward fallback…');
-          const forwarded = await this.nativeForwardToChat(
-            message,
-            destCandidates,
-            { skipTyping: true }
-          );
-          if (forwarded) {
-            bindDest(forwarded._outboundChatId);
-            console.log(`[ChatBridge] Forward OK (${direction})`);
-            return;
-          }
-        } catch (err) {
-          console.error('[ChatBridge] native forward error:', err.message);
-          console.error(err.stack);
-        }
-
-        // Fallback 2: one more download attempt after forward failure
-        if (!media?.data) {
-          try {
-            console.log('[ChatBridge] Retry prepareRelayMedia after forward fail…');
-            media = await this.prepareRelayMedia(message);
-            if (media?.data) {
-              if (isVoice) await this.pm.sendRecordingPresence(destChatId);
-              else await this.sendTypingPresence(destChatId);
-              const sent = await this.sendMedia(destPhone, media, {
-                caption: cleanBody || undefined,
-                chatId: destChatId,
-                skipTyping: true,
-                skipPacing: true,
-                skipLimiter: true,
-                msgType,
-              });
-              bindDest(sent?._outboundChatId || destChatId);
-              console.log(`[ChatBridge] Media retry OK (${direction})`);
-              return;
-            }
-          } catch (err) {
-            console.error('[ChatBridge] media retry failed:', err.message);
-            console.error(err.stack);
-          }
-        }
-
-        if (cleanBody) {
-          console.warn(
-            `[ChatBridge] Media failed (${direction}) — sending caption text only (media still missing)`
-          );
-          try {
-            await this.sendTypingPresence(destChatId);
-            await this.sendMessage(destPhone, cleanBody, {
-              chatId: destChatId,
-              skipTyping: true,
-              skipPacing: true,
-              skipLimiter: true,
-            });
-          } catch (err) {
-            console.error('[ChatBridge] caption-only send failed:', err.message);
-            console.error(err.stack);
-          }
-          markMediaFailedForRetry('send/forward failed; caption-only sent');
-        } else {
-          markMediaFailedForRetry('no buffer, forward, or caption');
-        }
-        return;
-      }
-
-      // ── TEXT PATH ──
-      if (!cleanBody) {
-        console.warn(
-          `[ChatBridge] empty text body (${direction}) type=${msgType} — nothing to relay`
-        );
-        return;
-      }
-
-      const delayMs = antiBan.nextVariableDelayMs();
-      await this.showTypingFor(destChatId, delayMs);
-
-      if (antiBan.shouldChunkMessage(cleanBody)) {
-        const chunks = antiBan.splitIntoNaturalChunks(cleanBody);
-        for (let i = 0; i < chunks.length; i++) {
-          if (i > 0) {
-            await this.showTypingFor(destChatId, antiBan.nextVariableDelayMs());
-          } else {
-            await this.sendTypingPresence(destChatId);
-          }
-          await this.sendMessage(destPhone, chunks[i], {
-            chatId: destChatId,
-            skipTyping: true,
-            skipPacing: true,
-            skipLimiter: true,
-          });
-        }
-        return;
-      }
-
-      await this.sendTypingPresence(destChatId);
-      await this.sendMessage(destPhone, cleanBody, {
-        chatId: destChatId,
-        skipTyping: true,
-        skipPacing: true,
-        skipLimiter: true,
-      });
-    } catch (err) {
-      console.error('[ChatBridge] relayMessageAcrossBridge FATAL:', err.message);
-      console.error(err.stack);
-    }
+    return this.bridge.relay(message, session, direction, body, hasMediaFlag);
   }
 
   async nativeForwardToChat(message, destChatIds, opts = {}) {
-    if (!message) {
-      console.warn('[ChatBridge] nativeForward: no message');
-      return null;
-    }
-
-    const msgId = message.id?._serialized || message.id?.id || null;
-
-    for (const chatId of destChatIds) {
-      try {
-        if (!opts.skipTyping) {
-          await this.showTypingFor(chatId, antiBan.nextVariableDelayMs());
-        } else {
-          await this.sendTypingPresence(chatId);
-        }
-
-        // Prefer page-level forward (stable after delays / LID chats)
-        if (msgId) {
-          const ok = await this.pm.forwardMessageById(msgId, chatId);
-          if (ok) {
-            this._lastOutboundChatId = chatId;
-            this.markBotOutbound(chatId, 20000);
-            console.log(`[ChatBridge] Page forward OK → ${chatId}`);
-            return { ok: true, _outboundChatId: chatId };
-          }
-        }
-
-        if (typeof message.forward === 'function') {
-          console.log(`[ChatBridge] message.forward → ${chatId}`);
-          await message.forward(chatId);
-          this._lastOutboundChatId = chatId;
-          this.markBotOutbound(chatId, 20000);
-          console.log(`[ChatBridge] Native forward OK → ${chatId}`);
-          return { ok: true, _outboundChatId: chatId };
-        }
-
-        console.warn('[ChatBridge] nativeForward: no forward API available');
-      } catch (err) {
-        console.error(`[ChatBridge] forward to ${chatId} failed:`, err.message);
-        console.error(err.stack);
-      }
-    }
-    return null;
+    return this.bridge.nativeForward(message, destChatIds, opts);
   }
 
   async downloadMediaWithRetry(message, tries = 8) {
@@ -1714,8 +1300,7 @@ class WhatsAppService {
   }
 
   /**
-   * Outbound text with rate caps  /**
-   * Outbound text with rate caps, unique jitter, typing (24/7 — no hours gate).
+   * Outbound text with rate caps, unique 1–45s jitter, typing (24/7 — no hours gate).
    */
   async sendMessage(phoneOrChat, text, options = {}) {
     if (!this.client || !this.ready) {
@@ -2129,13 +1714,13 @@ class WhatsAppService {
       }
     };
 
-    // 1) Typing 1–30s, then human text (no URL)
+    // 1) Typing 1–45s, then human text (no URL)
     const typing1 = antiBan.nextVariableDelayMs();
     console.log(`[WhatsApp] Form flow: typing ${typing1}ms → text`);
     await this.showTypingFor(chatId, typing1);
     await sendBubble(text, { preferChat: false, label: 'text' });
 
-    // 2–3) Keep composing visible through the gap + second typing window, then bare URL
+    // 2–3) Keep composing visible through second typing window, then bare URL
     const typing2 = antiBan.nextVariableDelayMs();
     console.log(`[WhatsApp] Form flow: typing ${typing2}ms → link`);
     await this.showTypingFor(chatId, typing2);

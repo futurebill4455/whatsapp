@@ -1,5 +1,7 @@
 /**
- * Anti-ban / humanization: unique 1–30s jitter, typing simulation, rate caps.
+ * Humanization / anti-detection engine.
+ * Every outbound interaction uses a unique randomized delay of 1–45 seconds
+ * with typing/recording presence covering the full window.
  */
 const Settings = (() => {
   try {
@@ -8,6 +10,10 @@ const Settings = (() => {
     return { get: (_k, fb) => fb };
   }
 })();
+
+/** Absolute delay window (ms) — product requirement */
+const DELAY_MIN_MS = 1000;
+const DELAY_MAX_MS = 45000;
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, Math.max(0, Number(ms) || 0)));
@@ -34,69 +40,88 @@ function numSetting(key, fallback, envAliases = []) {
 }
 
 const _recentDelays = [];
-const RECENT_DELAY_WINDOW = 16;
+const RECENT_DELAY_WINDOW = 20;
 
-/** Bounds for human delay: default 1s–30s (truly variable each interaction). */
+/**
+ * Bounds for human delay: default 1s–45s (clamped to product window).
+ */
 function jitterBounds() {
-  let min = numSetting('anti_ban_jitter_min_ms', 1000, ['WA_JITTER_MIN_MS']);
-  let max = numSetting('anti_ban_jitter_max_ms', 30000, ['WA_JITTER_MAX_MS']);
-  min = Math.max(1000, Math.min(Number(min) || 1000, 30000));
-  max = Math.max(min, Math.min(Number(max) || 30000, 30000));
+  let min = numSetting('anti_ban_jitter_min_ms', DELAY_MIN_MS, [
+    'WA_JITTER_MIN_MS',
+  ]);
+  let max = numSetting('anti_ban_jitter_max_ms', DELAY_MAX_MS, [
+    'WA_JITTER_MAX_MS',
+  ]);
+  min = Math.max(DELAY_MIN_MS, Math.min(Number(min) || DELAY_MIN_MS, DELAY_MAX_MS));
+  max = Math.max(min, Math.min(Number(max) || DELAY_MAX_MS, DELAY_MAX_MS));
   return { lo: min, hi: max };
 }
 
 /**
- * Unique randomized delay between 1–30s (or configured bounds).
- * Avoids repeating the exact same delay back-to-back.
+ * Completely randomized delay between 1–45s (or configured bounds).
+ * Avoids near-identical back-to-back delays so the bot does not look scripted.
  */
 function nextVariableDelayMs() {
   const { lo, hi } = jitterBounds();
   const span = Math.max(1, hi - lo);
   let delay = lo;
-  for (let attempt = 0; attempt < 24; attempt++) {
+  for (let attempt = 0; attempt < 32; attempt++) {
     const roll = Math.random();
-    // Mix short / mid / long so interactions feel different
-    if (roll < 0.2) delay = randInt(lo, lo + Math.floor(span * 0.25));
-    else if (roll < 0.45) delay = randInt(hi - Math.floor(span * 0.3), hi);
+    // Weighted mix: short / mid / long human response times
+    if (roll < 0.18) delay = randInt(lo, lo + Math.floor(span * 0.22));
+    else if (roll < 0.4) delay = randInt(hi - Math.floor(span * 0.28), hi);
+    else if (roll < 0.7) delay = randInt(lo + Math.floor(span * 0.25), lo + Math.floor(span * 0.65));
     else delay = randInt(lo, hi);
 
     const last = _recentDelays[_recentDelays.length - 1];
+    const minGap = Math.min(1200, Math.floor(span * 0.04));
     const tooClose =
-      last != null && Math.abs(delay - last) < Math.min(700, Math.floor(span * 0.03));
+      last != null && Math.abs(delay - last) < minGap;
     if (!tooClose && !_recentDelays.includes(delay)) break;
     delay =
       last != null
-        ? Math.min(hi, Math.max(lo, last + (delay >= last ? 1 : -1) * randInt(800, 3500)))
+        ? Math.min(
+            hi,
+            Math.max(
+              lo,
+              last + (delay >= last ? 1 : -1) * randInt(900, 4200)
+            )
+          )
         : delay;
   }
   _recentDelays.push(delay);
   while (_recentDelays.length > RECENT_DELAY_WINDOW) _recentDelays.shift();
+  console.log(
+    `[AntiBan] human delay = ${delay}ms (${(delay / 1000).toFixed(1)}s) window=${lo}-${hi}ms`
+  );
   return delay;
 }
 
 /**
- * Plan outbound timing. Typing covers (nearly) the full 1–30s window
- * so chat.sendStateTyping() stays visible for the randomized delay.
+ * Plan outbound timing. Typing/recording covers the FULL 1–45s window.
  */
 function planOutboundTiming(text = '', { forcedTotalMs = null } = {}) {
   const totalMs =
     forcedTotalMs != null && Number.isFinite(Number(forcedTotalMs))
-      ? Math.max(1000, Math.min(30000, Number(forcedTotalMs)))
+      ? Math.max(DELAY_MIN_MS, Math.min(DELAY_MAX_MS, Number(forcedTotalMs)))
       : nextVariableDelayMs();
-  // Entire delay is typing — no separate silent "think" gap
-  const typingMs = totalMs;
-  const thinkMs = 0;
-  return { totalMs, thinkMs, typingMs, delayMs: totalMs };
+  return {
+    totalMs,
+    thinkMs: 0,
+    typingMs: totalMs,
+    delayMs: totalMs,
+  };
 }
 
-function readingDelayMs(inboundText) {
-  // Still use full variable window for consistency when reading inbound
+function readingDelayMs(_inboundText) {
   return nextVariableDelayMs();
 }
 
 function typingDurationMs(text, plannedDelayMs = null) {
   if (plannedDelayMs != null && Number(plannedDelayMs) > 0) {
-    return planOutboundTiming(text, { forcedTotalMs: Number(plannedDelayMs) }).typingMs;
+    return planOutboundTiming(text, {
+      forcedTotalMs: Number(plannedDelayMs),
+    }).typingMs;
   }
   return planOutboundTiming(text).typingMs;
 }
@@ -106,11 +131,10 @@ function recordingDurationMs() {
 }
 
 function sessionSpacingMs() {
-  return Math.min(3000, nextVariableDelayMs());
+  return Math.min(4000, nextVariableDelayMs());
 }
 
 function isWithinWorkingHours(_now = new Date()) {
-  // Working-hours gate disabled — bot responds 24/7
   return true;
 }
 
@@ -128,15 +152,21 @@ function checkSendCaps(phone) {
   try {
     if (digits && perUserHourly > 0) {
       const h = MessageLog.countOutboundSince(digits, '-1 hour');
-      if (h >= perUserHourly) return { ok: false, reason: 'user_hourly_cap', count: h, cap: perUserHourly };
+      if (h >= perUserHourly) {
+        return { ok: false, reason: 'user_hourly_cap', count: h, cap: perUserHourly };
+      }
     }
     if (digits && perUserDaily > 0) {
       const d = MessageLog.countOutboundSince(digits, '-1 day');
-      if (d >= perUserDaily) return { ok: false, reason: 'user_daily_cap', count: d, cap: perUserDaily };
+      if (d >= perUserDaily) {
+        return { ok: false, reason: 'user_daily_cap', count: d, cap: perUserDaily };
+      }
     }
     if (globalHourly > 0) {
       const g = MessageLog.countOutboundSince(null, '-1 hour');
-      if (g >= globalHourly) return { ok: false, reason: 'global_hourly_cap', count: g, cap: globalHourly };
+      if (g >= globalHourly) {
+        return { ok: false, reason: 'global_hourly_cap', count: g, cap: globalHourly };
+      }
     }
   } catch (_) {}
   return { ok: true };
@@ -233,8 +263,11 @@ class OutboundRateLimiter {
 const outboundLimiter = new OutboundRateLimiter();
 
 module.exports = {
+  DELAY_MIN_MS,
+  DELAY_MAX_MS,
   sleep,
   randInt,
+  jitterBounds,
   nextVariableDelayMs,
   humanJitterMs: nextVariableDelayMs,
   planOutboundTiming,

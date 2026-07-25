@@ -178,7 +178,7 @@ function createPresenceMediaHelpers(wa) {
   }
 
   async function showPresenceFor(chatId, durationMs, state = 'typing') {
-    const ms = Math.max(1000, Math.min(30000, Number(durationMs) || 2000));
+    const ms = Math.max(1000, Math.min(45000, Number(durationMs) || 2000));
     const id = String(chatId || '').trim();
     const kind = state === 'recording' ? 'recording' : 'typing';
     console.log(`[Presence] start ${kind} ${ms}ms for ${id || '(none)'}`);

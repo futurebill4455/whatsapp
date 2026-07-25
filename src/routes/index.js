@@ -346,8 +346,8 @@ router.get('/admin/settings', requireAdmin, (req, res) => {
 
 router.post('/admin/settings', requireAdmin, (req, res) => {
   const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
-  const jitterMin = clamp(Number(req.body.anti_ban_jitter_min_ms) || 1000, 1000, 30000);
-  let jitterMax = clamp(Number(req.body.anti_ban_jitter_max_ms) || 30000, 1000, 30000);
+  const jitterMin = clamp(Number(req.body.anti_ban_jitter_min_ms) || 1000, 1000, 45000);
+  let jitterMax = clamp(Number(req.body.anti_ban_jitter_max_ms) || 45000, 1000, 45000);
   if (jitterMax < jitterMin) jitterMax = jitterMin;
 
   Settings.setMany({

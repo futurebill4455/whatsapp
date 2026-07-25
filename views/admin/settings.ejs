@@ -45,14 +45,14 @@
         </div>
         <div class="grid sm:grid-cols-2 gap-3">
           <div>
-            <label class="label">Typing delay min (ms) — 1000–30000</label>
-            <input class="field" type="number" name="anti_ban_jitter_min_ms" min="1000" max="30000"
+            <label class="label">Typing delay min (ms) — 1000–45000</label>
+            <input class="field" type="number" name="anti_ban_jitter_min_ms" min="1000" max="45000"
                    value="<%= settings.anti_ban_jitter_min_ms || 1000 %>" />
           </div>
           <div>
-            <label class="label">Typing delay max (ms) — up to 30000 (1–30s)</label>
-            <input class="field" type="number" name="anti_ban_jitter_max_ms" min="1000" max="30000"
-                   value="<%= settings.anti_ban_jitter_max_ms || 30000 %>" />
+            <label class="label">Typing delay max (ms) — up to 45000 (1–45s)</label>
+            <input class="field" type="number" name="anti_ban_jitter_max_ms" min="1000" max="45000"
+                   value="<%= settings.anti_ban_jitter_max_ms || 45000 %>" />
           </div>
           <div>
             <label class="label">Min gap between sends (ms)</label>
