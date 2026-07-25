@@ -53,55 +53,138 @@ function mediaFingerprint(message) {
 }
 
 /**
+ * Build ordered send-option attempts for image / pdf / doc / voice / video / sticker.
+ * First matching set is preferred; callers should try each until one succeeds.
+ */
+function buildMediaSendOptionSets(msgType, media, caption) {
+  const type = String(msgType || '').toLowerCase();
+  const mime = String(media?.mimetype || '');
+  const filename = String(media?.filename || '');
+  const cap = caption || undefined;
+  const sets = [];
+
+  const push = (opts, label) => {
+    sets.push({ ...opts, _label: label });
+  };
+
+  const isVoice =
+    type === 'ptt' ||
+    type === 'audio' ||
+    /^audio\//i.test(mime) ||
+    /\.(ogg|opus|m4a|mp3|wav)$/i.test(filename);
+  const isDoc =
+    type === 'document' ||
+    /pdf|msword|sheet|zip|octet-stream|officedocument|ms-excel|ms-powerpoint/i.test(
+      mime
+    ) ||
+    /\.pdf$/i.test(filename);
+  const isSticker = type === 'sticker';
+  const isGif = type === 'gif';
+  const isImage = type === 'image' || /^image\//i.test(mime);
+  const isVideo = type === 'video' || /^video\//i.test(mime);
+
+  if (isVoice) {
+    push({ caption: cap, sendAudioAsVoice: true }, 'voice');
+    push({ caption: cap, sendAudioAsVoice: false }, 'audio_file');
+    push({ caption: cap, sendMediaAsDocument: true }, 'audio_as_document');
+  } else if (isSticker) {
+    push({ sendMediaAsSticker: true }, 'sticker');
+    push({ caption: cap, sendMediaAsDocument: true }, 'sticker_as_document');
+  } else if (isGif) {
+    push({ caption: cap, sendVideoAsGif: true }, 'gif');
+    push({ caption: cap }, 'video');
+  } else if (isDoc) {
+    push({ caption: cap, sendMediaAsDocument: true }, 'document');
+  } else if (isImage) {
+    push({ caption: cap }, 'image');
+    push({ caption: cap, sendMediaAsDocument: true }, 'image_as_document');
+  } else if (isVideo) {
+    push({ caption: cap }, 'video');
+    push({ caption: cap, sendMediaAsDocument: true }, 'video_as_document');
+  } else {
+    push({ caption: cap }, 'generic');
+    push({ caption: cap, sendMediaAsDocument: true }, 'generic_as_document');
+  }
+
+  return sets;
+}
+
+/**
  * @param {import('./whatsapp')} wa - WhatsAppService instance
  */
 function createPresenceMediaHelpers(wa) {
   async function sendTypingPresence(chatId) {
+    return sendChatState(chatId, 'typing');
+  }
+
+  async function sendRecordingPresence(chatId) {
+    return sendChatState(chatId, 'recording');
+  }
+
+  async function sendChatState(chatId, state) {
     const id = String(chatId || '').trim();
+    const kind = state === 'recording' ? 'recording' : 'typing';
     if (!id || !wa.client?.pupPage) {
-      console.warn('[Typing] skip — missing chatId or pupPage', {
+      console.warn(`[Presence] skip ${kind} — missing chatId or pupPage`, {
         id: id || null,
       });
       return false;
     }
     try {
-      const ok = await wa.client.pupPage.evaluate(async (cid) => {
-        try {
-          if (window.WWebJS?.sendChatstate) {
-            await window.WWebJS.sendChatstate('typing', cid);
-            return { ok: true, via: 'WWebJS.sendChatstate' };
+      const ok = await wa.client.pupPage.evaluate(
+        async (cid, chatState) => {
+          try {
+            if (window.WWebJS?.sendChatstate) {
+              await window.WWebJS.sendChatstate(chatState, cid);
+              return { ok: true, via: 'WWebJS.sendChatstate' };
+            }
+            const wid = window.require?.('WAWebWidFactory')?.createWid?.(cid);
+            const ChatState = window.require?.('WAWebChatStateBridge');
+            if (wid && chatState === 'recording' && ChatState?.sendChatStateRecording) {
+              await ChatState.sendChatStateRecording(wid);
+              return { ok: true, via: 'ChatState.sendChatStateRecording' };
+            }
+            if (wid && ChatState?.sendChatStateComposing) {
+              await ChatState.sendChatStateComposing(wid);
+              return { ok: true, via: 'ChatState.sendChatStateComposing' };
+            }
+            return { ok: false, via: 'missing_api' };
+          } catch (e) {
+            return { ok: false, error: String(e?.message || e) };
           }
-          const wid = window.require?.('WAWebWidFactory')?.createWid?.(cid);
-          const ChatState = window.require?.('WAWebChatStateBridge');
-          if (wid && ChatState?.sendChatStateComposing) {
-            await ChatState.sendChatStateComposing(wid);
-            return { ok: true, via: 'ChatState.sendChatStateComposing' };
-          }
-          return { ok: false, via: 'missing_api' };
-        } catch (e) {
-          return { ok: false, error: String(e?.message || e) };
-        }
-      }, id);
+        },
+        id,
+        kind
+      );
       if (ok?.ok) {
-        console.log(`[Typing] composing → ${id} (${ok.via})`);
+        console.log(`[Presence] ${kind} → ${id} (${ok.via})`);
         return true;
       }
-      console.warn(`[Typing] failed → ${id}:`, ok?.error || ok?.via || ok);
+      console.warn(`[Presence] ${kind} failed → ${id}:`, ok?.error || ok?.via || ok);
       return false;
     } catch (err) {
-      console.error(`[Typing] evaluate error → ${id}:`, err.message);
+      console.error(`[Presence] ${kind} evaluate error → ${id}:`, err.message);
       console.error(err.stack);
       return false;
     }
   }
 
   async function showTypingFor(chatId, durationMs) {
+    return showPresenceFor(chatId, durationMs, 'typing');
+  }
+
+  async function showRecordingFor(chatId, durationMs) {
+    return showPresenceFor(chatId, durationMs, 'recording');
+  }
+
+  async function showPresenceFor(chatId, durationMs, state = 'typing') {
     const ms = Math.max(1000, Math.min(30000, Number(durationMs) || 2000));
     const id = String(chatId || '').trim();
-    console.log(`[Typing] start ${ms}ms for ${id || '(none)'}`);
+    const kind = state === 'recording' ? 'recording' : 'typing';
+    console.log(`[Presence] start ${kind} ${ms}ms for ${id || '(none)'}`);
 
     if (!id || !wa.client) {
-      console.warn('[Typing] no chatId/client — sleeping without indicator');
+      console.warn(`[Presence] no chatId/client — sleeping without ${kind}`);
       await sleep(ms);
       return false;
     }
@@ -115,39 +198,40 @@ function createPresenceMediaHelpers(wa) {
         await wa.client.interface.openChatWindow(id);
       }
     } catch (err) {
-      console.warn('[Typing] openChatWindow:', err.message);
+      console.warn('[Presence] openChatWindow:', err.message);
     }
 
     while (Date.now() - started < ms) {
-      lastOk = await sendTypingPresence(id);
+      lastOk = await sendChatState(id, kind);
       if (!lastOk) {
         try {
           const chat = await wa.client.getChatById(id);
-          if (chat?.sendStateTyping) {
+          if (kind === 'recording' && chat?.sendStateRecording) {
+            await chat.sendStateRecording();
+            lastOk = true;
+            pulses += 1;
+            console.log(`[Presence] Chat.sendStateRecording OK → ${id}`);
+          } else if (chat?.sendStateTyping) {
             await chat.sendStateTyping();
             lastOk = true;
             pulses += 1;
-            console.log(`[Typing] Chat.sendStateTyping OK → ${id}`);
+            console.log(`[Presence] Chat.sendStateTyping OK → ${id}`);
           } else {
-            console.warn(`[Typing] chat has no sendStateTyping → ${id}`);
+            console.warn(`[Presence] chat has no state API → ${id}`);
           }
         } catch (err) {
-          console.warn(
-            `[Typing] getChatById/sendStateTyping → ${id}:`,
-            err.message
-          );
+          console.warn(`[Presence] getChatById/${kind} → ${id}:`, err.message);
         }
       } else {
         pulses += 1;
       }
       const remaining = ms - (Date.now() - started);
-      // Refresh before WhatsApp's ~25s composing expiry
       await sleep(Math.min(12000, Math.max(500, remaining)));
     }
 
-    lastOk = (await sendTypingPresence(id)) || lastOk;
+    lastOk = (await sendChatState(id, kind)) || lastOk;
     console.log(
-      `[Typing] done ${ms}ms → ${id} pulses=${pulses} lastOk=${lastOk}`
+      `[Presence] done ${kind} ${ms}ms → ${id} pulses=${pulses} lastOk=${lastOk}`
     );
     return lastOk;
   }
@@ -591,8 +675,11 @@ function createPresenceMediaHelpers(wa) {
     MEDIA_TYPES,
     isMediaLikeMessage,
     mediaFingerprint,
+    buildMediaSendOptionSets,
     sendTypingPresence,
+    sendRecordingPresence,
     showTypingFor,
+    showRecordingFor,
     reloadMessageForMedia,
     waitUntilMediaReady,
     forceResolveMediaOnPage,
@@ -607,4 +694,5 @@ module.exports = {
   createPresenceMediaHelpers,
   MEDIA_TYPES,
   isMediaLikeMessage,
+  buildMediaSendOptionSets,
 };

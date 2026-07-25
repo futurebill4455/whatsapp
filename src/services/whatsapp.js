@@ -24,6 +24,7 @@ const antiBan = require('./antiBan');
 const {
   createPresenceMediaHelpers,
   isMediaLikeMessage,
+  buildMediaSendOptionSets,
 } = require('./waPresenceMedia');
 
 const AUTH_PATH = path.join(process.cwd(), '.wwebjs_auth');
@@ -617,13 +618,18 @@ class WhatsAppService {
   onClientMessageEvent(source, message) {
     if (!message) return;
     const from = message.from || message.author || '?';
+    const msgType = String(message.type || 'unknown').toLowerCase();
     const bodyPreview = String(message.body || '')
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, 120);
+    const mediaHint = isMediaLikeMessage(message)
+      ? ` media=yes hasMediaFlag=${!!message.hasMedia}`
+      : '';
     console.log(
-      `Received message [${source}]: "${bodyPreview || `[${message.type || 'unknown'}]`}" from: ${from}` +
-        (message.fromMe ? ' (fromMe)' : '')
+      `Received message [${source}]: "${bodyPreview || `[${msgType}]`}" from: ${from}` +
+        (message.fromMe ? ' (fromMe)' : '') +
+        mediaHint
     );
 
     if (source === 'message_ciphertext') return; // wait for decrypt / poller
@@ -1036,7 +1042,9 @@ class WhatsAppService {
   enqueueIncomingMessage(message) {
     const maxDepth = Number(process.env.WA_MSG_QUEUE_MAX) || 40;
     if (this._msgQueueDepth >= maxDepth) {
-      console.warn('[WhatsApp] Inbound queue full — dropping message');
+      console.warn(
+        `[WhatsApp] Inbound queue full — dropping message type=${message?.type || '?'} media=${isMediaLikeMessage(message)} from=${message?.from || '?'}`
+      );
       return;
     }
     this._msgQueueDepth += 1;
@@ -1048,6 +1056,7 @@ class WhatsAppService {
       })
       .catch((err) => {
         console.error('[WhatsApp] Inbound handler error:', err.message);
+        console.error(err.stack);
       })
       .finally(() => {
         this._msgQueueDepth = Math.max(0, this._msgQueueDepth - 1);
@@ -1144,11 +1153,33 @@ class WhatsAppService {
     }
 
     // 2) Active two-way bridge (non-code messages only)
+    const mediaLike = isMediaLikeMessage(message);
     try {
-      const bridged = await this.handleChatBridge(message, phone || peerKey, chatId, body);
+      const bridged = await this.handleChatBridge(
+        message,
+        phone || peerKey,
+        chatId,
+        body
+      );
       if (bridged) return;
+
+      if (mediaLike) {
+        console.error(
+          `[ChatBridge] MEDIA DROPPED — no active bridge session type=${message.type || '?'} from=${message.from} phone=${phone || peerKey} chatId=${chatId || '—'}`
+        );
+        // Keep id seen to avoid spam, but log clearly — media cannot relay without a session
+      }
     } catch (err) {
-      console.error('[ChatBridge] error:', err.message);
+      console.error('[ChatBridge] handler error:', err.message);
+      console.error(err.stack);
+      if (mediaLike && msgId && this._seenIds.has(msgId)) {
+        this._seenIds.delete(msgId);
+        console.warn(
+          `[ChatBridge] Un-saw ${msgId} after bridge error so media can retry`
+        );
+      }
+      // Do not fall through to silent smart-delay for media failures
+      if (mediaLike) return;
     }
 
     if (!chatId && !phone) {
@@ -1237,7 +1268,9 @@ class WhatsAppService {
         quotedWaId =
           quoted?.id?._serialized || quoted?.id?.id || null;
       }
-    } catch (_) {}
+    } catch (err) {
+      console.warn('[ChatBridge] getQuotedMessage failed:', err.message);
+    }
 
     const resolved = ChatSessions.resolveDeskInbound(digits || phone, {
       quotedWaId,
@@ -1429,7 +1462,7 @@ class WhatsAppService {
         let media = null;
         try {
           console.log(
-            `[ChatBridge] Downloading media BEFORE typing delay (${direction})…`
+            `[ChatBridge] Downloading media BEFORE presence delay (${direction}) type=${msgType}…`
           );
           media = await this.prepareRelayMedia(message);
         } catch (err) {
@@ -1438,24 +1471,46 @@ class WhatsAppService {
         }
 
         const delayMs = antiBan.nextVariableDelayMs();
+        const isVoice =
+          msgType === 'ptt' ||
+          msgType === 'audio' ||
+          /^audio\//i.test(String(media?.mimetype || ''));
         console.log(
-          `[ChatBridge] Media buffer=${media?.data ? String(media.data).length : 0} → typing ${delayMs}ms → ${destChatId}`
+          `[ChatBridge] Media buffer=${media?.data ? String(media.data).length : 0} → ${isVoice ? 'recording' : 'typing'} ${delayMs}ms → ${destChatId}`
         );
-        await this.showTypingFor(destChatId, delayMs);
+        try {
+          if (isVoice) {
+            await this.pm.showRecordingFor(destChatId, delayMs);
+          } else {
+            await this.showTypingFor(destChatId, delayMs);
+          }
+        } catch (err) {
+          console.error('[ChatBridge] presence delay error:', err.message);
+          console.error(err.stack);
+          await antiBan.sleep(delayMs);
+        }
+
+        const markMediaFailedForRetry = (reason) => {
+          console.error(
+            `[ChatBridge] MEDIA RELAY FAILED (${msgType}) ${direction}: ${reason}`
+          );
+          if (waId && this._seenIds?.has(waId)) {
+            this._seenIds.delete(waId);
+            console.warn(
+              `[ChatBridge] Un-saw ${waId} so media can retry on next event`
+            );
+          }
+        };
 
         if (media?.data) {
-          const asDoc =
-            msgType === 'document' ||
-            /pdf|msword|sheet|zip|octet-stream|officedocument|ms-excel|ms-powerpoint/i.test(
-              String(media.mimetype || '')
-            ) ||
-            /\.pdf$/i.test(String(media.filename || ''));
-
+          let sentOk = false;
           for (const candidate of destCandidates) {
             try {
-              await this.sendTypingPresence(candidate);
+              if (isVoice) await this.pm.sendRecordingPresence(candidate);
+              else await this.sendTypingPresence(candidate);
+
               console.log(
-                `[ChatBridge] sendMedia → ${candidate} asDoc=${asDoc} mime=${media.mimetype} file=${media.filename || '—'}`
+                `[ChatBridge] sendMedia → ${candidate} mime=${media.mimetype} file=${media.filename || '—'} type=${msgType}`
               );
               const sent = await this.sendMedia(destPhone, media, {
                 caption: cleanBody || undefined,
@@ -1463,12 +1518,13 @@ class WhatsAppService {
                 skipTyping: true,
                 skipPacing: true,
                 skipLimiter: true,
-                sendAsDocument: asDoc,
+                msgType,
               });
               bindDest(sent?._outboundChatId || candidate);
               console.log(
                 `[ChatBridge] Media relay OK (${direction}) → ${candidate}`
               );
+              sentOk = true;
               return;
             } catch (err) {
               console.error(
@@ -1478,13 +1534,18 @@ class WhatsAppService {
               console.error(err.stack);
             }
           }
+          if (!sentOk) {
+            console.error(
+              `[ChatBridge] All sendMedia candidates failed (${direction}) — trying forward`
+            );
+          }
         } else {
           console.error(
             `[ChatBridge] Media download empty (${direction}) type=${msgType} — trying native/page forward`
           );
         }
 
-        // Fallback 1: message.forward / page forward (still after typing)
+        // Fallback 1: message.forward / page forward (still after presence)
         try {
           console.log('[ChatBridge] Trying native/page forward fallback…');
           const forwarded = await this.nativeForwardToChat(
@@ -1508,19 +1569,15 @@ class WhatsAppService {
             console.log('[ChatBridge] Retry prepareRelayMedia after forward fail…');
             media = await this.prepareRelayMedia(message);
             if (media?.data) {
-              const asDoc =
-                msgType === 'document' ||
-                /pdf|msword|sheet|zip|octet-stream|officedocument/i.test(
-                  String(media.mimetype || '')
-                );
-              await this.sendTypingPresence(destChatId);
+              if (isVoice) await this.pm.sendRecordingPresence(destChatId);
+              else await this.sendTypingPresence(destChatId);
               const sent = await this.sendMedia(destPhone, media, {
                 caption: cleanBody || undefined,
                 chatId: destChatId,
                 skipTyping: true,
                 skipPacing: true,
                 skipLimiter: true,
-                sendAsDocument: asDoc,
+                msgType,
               });
               bindDest(sent?._outboundChatId || destChatId);
               console.log(`[ChatBridge] Media retry OK (${direction})`);
@@ -1534,26 +1591,23 @@ class WhatsAppService {
 
         if (cleanBody) {
           console.warn(
-            `[ChatBridge] Media failed (${direction}) — sending caption text only`
+            `[ChatBridge] Media failed (${direction}) — sending caption text only (media still missing)`
           );
-          await this.sendTypingPresence(destChatId);
-          await this.sendMessage(destPhone, cleanBody, {
-            chatId: destChatId,
-            skipTyping: true,
-            skipPacing: true,
-            skipLimiter: true,
-          });
-        } else {
-          console.error(
-            `[ChatBridge] MEDIA RELAY FAILED (${msgType}) ${direction} — no buffer, forward, or caption`
-          );
-          // Allow a later decrypt/poll event to retry the same media message
-          if (waId && this._seenIds?.has(waId)) {
-            this._seenIds.delete(waId);
-            console.warn(
-              `[ChatBridge] Un-saw ${waId} so media can retry on next event`
-            );
+          try {
+            await this.sendTypingPresence(destChatId);
+            await this.sendMessage(destPhone, cleanBody, {
+              chatId: destChatId,
+              skipTyping: true,
+              skipPacing: true,
+              skipLimiter: true,
+            });
+          } catch (err) {
+            console.error('[ChatBridge] caption-only send failed:', err.message);
+            console.error(err.stack);
           }
+          markMediaFailedForRetry('send/forward failed; caption-only sent');
+        } else {
+          markMediaFailedForRetry('no buffer, forward, or caption');
         }
         return;
       }
@@ -1836,7 +1890,30 @@ class WhatsAppService {
       throw new Error('WhatsApp client not ready');
     }
     if (!media) throw new Error('No media');
-    if (!media.data) throw new Error('Media has empty data buffer');
+
+    // Ensure real MessageMedia instance (instanceof check inside wweb.js)
+    let payload = media;
+    try {
+      if (!(payload instanceof MessageMedia)) {
+        if (!payload?.data) throw new Error('Media has empty data buffer');
+        let rawData = String(payload.data);
+        const dataUrl = rawData.match(/^data:[^;]+;base64,(.+)$/i);
+        if (dataUrl) rawData = dataUrl[1];
+        payload = new MessageMedia(
+          payload.mimetype || 'application/octet-stream',
+          rawData,
+          payload.filename || undefined,
+          payload.filesize
+        );
+        console.log('[Media] wrapped plain object into MessageMedia instance');
+      }
+    } catch (err) {
+      console.error('[Media] MessageMedia normalize failed:', err.message);
+      console.error(err.stack);
+      throw err;
+    }
+
+    if (!payload.data) throw new Error('Media has empty data buffer');
 
     const digits = this.formatPhone(
       String(phoneOrChat || '').includes('@')
@@ -1852,70 +1929,118 @@ class WhatsAppService {
       options.chatId ||
       (await this.resolveOutboundChatId(phoneOrChat).catch((err) => {
         console.error('[Media] resolveOutboundChatId:', err.message);
+        console.error(err.stack);
         return null;
       }));
     if (!chatId) throw new Error('No chat id for media send');
 
     this.markBotOutbound(chatId, 25000);
 
+    const msgType = String(options.msgType || '').toLowerCase();
+    const isVoice =
+      msgType === 'ptt' ||
+      msgType === 'audio' ||
+      /^audio\//i.test(String(payload.mimetype || ''));
+
     if (!options.skipTyping) {
       const timing = antiBan.planOutboundTiming(options.caption || '(media)');
-      await this.showTypingFor(chatId, timing.typingMs);
+      try {
+        if (isVoice) await this.pm.showRecordingFor(chatId, timing.typingMs);
+        else await this.showTypingFor(chatId, timing.typingMs);
+      } catch (err) {
+        console.error('[Media] presence before send failed:', err.message);
+      }
     } else {
-      await this.sendTypingPresence(chatId);
+      try {
+        if (isVoice) await this.pm.sendRecordingPresence(chatId);
+        else await this.sendTypingPresence(chatId);
+      } catch (err) {
+        console.warn('[Media] presence pulse failed:', err.message);
+      }
     }
 
-    const asDoc =
-      options.sendAsDocument ||
-      /pdf|msword|sheet|zip|octet-stream|officedocument/i.test(
-        String(media.mimetype || '')
+    // Prefer explicit option, else try typed option sets (voice/pdf/image/…)
+    let optionSets;
+    if (options.sendAsDocument || options.sendAudioAsVoice || options.sendMediaAsSticker) {
+      optionSets = [
+        {
+          caption: options.caption || undefined,
+          sendMediaAsDocument: !!options.sendAsDocument,
+          sendAudioAsVoice: !!options.sendAudioAsVoice,
+          sendMediaAsSticker: !!options.sendMediaAsSticker,
+          sendVideoAsGif: !!options.sendVideoAsGif,
+          _label: 'explicit',
+        },
+      ];
+    } else {
+      optionSets = buildMediaSendOptionSets(
+        msgType || payload.mimetype,
+        payload,
+        options.caption
       );
-
-    const sendOpts = {
-      caption: options.caption || undefined,
-      sendMediaAsDocument: !!asDoc,
-    };
+    }
 
     console.log(
-      `[Media] sending → ${chatId} mime=${media.mimetype} file=${media.filename || '—'} asDoc=${asDoc} b64=${String(media.data).length}`
+      `[Media] sending → ${chatId} mime=${payload.mimetype} file=${payload.filename || '—'} b64=${String(payload.data).length} attempts=${optionSets.map((s) => s._label).join(',')}`
     );
 
-    try {
-      let result;
+    const errors = [];
+    for (const sendOpts of optionSets) {
+      const label = sendOpts._label || 'attempt';
+      const opts = { ...sendOpts };
+      delete opts._label;
       try {
-        result = await this.client.sendMessage(chatId, media, sendOpts);
+        console.log(`[Media] attempt=${label} opts=${JSON.stringify(opts)}`);
+        let result;
+        try {
+          result = await this.client.sendMessage(chatId, payload, opts);
+        } catch (err) {
+          console.error(
+            `[Media] client.sendMessage (${label}) failed:`,
+            err.message
+          );
+          console.error(err.stack);
+          const chat = await this.client.getChatById(chatId);
+          result = await chat.sendMessage(payload, opts);
+        }
+
+        if (!result) {
+          console.warn(`[Media] attempt=${label} returned null/undefined`);
+          errors.push(`${label}:null_result`);
+          continue;
+        }
+
+        this._lastOutboundChatId = chatId;
+        result._outboundChatId = chatId;
+        this.markBotOutbound(chatId, 25000);
+
+        try {
+          MessageLog.add({
+            direction: 'out',
+            phone: digits || chatId,
+            body: options.caption || `[media:${payload.mimetype || 'file'}]`,
+            meta: {
+              chatId,
+              media: true,
+              mimetype: payload.mimetype,
+              filename: payload.filename,
+              attempt: label,
+            },
+          });
+        } catch (_) {}
+
+        console.log(`[Media] send OK → ${chatId} via ${label}`);
+        return result;
       } catch (err) {
-        console.error('[Media] client.sendMessage failed:', err.message);
+        console.error(`[Media] attempt=${label} FAILED:`, err.message);
         console.error(err.stack);
-        const chat = await this.client.getChatById(chatId);
-        result = await chat.sendMessage(media, sendOpts);
+        errors.push(`${label}:${err.message}`);
       }
-
-      this._lastOutboundChatId = chatId;
-      if (result) result._outboundChatId = chatId;
-      this.markBotOutbound(chatId, 25000);
-
-      try {
-        MessageLog.add({
-          direction: 'out',
-          phone: digits || chatId,
-          body: options.caption || `[media:${media.mimetype || 'file'}]`,
-          meta: {
-            chatId,
-            media: true,
-            mimetype: media.mimetype,
-            filename: media.filename,
-          },
-        });
-      } catch (_) {}
-
-      console.log(`[Media] send OK → ${chatId}`);
-      return result;
-    } catch (err) {
-      console.error('[Media] sendMedia FAILED:', err.message);
-      console.error(err.stack);
-      throw err;
     }
+
+    const summary = errors.join(' | ') || 'unknown';
+    console.error(`[Media] sendMedia ALL attempts failed → ${chatId}: ${summary}`);
+    throw new Error(`sendMedia failed: ${summary}`);
   }
 
   async showTypingFor(chatId, durationMs) {
