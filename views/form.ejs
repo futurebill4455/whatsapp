@@ -182,11 +182,29 @@
           box.innerHTML =
             '<p class="text-xs font-semibold uppercase text-ink/45">Member ' + i + '</p>' +
             '<input class="field" name="member_' + i + '_name" placeholder="Name" ' + (isHealth() ? 'required' : '') + ' />' +
-            '<input class="field" type="date" name="member_' + i + '_dob" />' +
+            '<label class="text-xs text-ink/50">Date of birth (type DD/MM/YYYY)</label>' +
+            '<input class="field dob-input" type="text" name="member_' + i + '_dob" ' +
+            'inputmode="numeric" placeholder="DD/MM/YYYY" autocomplete="bday" maxlength="10" ' +
+            (isHealth() ? 'required ' : '') +
+            'pattern="\\d{1,2}[/\\-.]\\d{1,2}[/\\-.]\\d{2,4}" title="Type date as DD/MM/YYYY" />' +
             '<select class="field" name="member_' + i + '_gender">' +
             '<option value="">Gender</option><option>Male</option><option>Female</option><option>Other</option></select>';
           wrap.appendChild(box);
         }
+        wrap.querySelectorAll('.dob-input').forEach(bindDobTyping);
+      }
+
+      /** Allow keyboard typing of DOB; light auto-slash formatting (no calendar popup). */
+      function bindDobTyping(input) {
+        input.addEventListener('input', function () {
+          let v = input.value.replace(/[^\d]/g, '').slice(0, 8);
+          if (v.length >= 5) {
+            v = v.slice(0, 2) + '/' + v.slice(2, 4) + '/' + v.slice(4);
+          } else if (v.length >= 3) {
+            v = v.slice(0, 2) + '/' + v.slice(2);
+          }
+          input.value = v;
+        });
       }
 
       document.querySelectorAll('.next-step').forEach(function (btn) {

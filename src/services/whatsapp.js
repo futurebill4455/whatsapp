@@ -1419,17 +1419,13 @@ class WhatsAppService {
 
     const cleanBody = antiBan.cleanRelayText(body);
 
-    // 1) Human-like pause before touching the destination chat
-    const thinkMs = antiBan.randInt(2000, 6000);
-    console.log(
-      `[ChatBridge] Human delay ${thinkMs}ms before relay (${direction}, media=${!!hasMedia}, type=${msgType || 'text'})`
-    );
-    await sleep(thinkMs);
-
+    // 1) Typing for a unique random 1–30s window, then forward
+    const delayMs = antiBan.nextVariableDelayMs();
     const destChatId = preferredChatId || destCandidates[0];
-    const typingMs = antiBan.randInt(1800, 4500);
-    console.log(`[ChatBridge] Typing ${typingMs}ms → ${destChatId}`);
-    await this.showTypingFor(destChatId, typingMs);
+    console.log(
+      `[ChatBridge] Typing ${delayMs}ms (1–30s) → ${destChatId} (${direction}, media=${!!hasMedia}, type=${msgType || 'text'})`
+    );
+    await this.showTypingFor(destChatId, delayMs);
 
     const bindDest = (bound) => {
       const id = bound || destChatId;
@@ -1438,8 +1434,18 @@ class WhatsAppService {
       else ChatSessions.bindDeskChatId(session.id, id);
     };
 
-    // ── Media: download + resend to each candidate, then native forward ──
+    // ── Media: native forward first, then download + resend to each candidate ──
     if (hasMedia) {
+      // Native forward often preserves PDF/image best
+      const forwarded = await this.nativeForwardToChat(message, destCandidates, {
+        skipTyping: true,
+      });
+      if (forwarded) {
+        bindDest(forwarded._outboundChatId);
+        console.log(`[ChatBridge] Media native-forward OK (${direction})`);
+        return;
+      }
+
       let media = null;
       try {
         media = await this.prepareRelayMedia(message);
@@ -1456,10 +1462,13 @@ class WhatsAppService {
         for (const candidate of destCandidates) {
           try {
             console.log(
-              `[ChatBridge] Sending media ${media.mimetype || msgType} → ${candidate}`
+              `[ChatBridge] Resending media ${media.mimetype || msgType} → ${candidate}`
             );
             if (candidate !== destChatId) {
-              await this.showTypingFor(candidate, antiBan.randInt(800, 1600));
+              await this.showTypingFor(
+                candidate,
+                Math.min(3000, antiBan.nextVariableDelayMs())
+              );
             }
             const sent = await this.sendMedia(destPhone, media, {
               caption: cleanBody || undefined,
@@ -1470,7 +1479,7 @@ class WhatsAppService {
               sendAsDocument: asDoc,
             });
             bindDest(sent?._outboundChatId || candidate);
-            console.log(`[ChatBridge] Media relay OK → ${candidate}`);
+            console.log(`[ChatBridge] Media resend OK → ${candidate}`);
             return;
           } catch (err) {
             console.warn(
@@ -1480,15 +1489,7 @@ class WhatsAppService {
           }
         }
       } else {
-        console.warn('[ChatBridge] Media download empty — trying native forward');
-      }
-
-      const forwarded = await this.nativeForwardToChat(message, destCandidates, {
-        skipTyping: true,
-      });
-      if (forwarded) {
-        bindDest(forwarded._outboundChatId);
-        return;
+        console.warn('[ChatBridge] Media download empty after native forward failed');
       }
 
       if (cleanBody) {
@@ -1500,7 +1501,7 @@ class WhatsAppService {
         });
       } else {
         console.error(
-          `[ChatBridge] Media relay FAILED (${msgType}) ${direction} — no fallback`
+          `[ChatBridge] Media relay FAILED (${msgType}) ${direction}`
         );
       }
       return;
@@ -1516,8 +1517,8 @@ class WhatsAppService {
       );
       for (let i = 0; i < chunks.length; i++) {
         if (i > 0) {
-          await sleep(antiBan.randInt(800, 2000));
-          await this.showTypingFor(destChatId, antiBan.randInt(1200, 2800));
+          const gap = antiBan.nextVariableDelayMs();
+          await this.showTypingFor(destChatId, gap);
         }
         await this.sendMessage(destPhone, chunks[i], {
           chatId: destChatId,
@@ -1529,11 +1530,11 @@ class WhatsAppService {
       return;
     }
 
-    const forwarded = await this.nativeForwardToChat(message, destCandidates, {
+    const textForward = await this.nativeForwardToChat(message, destCandidates, {
       skipTyping: true,
     });
-    if (forwarded) {
-      bindDest(forwarded._outboundChatId);
+    if (textForward) {
+      bindDest(textForward._outboundChatId);
       return;
     }
 
@@ -1570,23 +1571,65 @@ class WhatsAppService {
     return null;
   }
 
-  async downloadMediaWithRetry(message, tries = 5) {
+  async downloadMediaWithRetry(message, tries = 8) {
     for (let i = 1; i <= tries; i++) {
       try {
-        const media = await message.downloadMedia();
-        if (media?.data) return media;
+        if (typeof message.downloadMedia === 'function') {
+          const media = await message.downloadMedia();
+          if (media?.data) {
+            console.log(
+              `[ChatBridge] downloadMedia OK try ${i} (${media.mimetype || '?'}, ${String(media.data).length} b64)`
+            );
+            return media;
+          }
+        }
       } catch (err) {
         console.warn(`[ChatBridge] downloadMedia try ${i}/${tries}:`, err.message);
       }
-      await sleep(400 * i);
+      await sleep(350 * i);
     }
 
-    // Puppeteer page fallback via WAWebDownloadManager when available
     try {
       const media = await this.downloadMediaFromMessageMeta(message);
-      if (media?.data) return media;
+      if (media?.data) {
+        console.log('[ChatBridge] downloadMedia via Store meta OK');
+        return media;
+      }
     } catch (err) {
       console.warn('[ChatBridge] meta download failed:', err.message);
+    }
+
+    // Last resort: WWebJS page helper if present
+    try {
+      const page = this.client?.pupPage;
+      const serialized = message.id?._serialized || message.id?.id;
+      if (page && serialized) {
+        const raw = await page.evaluate(async (msgId) => {
+          try {
+            if (window.WWebJS?.downloadMedia) {
+              return await window.WWebJS.downloadMedia(msgId);
+            }
+            const msg =
+              window.Store?.Msg?.get(msgId) ||
+              (await window.Store?.Msg?.getMessagesById?.([msgId]))?.[0];
+            if (msg && window.WWebJS?.getMessageModel) {
+              // no-op; fall through
+            }
+            return null;
+          } catch (e) {
+            return { error: String(e?.message || e) };
+          }
+        }, serialized);
+        if (raw?.data) {
+          return new MessageMedia(
+            raw.mimetype || 'application/octet-stream',
+            raw.data,
+            raw.filename || undefined
+          );
+        }
+      }
+    } catch (err) {
+      console.warn('[ChatBridge] WWebJS downloadMedia failed:', err.message);
     }
     return null;
   }
@@ -1599,12 +1642,33 @@ class WhatsAppService {
     if (!serialized) return null;
 
     const result = await page.evaluate(async (msgId) => {
+      const toBase64 = (input) => {
+        let bytes;
+        if (input instanceof ArrayBuffer) bytes = new Uint8Array(input);
+        else if (ArrayBuffer.isView(input)) {
+          bytes = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+        } else if (typeof input === 'string') {
+          return input;
+        } else return null;
+        let binary = '';
+        const chunk = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunk) {
+          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+        }
+        return btoa(binary);
+      };
+
       try {
-        const msg = window.Store?.Msg?.get(msgId) ||
-          (await window.Store?.Msg?.getMessagesById?.([msgId]))?.[0];
-        if (!msg) return null;
+        let msg = window.Store?.Msg?.get(msgId);
+        if (!msg && window.Store?.Msg?.getMessagesById) {
+          const got = await window.Store.Msg.getMessagesById([msgId]);
+          msg = Array.isArray(got) ? got[0] : got?.messages?.[0] || got;
+        }
+        if (!msg) return { error: 'msg_not_found' };
+
+        let decrypted = null;
         if (window.Store?.DownloadManager?.downloadAndMaybeDecrypt) {
-          const blob = await window.Store.DownloadManager.downloadAndMaybeDecrypt({
+          decrypted = await window.Store.DownloadManager.downloadAndMaybeDecrypt({
             directPath: msg.directPath,
             encFilehash: msg.encFilehash,
             mediaKey: msg.mediaKey,
@@ -1612,25 +1676,36 @@ class WhatsAppService {
             type: msg.type,
             signal: new AbortController().signal,
           });
-          // Convert to base64 in page if ArrayBuffer
-          if (blob && blob instanceof ArrayBuffer) {
-            const bytes = new Uint8Array(blob);
-            let binary = '';
-            for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-            return {
-              mimetype: msg.mimetype || 'application/octet-stream',
-              data: btoa(binary),
-              filename: msg.filename || undefined,
-            };
-          }
+        } else if (msg.downloadMedia) {
+          decrypted = await msg.downloadMedia();
         }
-        return null;
+
+        if (!decrypted) return { error: 'empty_download' };
+
+        let data = null;
+        if (decrypted instanceof ArrayBuffer || ArrayBuffer.isView(decrypted)) {
+          data = toBase64(decrypted);
+        } else if (typeof decrypted === 'string') {
+          data = decrypted;
+        } else if (decrypted?.data) {
+          data = typeof decrypted.data === 'string' ? decrypted.data : toBase64(decrypted.data);
+        }
+
+        if (!data) return { error: 'no_base64' };
+        return {
+          mimetype: msg.mimetype || decrypted?.mimetype || 'application/octet-stream',
+          data,
+          filename: msg.filename || undefined,
+        };
       } catch (e) {
         return { error: String(e?.message || e) };
       }
     }, serialized);
 
-    if (result?.error || !result?.data) return null;
+    if (result?.error || !result?.data) {
+      if (result?.error) console.warn('[ChatBridge] meta download:', result.error);
+      return null;
+    }
     return new MessageMedia(
       result.mimetype || 'application/octet-stream',
       result.data,
@@ -1840,8 +1915,7 @@ class WhatsAppService {
 
     if (!options.skipTyping) {
       const timing = antiBan.planOutboundTiming(options.caption || '(media)');
-      if (!options.skipPacing) await sleep(Math.min(timing.thinkMs, 2000));
-      await this.showTypingFor(chatId, Math.min(timing.typingMs, 5000));
+      await this.showTypingFor(chatId, timing.typingMs);
     }
 
     try {
@@ -1899,7 +1973,7 @@ class WhatsAppService {
   }
 
   async showTypingFor(chatId, durationMs) {
-    const ms = Math.max(1200, Number(durationMs) || 2000);
+    const ms = Math.max(1000, Math.min(30000, Number(durationMs) || 2000));
     if (!chatId || !this.client) {
       await sleep(ms);
       return;
@@ -1913,13 +1987,13 @@ class WhatsAppService {
         return;
       }
 
-      // Keep "typing..." visible: WhatsApp drops the indicator if not refreshed
+      // Keep "typing..." visible across the full 1–30s window
       while (Date.now() - started < ms) {
         try {
           await chat.sendStateTyping();
         } catch (_) {}
         const remaining = ms - (Date.now() - started);
-        await sleep(Math.min(1800, Math.max(400, remaining)));
+        await sleep(Math.min(2000, Math.max(400, remaining)));
       }
       try {
         await chat.clearState?.();
@@ -1941,7 +2015,7 @@ class WhatsAppService {
    * after the first bubble if we only rely on phone/@c.us resolution.
    */
   async sendNaturalFormPair(phone, formLink, opts = {}) {
-    const { buildNaturalFormParts, humanActionDelayMs } = require('../utils/naturalReply');
+    const { buildNaturalFormParts } = require('../utils/naturalReply');
     const { getBaseUrl } = require('../config/baseUrl');
     // Never run scrubForbidden on URLs — only sanitize format
     const link = sanitizeFormLink(String(formLink || '').trim());
@@ -2009,19 +2083,19 @@ class WhatsAppService {
       }
     };
 
-    // 1) Typing, then human text (no URL)
-    const typing1 = humanActionDelayMs(2000, 5000);
+    // 1) Typing 1–30s, then human text (no URL)
+    const typing1 = antiBan.nextVariableDelayMs();
     console.log(`[WhatsApp] Form flow: typing ${typing1}ms → text`);
     await this.showTypingFor(chatId, typing1);
     await sendBubble(text, { preferChat: false, label: 'text' });
 
-    // 2) Natural pause between bubbles
-    const gap = humanActionDelayMs(2000, 5000);
+    // 2) Natural pause between bubbles (also 1–30s variable)
+    const gap = antiBan.nextVariableDelayMs();
     console.log(`[WhatsApp] Form flow: pause ${gap}ms before link`);
     await sleep(gap);
 
-    // 3) Typing, then bare URL alone (clickable blue link, not quoted if chat send works)
-    const typing2 = humanActionDelayMs(2000, 5000);
+    // 3) Typing 1–30s, then bare URL alone
+    const typing2 = antiBan.nextVariableDelayMs();
     console.log(`[WhatsApp] Form flow: typing ${typing2}ms → link`);
     await this.showTypingFor(chatId, typing2);
     await sendBubble(link, { preferChat: true, label: 'link' });

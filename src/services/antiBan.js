@@ -1,5 +1,5 @@
 /**
- * Anti-ban / humanization: unique 4–30s jitter, typing simulation, rate caps, working hours.
+ * Anti-ban / humanization: unique 1–30s jitter, typing simulation, rate caps.
  */
 const Settings = (() => {
   try {
@@ -34,33 +34,39 @@ function numSetting(key, fallback, envAliases = []) {
 }
 
 const _recentDelays = [];
-const RECENT_DELAY_WINDOW = 12;
+const RECENT_DELAY_WINDOW = 16;
 
+/** Bounds for human delay: default 1s–30s (truly variable each interaction). */
 function jitterBounds() {
-  let min = numSetting('anti_ban_jitter_min_ms', 4000, ['WA_JITTER_MIN_MS']);
+  let min = numSetting('anti_ban_jitter_min_ms', 1000, ['WA_JITTER_MIN_MS']);
   let max = numSetting('anti_ban_jitter_max_ms', 30000, ['WA_JITTER_MAX_MS']);
-  min = Math.max(2000, Math.min(Number(min) || 4000, 30000));
+  min = Math.max(1000, Math.min(Number(min) || 1000, 30000));
   max = Math.max(min, Math.min(Number(max) || 30000, 30000));
   return { lo: min, hi: max };
 }
 
-/** Unique randomized delay — never identical to recent delays (default up to 30s). */
+/**
+ * Unique randomized delay between 1–30s (or configured bounds).
+ * Avoids repeating the exact same delay back-to-back.
+ */
 function nextVariableDelayMs() {
   const { lo, hi } = jitterBounds();
   const span = Math.max(1, hi - lo);
   let delay = lo;
-  for (let attempt = 0; attempt < 20; attempt++) {
+  for (let attempt = 0; attempt < 24; attempt++) {
     const roll = Math.random();
-    if (roll < 0.15) delay = randInt(lo, lo + Math.floor(span * 0.3));
-    else if (roll < 0.35) delay = randInt(hi - Math.floor(span * 0.3), hi);
+    // Mix short / mid / long so interactions feel different
+    if (roll < 0.2) delay = randInt(lo, lo + Math.floor(span * 0.25));
+    else if (roll < 0.45) delay = randInt(hi - Math.floor(span * 0.3), hi);
     else delay = randInt(lo, hi);
 
     const last = _recentDelays[_recentDelays.length - 1];
-    const tooClose = last != null && Math.abs(delay - last) < Math.min(900, Math.floor(span * 0.04));
+    const tooClose =
+      last != null && Math.abs(delay - last) < Math.min(700, Math.floor(span * 0.03));
     if (!tooClose && !_recentDelays.includes(delay)) break;
     delay =
       last != null
-        ? Math.min(hi, Math.max(lo, last + (delay >= last ? 1 : -1) * randInt(900, 4000)))
+        ? Math.min(hi, Math.max(lo, last + (delay >= last ? 1 : -1) * randInt(800, 3500)))
         : delay;
   }
   _recentDelays.push(delay);
@@ -68,22 +74,24 @@ function nextVariableDelayMs() {
   return delay;
 }
 
+/**
+ * Plan outbound timing. Typing covers (nearly) the full 1–30s window
+ * so chat.sendStateTyping() stays visible for the randomized delay.
+ */
 function planOutboundTiming(text = '', { forcedTotalMs = null } = {}) {
   const totalMs =
     forcedTotalMs != null && Number.isFinite(Number(forcedTotalMs))
-      ? Number(forcedTotalMs)
+      ? Math.max(1000, Math.min(30000, Number(forcedTotalMs)))
       : nextVariableDelayMs();
-  const len = String(text || '').length;
-  const share = 0.28 + Math.random() * 0.34;
-  let typingMs = Math.floor(totalMs * share) + Math.min(len, 400) * randInt(8, 18);
-  typingMs = Math.max(1400, Math.min(typingMs, Math.max(1600, totalMs - 600), 22000));
-  const thinkMs = Math.max(400, totalMs - typingMs);
+  // Entire delay is typing — no separate silent "think" gap
+  const typingMs = totalMs;
+  const thinkMs = 0;
   return { totalMs, thinkMs, typingMs, delayMs: totalMs };
 }
 
 function readingDelayMs(inboundText) {
-  const len = String(inboundText || '').length;
-  return Math.min(10000, Math.max(800, 700 + Math.min(len, 500) * 28 + randInt(250, 1400)));
+  // Still use full variable window for consistency when reading inbound
+  return nextVariableDelayMs();
 }
 
 function typingDurationMs(text, plannedDelayMs = null) {
@@ -94,11 +102,11 @@ function typingDurationMs(text, plannedDelayMs = null) {
 }
 
 function recordingDurationMs() {
-  return randInt(2200, Math.min(12000, Math.floor(nextVariableDelayMs() * 0.45)));
+  return nextVariableDelayMs();
 }
 
 function sessionSpacingMs() {
-  return nextVariableDelayMs();
+  return Math.min(3000, nextVariableDelayMs());
 }
 
 function isWithinWorkingHours(_now = new Date()) {

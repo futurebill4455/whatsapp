@@ -29,7 +29,7 @@ function seed() {
     business_name: 'SecureLife Insurance',
     common_access_code: 'INSU2026',
     forward_template: DEFAULT_FORWARD_TEMPLATE,
-    anti_ban_jitter_min_ms: '4000',
+    anti_ban_jitter_min_ms: '1000',
     anti_ban_jitter_max_ms: '30000',
     anti_ban_min_gap_ms: '4000',
     anti_ban_hours_enabled: '0',
@@ -95,6 +95,9 @@ function seed() {
       if (cleaned !== String(cur)) Settings.set(key, cleaned);
     }
   } catch (_) {}
+  // Human delay window: 1–30 seconds for typing / replies / media relay
+  Settings.set('anti_ban_jitter_min_ms', '1000');
+  Settings.set('anti_ban_jitter_max_ms', '30000');
   // Keep forward template phone-free and cleanly aligned
   try {
     const { DEFAULT_FORWARD_TEMPLATE, stripPhoneFromLeadMessage } = require('./leadSummary');

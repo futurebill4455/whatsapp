@@ -45,13 +45,13 @@
         </div>
         <div class="grid sm:grid-cols-2 gap-3">
           <div>
-            <label class="label">Jitter min (ms)</label>
-            <input class="field" type="number" name="anti_ban_jitter_min_ms" min="2000" max="30000"
-                   value="<%= settings.anti_ban_jitter_min_ms || 4000 %>" />
+            <label class="label">Typing delay min (ms) — 1000–30000</label>
+            <input class="field" type="number" name="anti_ban_jitter_min_ms" min="1000" max="30000"
+                   value="<%= settings.anti_ban_jitter_min_ms || 1000 %>" />
           </div>
           <div>
-            <label class="label">Jitter max (ms) — up to 30000</label>
-            <input class="field" type="number" name="anti_ban_jitter_max_ms" min="2000" max="30000"
+            <label class="label">Typing delay max (ms) — up to 30000 (1–30s)</label>
+            <input class="field" type="number" name="anti_ban_jitter_max_ms" min="1000" max="30000"
                    value="<%= settings.anti_ban_jitter_max_ms || 30000 %>" />
           </div>
           <div>
