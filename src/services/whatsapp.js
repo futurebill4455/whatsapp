@@ -1346,7 +1346,7 @@ class WhatsAppService {
   }
 
   /**
-   * Send form URL using Settings.form_link_message (supports {{form_link}}).
+   * Send a natural form-share message (name + randomized opener + public URL).
    */
   async sendFormLinkOnly(phone, opts = {}) {
     const existing = Submissions.findLatestOpen(phone);
@@ -1368,22 +1368,24 @@ class WhatsAppService {
     }
 
     const formLink = this.buildFormUrl(submission.token);
-    const { renderTemplate } = require('../utils/leadSummary');
-    const template =
-      String(Settings.get('form_link_message') || '').trim() || '{{form_link}}';
-    const outbound =
-      renderTemplate(template, {
-        form_link: formLink,
-        business_name: Settings.get('business_name') || '',
-        phone,
-      }).trim() || formLink;
+    const { buildNaturalFormReply } = require('../utils/naturalReply');
+    const { getBaseUrl } = require('../config/baseUrl');
+    const customTemplate = String(Settings.get('form_link_message') || '').trim();
+    const outbound = buildNaturalFormReply({
+      name: opts.name || '',
+      formLink,
+      customTemplate:
+        customTemplate === '{{form_link}}' ? '' : customTemplate,
+    });
 
     await this.sendMessage(phone, outbound, {
       chatId: opts.chatId,
       replyTo: opts.replyTo,
       inboundText: opts.inboundText,
     });
-    console.log(`[WhatsApp] Form link → ${phone}: ${formLink}`);
+    console.log(
+      `[WhatsApp] Form link → ${phone}: ${formLink} (base=${getBaseUrl()})`
+    );
     return true;
   }
 

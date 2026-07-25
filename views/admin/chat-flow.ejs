@@ -14,7 +14,7 @@
       <p class="text-sm font-semibold uppercase tracking-wider text-violet mb-1">Bot replies</p>
       <h1 class="font-display text-3xl font-bold">Chat Flow</h1>
       <p class="text-ink/55 mt-1 text-sm">
-        One shared access code for everyone. Edit the code and WhatsApp messages the bot sends.
+        Shared access code, public form URL, and WhatsApp reply copy.
       </p>
     </div>
 
@@ -27,13 +27,9 @@
     <form method="post" action="/admin/chat-flow" class="space-y-6">
       <section class="panel p-5 md:p-6 space-y-4 bg-gradient-to-br from-sea/8 via-white to-violet/8">
         <div class="flex items-center gap-2">
-          <span class="chip bg-sea/15 text-sea">Common code</span>
-          <h2 class="font-display text-lg font-semibold">Access code</h2>
+          <span class="chip bg-sea/15 text-sea">Access</span>
+          <h2 class="font-display text-lg font-semibold">Code &amp; public link</h2>
         </div>
-        <p class="text-sm text-ink/55">
-          Any WhatsApp contact who sends this exact code starts the insurance form flow.
-          There is no Users list and no per-phone codes.
-        </p>
         <div>
           <label class="label">Common access code</label>
           <input
@@ -47,40 +43,45 @@
             autocomplete="off"
           />
         </div>
+        <div>
+          <label class="label">Public base URL (for mobile form links)</label>
+          <input
+            class="field font-mono text-sm"
+            name="public_base_url"
+            placeholder="http://YOUR_PUBLIC_IP:3000 or https://yourdomain.com"
+            value="<%= settings.public_base_url || '' %>"
+          />
+          <p class="text-xs text-ink/45 mt-1.5">
+            Leave blank to auto-detect this server’s LAN IP (not localhost).
+            Use your VPS IP or domain so phones can open the form.
+            Current resolved URL:
+            <code class="bg-mist px-1 rounded"><%= typeof resolvedBaseUrl !== 'undefined' ? resolvedBaseUrl : '…' %></code>
+          </p>
+        </div>
       </section>
 
       <section class="panel p-5 md:p-6 space-y-4">
         <div class="flex items-center gap-2">
           <span class="chip bg-violet/15 text-violet">Messages</span>
-          <h2 class="font-display text-lg font-semibold">Chat flow responses</h2>
+          <h2 class="font-display text-lg font-semibold">Chat replies</h2>
         </div>
         <p class="text-sm text-ink/55">
-          Placeholders:
-          <code class="text-xs bg-mist px-1 rounded">{{form_link}}</code>
-          <code class="text-xs bg-mist px-1 rounded">{{business_name}}</code>
-          <code class="text-xs bg-mist px-1 rounded">{{phone}}</code>
-          <code class="text-xs bg-mist px-1 rounded">{{session_code}}</code>
-          <code class="text-xs bg-mist px-1 rounded">{{customer_phone}}</code>
+          By default the bot sends one natural line (with the person’s WhatsApp name when available)
+          plus the form link — randomized each time. Leave the form message blank to keep that behavior.
+          Placeholders: <code class="text-xs bg-mist px-1 rounded">{{form_link}}</code>
+          <code class="text-xs bg-mist px-1 rounded">{{name}}</code>
         </p>
 
         <div>
-          <label class="label">1 · Access granted (after correct code)</label>
-          <textarea class="field" name="access_granted_message" rows="2" placeholder="Access verified…"><%= settings.access_granted_message || '' %></textarea>
-        </div>
-        <div>
-          <label class="label">2 · Optional welcome note</label>
-          <textarea class="field" name="flow_welcome_message" rows="2" placeholder="Leave blank to skip"><%= settings.flow_welcome_message || '' %></textarea>
-        </div>
-        <div>
-          <label class="label">3 · Form link message (must include {{form_link}})</label>
-          <textarea class="field font-mono text-xs" name="form_link_message" rows="3"><%= settings.form_link_message || '{{form_link}}' %></textarea>
+          <label class="label">Custom form share message (optional — leave blank for random natural lines)</label>
+          <textarea class="field font-mono text-xs" name="form_link_message" rows="3" placeholder="Done! Here is your form, {{name}}:&#10;{{form_link}}"><%= settings.form_link_message || '' %></textarea>
         </div>
         <div>
           <label class="label">Wrong access code reply</label>
           <textarea class="field" name="access_wrong_code_message" rows="2"><%= settings.access_wrong_code_message || '' %></textarea>
         </div>
         <div>
-          <label class="label">Form page intro (web form, not WhatsApp)</label>
+          <label class="label">Form page intro (web form)</label>
           <textarea class="field" name="form_intro" rows="2"><%= settings.form_intro || '' %></textarea>
         </div>
         <div>
@@ -88,7 +89,7 @@
           <textarea class="field" name="success_message" rows="3"><%= settings.success_message || '' %></textarea>
         </div>
         <div>
-          <label class="label">Chat close message (customer types close/cls)</label>
+          <label class="label">Chat close message</label>
           <textarea class="field" name="chat_close_message" rows="2"><%= settings.chat_close_message || '' %></textarea>
         </div>
         <div>
@@ -96,7 +97,7 @@
           <textarea class="field" name="company_close_notify_message" rows="2"><%= settings.company_close_notify_message || '' %></textarea>
         </div>
         <div>
-          <label class="label">Forward template (lead summary to desk)</label>
+          <label class="label">Forward template (desk lead summary)</label>
           <textarea class="field font-mono text-xs" name="forward_template" rows="6"><%= settings.forward_template || '' %></textarea>
         </div>
       </section>

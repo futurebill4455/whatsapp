@@ -16,7 +16,10 @@ const {
   renderTemplate,
   sanitizeFormLink,
 } = require('../utils/leadSummary');
-const { buildFormUrl } = require('../config/baseUrl');
+const { buildFormUrl, getBaseUrl } = require('../config/baseUrl');
+const {
+  buildNaturalFormReply,
+} = require('../utils/naturalReply');
 const { forwardLeadToDesk: deskForwardLead } = require('./deskForward');
 const antiBan = require('./antiBan');
 
@@ -80,6 +83,28 @@ function sendOpts(ctx) {
     replyTo: ctx.replyTo || undefined,
     inboundText: ctx.inboundText || ctx.message || undefined,
   };
+}
+
+async function resolveSenderProfileName(replyTo) {
+  if (!replyTo) return '';
+  const fromData =
+    replyTo._data?.notifyName ||
+    replyTo._data?.verifiedName ||
+    replyTo.notifyName ||
+    '';
+  try {
+    const contact = await replyTo.getContact();
+    const name =
+      contact?.pushname ||
+      contact?.name ||
+      contact?.shortName ||
+      contact?.verifiedName ||
+      fromData ||
+      '';
+    return String(name || '').trim();
+  } catch (_) {
+    return String(fromData || '').trim();
+  }
 }
 
 function isYes(body) {
@@ -234,10 +259,12 @@ class WorkflowEngine {
         }
         // Re-send form link for the same waiting run
         console.log(`[Workflow] Access code re-sent while awaiting form — resending link`);
+        const profileName = await resolveSenderProfileName(replyTo);
         await this.whatsapp.sendFormLinkOnly(phone, {
           chatId,
           replyTo,
           inboundText: text,
+          name: profileName,
         });
         return { handled: true, reason: 'form_link_resent' };
       }
@@ -269,22 +296,11 @@ class WorkflowEngine {
     baseCtx.matched_code = unlock.matchedCode;
     baseCtx.access_ok = true;
 
-    const granted = String(Settings.get('access_granted_message') || '').trim();
-    if (granted) {
-      try {
-        await this.whatsapp.sendMessage(phone, granted, sendOpts(baseCtx));
-      } catch (err) {
-        console.error('[Workflow] access-granted reply failed:', err.message);
-      }
-    }
-
-    const welcome = String(Settings.get('flow_welcome_message') || '').trim();
-    if (welcome) {
-      try {
-        await this.whatsapp.sendMessage(phone, welcome, sendOpts(baseCtx));
-      } catch (err) {
-        console.error('[Workflow] flow-welcome reply failed:', err.message);
-      }
+    // WhatsApp profile name for natural replies (skip robotic "Access verified")
+    const profileName = await resolveSenderProfileName(replyTo);
+    if (profileName) {
+      baseCtx.name = profileName;
+      baseCtx.profile_name = profileName;
     }
 
     // No active workflow → still send form link so the user always gets a reply
@@ -294,6 +310,7 @@ class WorkflowEngine {
         chatId,
         replyTo,
         inboundText: text,
+        name: profileName,
       });
       return { handled: true, reason: 'no_workflow_form_fallback' };
     }
@@ -305,6 +322,7 @@ class WorkflowEngine {
         chatId,
         replyTo,
         inboundText: text,
+        name: profileName,
       });
       return { handled: true, reason: 'form_link_fallback' };
     }
@@ -317,12 +335,14 @@ class WorkflowEngine {
         ...baseCtx,
         matched_code: unlock.matchedCode,
         access_ok: true,
+        name: profileName || undefined,
       },
     });
 
     console.log(
-      `[Workflow] Common access unlock code=${unlock.matchedCode} → run #${run.id} (${phone})`
+      `[Workflow] Common access unlock code=${unlock.matchedCode} → run #${run.id} (${phone}) name=${profileName || '—'}`
     );
+    console.log(`[Workflow] Form links use base URL: ${getBaseUrl()}`);
 
     return this.continueFrom(run, start.id, active.nodes, baseCtx);
   }
@@ -501,20 +521,20 @@ class WorkflowEngine {
         }
 
         const formLink = sanitizeFormLink(buildFormUrl(submission.token));
-        const vars = {
-          ...ctx,
-          form_link: formLink,
-          business_name: Settings.get('business_name') || '',
-          phone,
-        };
-        // Prefer node message, then Settings.form_link_message, then bare URL
-        const template =
-          String(node.data?.message || '').trim() ||
-          String(Settings.get('form_link_message') || '').trim() ||
-          '{{form_link}}';
-        const outbound = renderTemplate(template, vars).trim() || formLink;
+        const name = ctx.name || ctx.profile_name || '';
+        const customTemplate = String(
+          node.data?.message || Settings.get('form_link_message') || ''
+        ).trim();
+
+        const outbound = buildNaturalFormReply({
+          name,
+          formLink,
+          customTemplate:
+            customTemplate === '{{form_link}}' ? '' : customTemplate,
+        });
+
         await this.whatsapp.sendMessage(phone, outbound, sendOpts(ctx));
-        console.log(`[Workflow] Form link → ${phone}: ${formLink}`);
+        console.log(`[Workflow] Form link → ${phone}: ${formLink} (base=${getBaseUrl()})`);
 
         return {
           output: 'output_1',

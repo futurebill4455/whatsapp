@@ -356,11 +356,13 @@ router.post('/admin/settings', requireAdmin, (req, res) => {
 // ——— Chat flow (common access code + bot messages) ———
 
 router.get('/admin/chat-flow', requireAdmin, (req, res) => {
+  const { getBaseUrl } = require('../config/baseUrl');
   res.render(
     'admin/chat-flow',
     layoutLocals(req, {
       title: 'Chat Flow',
       settings: Settings.getAll(),
+      resolvedBaseUrl: getBaseUrl(),
     })
   );
 });
@@ -372,22 +374,29 @@ router.post('/admin/chat-flow', requireAdmin, (req, res) => {
       .toUpperCase()
       .replace(/[^A-Z0-9]/g, '') || 'INSU2026';
 
+  let publicBase = String(req.body.public_base_url || '').trim().replace(/\/$/, '');
+  if (publicBase && !/^https?:\/\//i.test(publicBase)) {
+    publicBase = `http://${publicBase}`;
+  }
+
   Settings.setMany({
     common_access_code: code,
-    access_granted_message: String(req.body.access_granted_message || ''),
-    flow_welcome_message: String(req.body.flow_welcome_message || ''),
-    form_link_message: String(req.body.form_link_message || '{{form_link}}').trim() || '{{form_link}}',
+    public_base_url: publicBase,
+    form_link_message: String(req.body.form_link_message || '').trim(),
     access_wrong_code_message: String(req.body.access_wrong_code_message || ''),
     form_intro: String(req.body.form_intro || ''),
     success_message: String(req.body.success_message || ''),
     chat_close_message: String(req.body.chat_close_message || ''),
     company_close_notify_message: String(req.body.company_close_notify_message || ''),
     forward_template: String(req.body.forward_template || ''),
+    // Keep legacy keys empty so old robotic openers never fire
+    access_granted_message: '',
+    flow_welcome_message: '',
   });
 
   req.session.flash = {
     type: 'success',
-    message: `Chat flow saved. Common access code is now ${code}.`,
+    message: `Chat flow saved. Code ${code}. Form links use ${publicBase || 'auto-detected server IP'}.`,
   };
   res.redirect('/admin/chat-flow');
 });

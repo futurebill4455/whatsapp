@@ -41,16 +41,17 @@ function seed() {
       'Select Health or Vehicle insurance. The form guides you step-by-step.',
     success_message:
       'Thank you! Your details have been forwarded to our team.\n\nYou can now chat with the insurance desk. Send *close* (or *cls*) anytime to end the chat.',
-    form_link_message: '{{form_link}}',
+    form_link_message: '',
     chat_close_message: 'Thank you! Your conversation has been ended. Have a good day!',
     company_close_notify_message:
       'Customer ended the chat [#{{session_code}}] ({{customer_phone}}).\nSession closed.',
     access_denied_message:
       'Please send the correct access code to continue.',
     access_wrong_code_message:
-      'That access code does not match. Please check with your advisor and try again.',
-    access_granted_message: 'Access verified. Sending your form link…',
+      'Hmm, that code doesn’t look right. Can you double-check and send again?',
+    access_granted_message: '',
     flow_welcome_message: '',
+    public_base_url: '',
   };
 
   for (const [key, value] of Object.entries(defaults)) {
@@ -69,6 +70,18 @@ function seed() {
   if (!Settings.get('common_access_code')) {
     Settings.set('common_access_code', 'INSU2026');
     console.log('Seeded common access code: INSU2026');
+  }
+
+  // Clear robotic default opener if still stored from older seeds
+  const granted = Settings.get('access_granted_message');
+  if (
+    granted &&
+    /^access verified/i.test(String(granted))
+  ) {
+    Settings.set('access_granted_message', '');
+  }
+  if (Settings.get('form_link_message') === '{{form_link}}') {
+    Settings.set('form_link_message', '');
   }
 
   if (InsuranceTypes.list().length === 0) {

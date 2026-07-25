@@ -38,6 +38,14 @@ whatsapp.init().catch((err) => {
 });
 
 const PORT = Number(process.env.PORT) || 3000;
-server.listen(PORT, () => {
-  console.log(`Lead Intake System running on http://localhost:${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+  const { getBaseUrl } = require('./src/config/baseUrl');
+  const publicBase = getBaseUrl();
+  console.log(`Lead Intake System listening on 0.0.0.0:${PORT}`);
+  console.log(`Public form base URL: ${publicBase}`);
+  if (/localhost|127\.0\.0\.1/i.test(publicBase)) {
+    console.warn(
+      '[Config] Form links still use localhost — set BASE_URL or Chat Flow → Public base URL to your public IP/domain.'
+    );
+  }
 });
