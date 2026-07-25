@@ -128,8 +128,8 @@ const Admins = {
 };
 
 /**
- * Authorized users: Name + Phone + Unique Access Code.
- * Unlock requires matching phone AND that user's assigned code (waiting_code → active).
+ * Authorized users: Name + Phone + Unique Access Code (from admin panel).
+ * Unlock is driven by live DB access_code values — never a hardcoded list.
  */
 const AccessUsers = {
   digitsOnly,
@@ -178,11 +178,60 @@ const AccessUsers = {
     return null;
   },
 
+  /**
+   * Normalize access codes for storage + comparison.
+   * Keeps A–Z / 0–9 only. " insu-2026 " → "INSU2026"
+   */
   normalizeCode(code) {
     return String(code || '')
       .replace(/[\u200B-\u200D\uFEFF]/g, '')
       .trim()
-      .toUpperCase();
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '');
+  },
+
+  /** Candidate codes from an inbound WhatsApp body (bare code or short phrase). */
+  codeCandidatesFromMessage(raw) {
+    const text = String(raw || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+    const out = [];
+    const push = (v) => {
+      const n = this.normalizeCode(v);
+      if (n && n.length >= 3 && !out.includes(n)) out.push(n);
+    };
+    if (!text) return out;
+    push(text);
+    for (const tok of text.split(/[\s,;|:@#]+/)) push(tok);
+    const parts = text.split(/\s+/).filter(Boolean);
+    if (parts.length > 1) push(parts[parts.length - 1]);
+    return out;
+  },
+
+  /** Look up any active user by their stored access_code (dynamic DB). */
+  findByAccessCode(codeInput) {
+    const code = this.normalizeCode(codeInput);
+    if (!code || code.length < 3) return null;
+
+    const exact = db
+      .prepare(
+        `SELECT * FROM access_users
+         WHERE is_active = 1
+           AND UPPER(REPLACE(REPLACE(REPLACE(REPLACE(access_code,'-',''),' ',''),'_',''),'/','')) = ?
+         LIMIT 1`
+      )
+      .get(code);
+    if (exact) return exact;
+
+    for (const user of this.list(true)) {
+      if (this.normalizeCode(user.access_code) === code) return user;
+    }
+    return null;
+  },
+
+  messageMatchesUserCode(user, messageBody) {
+    if (!user) return false;
+    const want = this.normalizeCode(user.access_code);
+    if (!want) return false;
+    return this.codeCandidatesFromMessage(messageBody).includes(want);
   },
 
   isUnlocked(phone) {
@@ -199,35 +248,94 @@ const AccessUsers = {
     return 'waiting_code';
   },
 
-  /** waiting_code → active when phone + access code match. */
-  tryUnlock(phone, codeInput) {
-    const code = this.normalizeCode(codeInput);
-    if (!code || code.length < 4) {
-      return { ok: false, reason: 'invalid_input' };
-    }
-
-    const user = this.findByPhone(phone);
-    if (!user || !user.is_active) {
-      return { ok: false, reason: 'unknown_phone' };
-    }
-
-    if (user.status === 'active' || user.verified_at) {
-      return { ok: true, user, reason: 'already_active' };
-    }
-
-    if (this.normalizeCode(user.access_code) !== code) {
-      return { ok: false, reason: 'wrong_code', user };
-    }
-
+  _activateUser(userId) {
     db.prepare(
       `UPDATE access_users
        SET status = 'active',
            verified_at = datetime('now'),
            updated_at = datetime('now')
        WHERE id = ?`
-    ).run(user.id);
+    ).run(userId);
+    return this.get(userId);
+  },
 
-    return { ok: true, user: this.get(user.id), reason: 'unlocked' };
+  /**
+   * Unlock when inbound text matches a live DB access_code.
+   * Code-first (admin dynamic codes); phone must agree when both resolve.
+   */
+  tryUnlock(phone, codeInput) {
+    const candidates = this.codeCandidatesFromMessage(codeInput);
+    if (!candidates.length) {
+      return { ok: false, reason: 'invalid_input' };
+    }
+
+    let userByCode = null;
+    let matchedCandidate = null;
+    for (const c of candidates) {
+      const found = this.findByAccessCode(c);
+      if (found) {
+        userByCode = found;
+        matchedCandidate = c;
+        break;
+      }
+    }
+
+    const userByPhone = phone ? this.findByPhone(phone) : null;
+
+    // Already active on this phone — only treat as unlock if they resent their code
+    if (userByPhone && (userByPhone.status === 'active' || userByPhone.verified_at)) {
+      if (this.messageMatchesUserCode(userByPhone, codeInput)) {
+        return {
+          ok: true,
+          user: userByPhone,
+          reason: 'already_active',
+          matchedCode: this.normalizeCode(userByPhone.access_code),
+        };
+      }
+      return { ok: false, reason: 'unlocked_noise', user: userByPhone };
+    }
+
+    if (!userByCode) {
+      if (userByPhone) return { ok: false, reason: 'wrong_code', user: userByPhone };
+      return { ok: false, reason: 'unknown_code' };
+    }
+
+    if (
+      userByPhone &&
+      userByPhone.id !== userByCode.id &&
+      !phonesMatch(userByPhone.phone, userByCode.phone)
+    ) {
+      console.warn(
+        `[Access] Code ${matchedCandidate} belongs to #${userByCode.id} but phone matched #${userByPhone.id}`
+      );
+      return { ok: false, reason: 'phone_code_mismatch', user: userByPhone };
+    }
+
+    if (!userByPhone && phone) {
+      console.warn(
+        `[Access] Code ${matchedCandidate} matched #${userByCode.id} (${userByCode.phone}); inbound phone "${phone}" not in DB — unlocking by code`
+      );
+    }
+
+    if (userByCode.status === 'active' || userByCode.verified_at) {
+      return {
+        ok: true,
+        user: userByCode,
+        reason: 'already_active',
+        matchedCode: matchedCandidate,
+      };
+    }
+
+    const activated = this._activateUser(userByCode.id);
+    console.log(
+      `[Access] Unlocked #${activated.id} (${activated.phone}) via code ${matchedCandidate}`
+    );
+    return {
+      ok: true,
+      user: activated,
+      reason: 'unlocked',
+      matchedCode: matchedCandidate,
+    };
   },
 
   create({ name, phone, access_code }) {
@@ -236,9 +344,15 @@ const AccessUsers = {
     const displayName = String(name || '').trim();
     if (!displayName) throw new Error('Name is required');
     if (!digits) throw new Error('Phone number is required');
-    if (!code || code.length < 4) throw new Error('Access code must be at least 4 characters');
+    if (!code || code.length < 3) {
+      throw new Error('Access code must be at least 3 characters');
+    }
 
     if (digits.length === 10) digits = `91${digits}`;
+
+    if (this.findByAccessCode(code)) {
+      throw new Error('Access code already in use');
+    }
 
     const result = db
       .prepare(
@@ -259,10 +373,17 @@ const AccessUsers = {
     }
     const code =
       access_code !== undefined
-        ? this.normalizeCode(access_code) || current.access_code
-        : current.access_code;
+        ? this.normalizeCode(access_code) || this.normalizeCode(current.access_code)
+        : this.normalizeCode(current.access_code) || current.access_code;
     const displayName =
       name !== undefined ? String(name || '').trim() || current.name : current.name;
+
+    if (access_code !== undefined) {
+      const other = this.findByAccessCode(code);
+      if (other && other.id !== id) {
+        throw new Error('Access code already in use');
+      }
+    }
 
     db.prepare(
       `UPDATE access_users

@@ -1,7 +1,7 @@
 /**
  * Visual workflow engine for insurance lead intake (Drawflow graphs).
- * Inbound starts ONLY when AccessUsers phone + exact access_code match.
- * No hi/hello keyword triggers.
+ * Inbound starts when AccessUsers.tryUnlock matches a live DB access_code
+ * (admin-created dynamic codes). No hardcoded codes / hi-hello keywords.
  */
 const crypto = require('crypto');
 const {
@@ -198,8 +198,8 @@ class WorkflowEngine {
   }
 
   /**
-   * Inbound WhatsApp text. Strict: silent unless phone+access_code unlocks,
-   * or a yes/no wait is pending for an already-running run.
+   * Inbound WhatsApp text. Silent unless a live DB access_code unlocks the session
+   * (or a yes/no wait is pending for an already-running run).
    */
   async handleIncomingMessage({ phone, body, chatId, replyTo }) {
     const text = String(body || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
@@ -228,42 +228,37 @@ class WorkflowEngine {
       return { handled: true, reason: 'awaiting_form_submit', silent: true };
     }
 
-    // Strict access: phone must be whitelisted + exact access code
+    // Dynamic access: match inbound text against ANY active user's DB access_code
     const unlock = AccessUsers.tryUnlock(phone, text);
     if (!unlock.ok) {
-      if (unlock.reason === 'unknown_phone') {
+      if (unlock.reason === 'wrong_code') {
+        console.warn(`[Workflow] Wrong access code from ${phone} (silent)`);
+      } else if (unlock.reason === 'unknown_code' || unlock.reason === 'unknown_phone') {
         console.warn(
-          `[Workflow] Access code received but phone not in DB (resolved="${phone}", chatId="${chatId || ''}")`
+          `[Workflow] No DB access_code match for "${text.slice(0, 40)}" (resolved phone="${phone}", chatId="${chatId || ''}")`
         );
-      } else if (unlock.reason === 'wrong_code') {
-        console.warn(
-          `[Workflow] Wrong access code from ${phone} (silent)`
-        );
+      } else if (unlock.reason === 'phone_code_mismatch') {
+        console.warn(`[Workflow] Access code / phone mismatch for ${phone} (silent)`);
       }
       // Already unlocked users sending random text → silent
-      if (AccessUsers.isUnlocked(phone)) {
+      if (AccessUsers.isUnlocked(phone) || unlock.reason === 'unlocked_noise') {
         return { handled: true, reason: 'unlocked_silent', silent: true };
       }
       return { handled: true, reason: unlock.reason || 'unauthorized', silent: true };
     }
 
-    // Fresh unlock (or re-send of valid code while waiting_code) → start at access trigger
-    if (unlock.reason === 'already_active') {
-      // Active user re-sending code or noise — only re-send form if they send their code again
-      const user = unlock.user;
-      const codeMatch =
-        AccessUsers.normalizeCode(user.access_code) ===
-        AccessUsers.normalizeCode(text);
-      if (!codeMatch) {
-        return { handled: true, reason: 'unlocked_silent', silent: true };
-      }
-    }
+    // Prefer the DB user's phone for persistence; keep inbound chatId for replies
+    const userPhone = unlock.user?.phone || phone;
+    baseCtx.phone = userPhone;
+    baseCtx.access_user_id = unlock.user?.id;
+    baseCtx.access_name = unlock.user?.name;
+    baseCtx.name = unlock.user?.name;
+    baseCtx.matched_code = unlock.matchedCode || AccessUsers.normalizeCode(unlock.user?.access_code);
 
     const triggers = findAccessTriggerNodes(active.nodes);
     if (!triggers.length) {
-      // No trigger node — still send bare form link as fallback
       console.warn('[Workflow] No access_code trigger node; sending form link directly');
-      await this.whatsapp.sendFormLinkOnly(phone, {
+      await this.whatsapp.sendFormLinkOnly(userPhone, {
         chatId,
         replyTo,
         inboundText: text,
@@ -274,7 +269,7 @@ class WorkflowEngine {
     const start = triggers[0];
     const run = WorkflowRuns.create({
       workflow_id: active.workflow.id,
-      customer_phone: phone,
+      customer_phone: userPhone,
       context: {
         ...baseCtx,
         access_user_id: unlock.user?.id,
@@ -284,7 +279,7 @@ class WorkflowEngine {
     });
 
     console.log(
-      `[Workflow] Access unlock → run #${run.id} from trigger ${start.id} (${phone})`
+      `[Workflow] Access unlock (${unlock.reason}) code=${baseCtx.matched_code} → run #${run.id} (${userPhone})`
     );
 
     return this.continueFrom(run, start.id, active.nodes, {
