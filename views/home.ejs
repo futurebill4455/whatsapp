@@ -32,16 +32,12 @@
         </div>
 
         <div id="qrWrap" class="mx-auto w-full max-w-sm aspect-square rounded-3xl border-2 border-dashed border-ink/10 bg-gradient-to-br from-white to-mist/60 flex items-center justify-center p-4">
-          <% if (qrDataUrl) { %>
-            <img id="qrImage" src="<%= qrDataUrl %>" alt="WhatsApp QR" class="w-full h-full object-contain rounded-2xl" />
-          <% } else { %>
-            <img id="qrImage" src="" alt="WhatsApp QR" class="w-full h-full object-contain rounded-2xl hidden" />
-            <div id="qrPlaceholder" class="text-center px-6">
-              <div class="w-14 h-14 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-sea to-violet opacity-80"></div>
-              <p class="font-semibold">Waiting for QR</p>
-              <p class="text-sm text-ink/50 mt-1">WhatsApp Web is starting…</p>
-            </div>
-          <% } %>
+          <img id="qrImage" src="" alt="WhatsApp QR" class="w-full h-full object-contain rounded-2xl hidden" decoding="async" loading="lazy" />
+          <div id="qrPlaceholder" class="text-center px-6">
+            <div class="w-14 h-14 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-sea to-violet opacity-80"></div>
+            <p class="font-semibold">Waiting for QR</p>
+            <p class="text-sm text-ink/50 mt-1">WhatsApp Web is starting…</p>
+          </div>
         </div>
 
         <p id="statusDetail" class="text-center text-sm text-ink/55 mt-5">Keep this page open while scanning.</p>
@@ -96,6 +92,11 @@
       const qrImage = document.getElementById('qrImage');
       const placeholder = document.getElementById('qrPlaceholder');
 
+      let lastQr = '';
+      let pageVisible = document.visibilityState !== 'hidden';
+      let pendingQr = null;
+      let socket = null;
+
       const badgeStyles = {
         qr: 'chip bg-amber/15 text-amber badge-live',
         ready: 'chip bg-sea/15 text-sea badge-live',
@@ -106,10 +107,19 @@
       };
 
       function setQr(dataUrl) {
-        if (!dataUrl) return;
-        qrImage.src = dataUrl;
-        qrImage.classList.remove('hidden');
-        if (placeholder) placeholder.classList.add('hidden');
+        if (!dataUrl || dataUrl === lastQr) return;
+        if (!pageVisible) {
+          pendingQr = dataUrl;
+          return;
+        }
+        lastQr = dataUrl;
+        pendingQr = null;
+        // Assign via rAF so tab switches stay smooth
+        requestAnimationFrame(function () {
+          qrImage.src = dataUrl;
+          qrImage.classList.remove('hidden');
+          if (placeholder) placeholder.classList.add('hidden');
+        });
       }
 
       function applyStatus(st) {
@@ -123,6 +133,7 @@
           detail.textContent = 'WhatsApp is connected and ready.';
           if (placeholder) placeholder.classList.add('hidden');
           qrImage.classList.add('hidden');
+          lastQr = '';
         } else if (s === 'qr') {
           detail.textContent = 'Scan the QR code with your phone.';
         } else if (st.lastError) {
@@ -134,19 +145,40 @@
 
       applyStatus(<%- JSON.stringify(waStatus || {}) %>);
 
-      const socket = io();
-      socket.on('whatsapp:qr', function (payload) {
-        if (payload && payload.qr) setQr(payload.qr);
-      });
-      socket.on('whatsapp:status', applyStatus);
+      function connectSocket() {
+        if (socket) return;
+        socket = io({
+          transports: ['websocket', 'polling'],
+          reconnection: true,
+          reconnectionDelay: 800,
+          reconnectionDelayMax: 4000,
+        });
+        socket.on('whatsapp:qr', function (payload) {
+          if (payload && payload.qr) setQr(payload.qr);
+        });
+        socket.on('whatsapp:status', applyStatus);
+      }
 
-      fetch('/api/whatsapp/status')
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-          applyStatus(data);
-          if (data.qr) setQr(data.qr);
-        })
-        .catch(function () {});
+      function fetchStatus() {
+        fetch('/api/whatsapp/status')
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            applyStatus(data);
+            if (data.qr) setQr(data.qr);
+          })
+          .catch(function () {});
+      }
+
+      document.addEventListener('visibilitychange', function () {
+        pageVisible = document.visibilityState !== 'hidden';
+        if (pageVisible) {
+          if (pendingQr) setQr(pendingQr);
+          fetchStatus();
+        }
+      });
+
+      connectSocket();
+      fetchStatus();
     })();
   </script>
 </body>

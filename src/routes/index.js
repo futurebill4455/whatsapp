@@ -62,12 +62,12 @@ function catalogPayload() {
 // ——— Public ———
 
 router.get('/', (req, res) => {
+  // Do not embed huge QR data-URL in HTML — client loads it via API/socket (faster tab switches)
   res.render(
     'home',
     layoutLocals(req, {
       title: 'Connect WhatsApp',
       waStatus: whatsapp.getPublicStatus(),
-      qrDataUrl: whatsapp.qrDataUrl || null,
     })
   );
 });
@@ -379,15 +379,18 @@ router.post('/admin/chat-flow', requireAdmin, (req, res) => {
     publicBase = `http://${publicBase}`;
   }
 
+  const { scrubForbidden } = require('../utils/naturalReply');
   Settings.setMany({
     common_access_code: code,
     public_base_url: publicBase,
-    form_link_message: String(req.body.form_link_message || '').trim(),
-    form_intro: String(req.body.form_intro || ''),
-    success_message: String(req.body.success_message || ''),
-    chat_close_message: String(req.body.chat_close_message || ''),
-    company_close_notify_message: String(req.body.company_close_notify_message || ''),
-    forward_template: String(req.body.forward_template || ''),
+    form_link_message: scrubForbidden(String(req.body.form_link_message || '').trim()),
+    form_intro: scrubForbidden(String(req.body.form_intro || '')),
+    success_message: scrubForbidden(String(req.body.success_message || '')),
+    chat_close_message: scrubForbidden(String(req.body.chat_close_message || '')),
+    company_close_notify_message: scrubForbidden(
+      String(req.body.company_close_notify_message || '')
+    ),
+    forward_template: scrubForbidden(String(req.body.forward_template || '')),
     // Never auto-reply on wrong/random messages
     access_granted_message: '',
     flow_welcome_message: '',

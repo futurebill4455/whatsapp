@@ -66,15 +66,17 @@
           <h2 class="font-display text-lg font-semibold">Chat replies</h2>
         </div>
         <p class="text-sm text-ink/55">
-          By default the bot sends one natural line (with the person’s WhatsApp name when available)
-          plus the form link — randomized each time. Leave the form message blank to keep that behavior.
-          Placeholders: <code class="text-xs bg-mist px-1 rounded">{{form_link}}</code>
-          <code class="text-xs bg-mist px-1 rounded">{{name}}</code>
+          By default the bot shows <strong>typing…</strong>, sends a randomized natural line mixing
+          <strong>English and Malayalam</strong> (with the person’s WhatsApp name when available),
+          pauses, then shows typing again and sends the form URL as a
+          <strong>separate clickable</strong> blue link. Leave the custom message blank to keep that behavior.
+          Placeholders: <code class="text-xs bg-mist px-1 rounded">{{name}}</code>
         </p>
 
         <div>
-          <label class="label">Custom form share message (optional — leave blank for random natural lines)</label>
-          <textarea class="field font-mono text-xs" name="form_link_message" rows="3" placeholder="Done! Here is your form, {{name}}:&#10;{{form_link}}"><%= settings.form_link_message || '' %></textarea>
+          <label class="label">Custom first-line text only (optional — leave blank for bilingual random lines)</label>
+          <textarea class="field font-mono text-xs" name="form_link_message" rows="2" placeholder="Okay {{name}}, please fill this:"><%= settings.form_link_message || '' %></textarea>
+          <p class="text-xs text-ink/45 mt-1">Do not put the URL here — the link is always sent as the next message.</p>
         </div>
         <div>
           <label class="label">Form page intro (web form)</label>

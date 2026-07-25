@@ -81,6 +81,25 @@ function seed() {
   if (Settings.get('form_link_message') === '{{form_link}}') {
     Settings.set('form_link_message', '');
   }
+  // Strip legacy "Future" wording from stored reply templates
+  try {
+    const { scrubForbidden } = require('./naturalReply');
+    for (const key of [
+      'form_link_message',
+      'form_intro',
+      'success_message',
+      'chat_close_message',
+      'company_close_notify_message',
+      'forward_template',
+      'access_granted_message',
+      'flow_welcome_message',
+    ]) {
+      const cur = Settings.get(key);
+      if (cur && /\bfuture\b/i.test(String(cur))) {
+        Settings.set(key, scrubForbidden(String(cur)));
+      }
+    }
+  } catch (_) {}
   // Ensure wrong-code replies stay disabled (silent unless exact code)
   Settings.set('access_wrong_code_message', '');
   Settings.set('access_denied_message', '');

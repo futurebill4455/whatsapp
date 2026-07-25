@@ -117,7 +117,54 @@ class WhatsAppService {
     this._manualReplyAt = new Map();
     /** chatKey → ignore fromMe as "manual" until this time (bot-initiated sends) */
     this._botOutboundIgnoreUntil = new Map();
+    this._qrEncodeBusy = false;
+    this._pendingQrRaw = null;
+    this._lastQrEmitAt = 0;
     this.engine = bindEngine(this);
+  }
+
+  /**
+   * Encode QR without blocking the event loop; keep payload small for fast tab switches.
+   */
+  queueQrEncode(qrRaw) {
+    this._pendingQrRaw = qrRaw;
+    if (this._qrEncodeBusy) return;
+    this._qrEncodeBusy = true;
+
+    const run = async () => {
+      while (this._pendingQrRaw) {
+        const raw = this._pendingQrRaw;
+        this._pendingQrRaw = null;
+        try {
+          const dataUrl = await qrcode.toDataURL(raw, {
+            errorCorrectionLevel: 'M',
+            type: 'image/png',
+            margin: 1,
+            width: 260,
+            rendererOpts: { quality: 0.8 },
+          });
+          this.qrDataUrl = dataUrl;
+          this.status = 'qr';
+          this.ready = false;
+          this._lastQrEmitAt = Date.now();
+          this.emit('whatsapp:qr', { qr: this.qrDataUrl });
+          this.emit('whatsapp:status', this.getPublicStatus());
+          console.log('[WhatsApp] QR ready — scan with phone');
+        } catch (err) {
+          console.error('[WhatsApp] QR encode failed:', err.message);
+        }
+        await new Promise((r) => setImmediate(r));
+      }
+    };
+
+    setImmediate(() => {
+      run()
+        .catch((err) => console.error('[WhatsApp] QR queue error:', err.message))
+        .finally(() => {
+          this._qrEncodeBusy = false;
+          if (this._pendingQrRaw) this.queueQrEncode(this._pendingQrRaw);
+        });
+    });
   }
 
   attachSocket(io) {
@@ -460,17 +507,9 @@ class WhatsAppService {
   }
 
   _bindClientEvents(client) {
-    client.on('qr', async (qr) => {
-      try {
-        this.qrDataUrl = await qrcode.toDataURL(qr);
-        this.status = 'qr';
-        this.ready = false;
-        this.emit('whatsapp:qr', { qr: this.qrDataUrl });
-        this.emit('whatsapp:status', this.getPublicStatus());
-        console.log('[WhatsApp] QR ready — scan with phone');
-      } catch (err) {
-        console.error('[WhatsApp] QR encode failed:', err.message);
-      }
+    client.on('qr', (qr) => {
+      // Encode off the critical path; coalesce rapid QR refreshes
+      this.queueQrEncode(qr);
     });
 
     client.on('authenticated', () => {
@@ -1552,25 +1591,36 @@ class WhatsAppService {
   }
 
   async showTypingFor(chatId, durationMs) {
-    const ms = Math.max(800, Number(durationMs) || 2000);
+    const ms = Math.max(1200, Number(durationMs) || 2000);
     if (!chatId || !this.client) {
       await sleep(ms);
       return;
     }
+
+    const started = Date.now();
     try {
       const chat = await this.client.getChatById(chatId);
-      if (chat?.sendStateTyping) {
-        await chat.sendStateTyping();
+      if (!chat?.sendStateTyping) {
         await sleep(ms);
-        try {
-          await chat.clearState?.();
-        } catch (_) {}
         return;
       }
+
+      // Keep "typing..." visible: WhatsApp drops the indicator if not refreshed
+      while (Date.now() - started < ms) {
+        try {
+          await chat.sendStateTyping();
+        } catch (_) {}
+        const remaining = ms - (Date.now() - started);
+        await sleep(Math.min(1800, Math.max(400, remaining)));
+      }
+      try {
+        await chat.clearState?.();
+      } catch (_) {}
     } catch (err) {
       console.warn('[WhatsApp] typing state failed:', err.message);
+      const remaining = ms - (Date.now() - started);
+      if (remaining > 0) await sleep(remaining);
     }
-    await sleep(ms);
   }
 
   /**
