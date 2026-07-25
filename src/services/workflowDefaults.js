@@ -89,7 +89,7 @@ function buildDefaultWorkflowGraph() {
             id: 1,
             name: 'trigger_message',
             data: {
-              label: 'When unique access code received',
+              label: 'When common access code received',
               trigger_mode: 'access_code',
               keywords: '',
             },

@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('../partials/styles') %>
+</head>
+<body class="font-sans text-ink page-bg min-h-screen antialiased">
+  <%- include('../partials/nav') %>
+
+  <main class="max-w-3xl mx-auto px-4 py-8 space-y-8 animate-in">
+    <div>
+      <p class="text-sm font-semibold uppercase tracking-wider text-violet mb-1">Bot replies</p>
+      <h1 class="font-display text-3xl font-bold">Chat Flow</h1>
+      <p class="text-ink/55 mt-1 text-sm">
+        One shared access code for everyone. Edit the code and WhatsApp messages the bot sends.
+      </p>
+    </div>
+
+    <% if (typeof flash !== 'undefined' && flash) { %>
+      <div class="rounded-2xl px-4 py-3 text-sm font-medium border <%= flash.type === 'error' ? 'bg-coral/10 text-coral border-coral/20' : 'bg-sea/10 text-sea border-sea/20' %>">
+        <%= flash.message %>
+      </div>
+    <% } %>
+
+    <form method="post" action="/admin/chat-flow" class="space-y-6">
+      <section class="panel p-5 md:p-6 space-y-4 bg-gradient-to-br from-sea/8 via-white to-violet/8">
+        <div class="flex items-center gap-2">
+          <span class="chip bg-sea/15 text-sea">Common code</span>
+          <h2 class="font-display text-lg font-semibold">Access code</h2>
+        </div>
+        <p class="text-sm text-ink/55">
+          Any WhatsApp contact who sends this exact code starts the insurance form flow.
+          There is no Users list and no per-phone codes.
+        </p>
+        <div>
+          <label class="label">Common access code</label>
+          <input
+            class="field font-mono tracking-wider uppercase text-lg"
+            name="common_access_code"
+            required
+            minlength="3"
+            maxlength="64"
+            value="<%= settings.common_access_code || 'INSU2026' %>"
+            placeholder="INSU2026"
+            autocomplete="off"
+          />
+        </div>
+      </section>
+
+      <section class="panel p-5 md:p-6 space-y-4">
+        <div class="flex items-center gap-2">
+          <span class="chip bg-violet/15 text-violet">Messages</span>
+          <h2 class="font-display text-lg font-semibold">Chat flow responses</h2>
+        </div>
+        <p class="text-sm text-ink/55">
+          Placeholders:
+          <code class="text-xs bg-mist px-1 rounded">{{form_link}}</code>
+          <code class="text-xs bg-mist px-1 rounded">{{business_name}}</code>
+          <code class="text-xs bg-mist px-1 rounded">{{phone}}</code>
+          <code class="text-xs bg-mist px-1 rounded">{{session_code}}</code>
+          <code class="text-xs bg-mist px-1 rounded">{{customer_phone}}</code>
+        </p>
+
+        <div>
+          <label class="label">1 · Access granted (after correct code)</label>
+          <textarea class="field" name="access_granted_message" rows="2" placeholder="Access verified…"><%= settings.access_granted_message || '' %></textarea>
+        </div>
+        <div>
+          <label class="label">2 · Optional welcome note</label>
+          <textarea class="field" name="flow_welcome_message" rows="2" placeholder="Leave blank to skip"><%= settings.flow_welcome_message || '' %></textarea>
+        </div>
+        <div>
+          <label class="label">3 · Form link message (must include {{form_link}})</label>
+          <textarea class="field font-mono text-xs" name="form_link_message" rows="3"><%= settings.form_link_message || '{{form_link}}' %></textarea>
+        </div>
+        <div>
+          <label class="label">Wrong access code reply</label>
+          <textarea class="field" name="access_wrong_code_message" rows="2"><%= settings.access_wrong_code_message || '' %></textarea>
+        </div>
+        <div>
+          <label class="label">Form page intro (web form, not WhatsApp)</label>
+          <textarea class="field" name="form_intro" rows="2"><%= settings.form_intro || '' %></textarea>
+        </div>
+        <div>
+          <label class="label">Success message (after web form submit)</label>
+          <textarea class="field" name="success_message" rows="3"><%= settings.success_message || '' %></textarea>
+        </div>
+        <div>
+          <label class="label">Chat close message (customer types close/cls)</label>
+          <textarea class="field" name="chat_close_message" rows="2"><%= settings.chat_close_message || '' %></textarea>
+        </div>
+        <div>
+          <label class="label">Company desk close notify</label>
+          <textarea class="field" name="company_close_notify_message" rows="2"><%= settings.company_close_notify_message || '' %></textarea>
+        </div>
+        <div>
+          <label class="label">Forward template (lead summary to desk)</label>
+          <textarea class="field font-mono text-xs" name="forward_template" rows="6"><%= settings.forward_template || '' %></textarea>
+        </div>
+      </section>
+
+      <button type="submit" class="btn-primary px-8 py-3">Save chat flow</button>
+    </form>
+  </main>
+</body>
+</html>

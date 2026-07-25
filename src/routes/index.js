@@ -296,6 +296,7 @@ router.get('/admin', requireAdmin, (req, res) => {
   const recentMessages = MessageLog.recent(20);
   const activeChatList = ChatSessions.listActive(20);
   const activeChats = ChatSessions.countActive();
+  const commonAccessCode = Settings.get('common_access_code', 'INSU2026');
 
   res.render(
     'admin/dashboard',
@@ -307,6 +308,7 @@ router.get('/admin', requireAdmin, (req, res) => {
       recentMessages,
       activeChatList,
       activeChats,
+      commonAccessCode,
     })
   );
 });
@@ -331,21 +333,7 @@ router.post('/admin/settings', requireAdmin, (req, res) => {
 
   Settings.setMany({
     business_name: String(req.body.business_name || '').trim() || 'SecureLife Insurance',
-    common_access_code: String(req.body.common_access_code || 'INSU2026')
-      .trim()
-      .toUpperCase()
-      .replace(/[^A-Z0-9]/g, '') || 'INSU2026',
     close_keywords: String(req.body.close_keywords || 'close,cls').trim(),
-    form_intro: String(req.body.form_intro || ''),
-    success_message: String(req.body.success_message || ''),
-    form_link_message: String(req.body.form_link_message || '{{form_link}}'),
-    forward_template: String(req.body.forward_template || ''),
-    chat_close_message: String(req.body.chat_close_message || ''),
-    company_close_notify_message: String(req.body.company_close_notify_message || ''),
-    access_denied_message: String(req.body.access_denied_message || ''),
-    access_wrong_code_message: String(req.body.access_wrong_code_message || ''),
-    access_granted_message: String(req.body.access_granted_message || ''),
-    flow_welcome_message: String(req.body.flow_welcome_message || ''),
     anti_ban_jitter_min_ms: String(jitterMin),
     anti_ban_jitter_max_ms: String(jitterMax),
     anti_ban_min_gap_ms: String(
@@ -363,6 +351,56 @@ router.post('/admin/settings', requireAdmin, (req, res) => {
 
   req.session.flash = { type: 'success', message: 'Settings saved.' };
   res.redirect('/admin/settings');
+});
+
+// ——— Chat flow (common access code + bot messages) ———
+
+router.get('/admin/chat-flow', requireAdmin, (req, res) => {
+  res.render(
+    'admin/chat-flow',
+    layoutLocals(req, {
+      title: 'Chat Flow',
+      settings: Settings.getAll(),
+    })
+  );
+});
+
+router.post('/admin/chat-flow', requireAdmin, (req, res) => {
+  const code =
+    String(req.body.common_access_code || 'INSU2026')
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '') || 'INSU2026';
+
+  Settings.setMany({
+    common_access_code: code,
+    access_granted_message: String(req.body.access_granted_message || ''),
+    flow_welcome_message: String(req.body.flow_welcome_message || ''),
+    form_link_message: String(req.body.form_link_message || '{{form_link}}').trim() || '{{form_link}}',
+    access_wrong_code_message: String(req.body.access_wrong_code_message || ''),
+    form_intro: String(req.body.form_intro || ''),
+    success_message: String(req.body.success_message || ''),
+    chat_close_message: String(req.body.chat_close_message || ''),
+    company_close_notify_message: String(req.body.company_close_notify_message || ''),
+    forward_template: String(req.body.forward_template || ''),
+  });
+
+  req.session.flash = {
+    type: 'success',
+    message: `Chat flow saved. Common access code is now ${code}.`,
+  };
+  res.redirect('/admin/chat-flow');
+});
+
+// Legacy Users / per-phone access pages removed
+router.get('/admin/access', requireAdmin, (_req, res) => {
+  res.redirect(301, '/admin/chat-flow');
+});
+router.post('/admin/access', requireAdmin, (_req, res) => {
+  res.redirect(301, '/admin/chat-flow');
+});
+router.post('/admin/access/:id', requireAdmin, (_req, res) => {
+  res.redirect(301, '/admin/chat-flow');
 });
 
 // ——— Catalog ———

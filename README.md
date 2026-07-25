@@ -5,8 +5,9 @@ Secure WhatsApp automation for insurance lead capture, catalog routing, and two-
 ## Features
 
 - **QR WhatsApp link** + colorful admin dashboard
-- **Whitelist users** with unique access codes (bot silent until exact code)
-- **Visual workflow builder** (Drawflow) with AI-assist node stub
+- **Common access code** (one shared code for all senders — no Users whitelist)
+- **Chat Flow** admin page to edit the code and bot messages
+- **Visual workflow builder** (Drawflow)
 - **Multi-step insurance form** (advisor, type, company, premium, members, duration, review)
 - **Catalog routing** to company desk WhatsApp numbers
 - **Two-way native forward relay** with typing + unique jitter (up to 30s)
@@ -33,11 +34,11 @@ Default admin (from `.env`):
 - Username: `admin`
 - Password: `ChangeMe123!`
 
-Demo access user (seeded): check console / Users admin page.
+Configure the shared access code and WhatsApp replies under **Admin → Chat Flow** (default code: `INSU2026`).
 
 ## Flow
 
-1. Authorized user sends **ACCESS_CODE** on WhatsApp  
-2. Bot sends bare form URL (anti-ban paced)  
+1. Anyone sends the **common access code** on WhatsApp  
+2. Bot replies with configured messages + form URL (anti-ban paced)  
 3. Customer completes form → lead routes to company desk  
 4. Live two-way relay until customer types **Close** or **CLS**

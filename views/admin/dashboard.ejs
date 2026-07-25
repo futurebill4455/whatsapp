@@ -43,6 +43,23 @@
     </div>
 
     <div class="grid lg:grid-cols-2 gap-6">
+      <section class="panel p-5 md:p-6 bg-gradient-to-br from-sea/5 via-white to-violet/5">
+        <div class="flex items-center justify-between gap-3 mb-3">
+          <h2 class="font-display text-lg font-semibold">Chat flow</h2>
+          <a href="/admin/chat-flow" class="text-sm font-semibold text-sea hover:underline">Edit</a>
+        </div>
+        <p class="text-sm text-ink/55 mb-4">
+          Shared access code for all senders — no Users list, no per-phone codes.
+        </p>
+        <div class="rounded-xl bg-mist/70 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div class="text-xs uppercase tracking-wide text-ink/45 font-semibold">Common access code</div>
+            <div class="font-mono text-xl font-bold tracking-wider mt-1"><%= commonAccessCode || 'INSU2026' %></div>
+          </div>
+          <a href="/admin/chat-flow" class="btn-primary">Configure messages</a>
+        </div>
+      </section>
+
       <section class="panel p-5 md:p-6">
         <div class="flex items-center justify-between gap-3 mb-4">
           <h2 class="font-display text-lg font-semibold">WhatsApp</h2>
@@ -73,8 +90,10 @@
           </form>
         </div>
       </section>
+    </div>
 
-      <section class="panel p-5 md:p-6">
+    <div class="grid lg:grid-cols-2 gap-6">
+      <section class="panel p-5 md:p-6 lg:col-span-2">
         <h2 class="font-display text-lg font-semibold mb-4">Active chats</h2>
         <% if (!activeChatList || !activeChatList.length) { %>
           <p class="text-sm text-ink/50">No live desk bridges right now.</p>
@@ -92,9 +111,7 @@
           </ul>
         <% } %>
       </section>
-    </div>
 
-    <div class="grid lg:grid-cols-2 gap-6">
       <section class="panel p-5 md:p-6">
         <div class="flex items-center justify-between mb-4">
           <h2 class="font-display text-lg font-semibold">Recent leads</h2>
