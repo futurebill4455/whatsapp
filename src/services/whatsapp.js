@@ -1444,10 +1444,14 @@ class WhatsAppService {
       forcedTotalMs: options.forcedDelayMs ?? null,
     });
 
-    if (options.inboundText) {
-      await sleep(antiBan.readingDelayMs(options.inboundText));
-    } else {
-      await sleep(timing.thinkMs);
+    if (!options.skipPacing) {
+      if (options.inboundText) {
+        await sleep(antiBan.readingDelayMs(options.inboundText));
+      } else if (options.forcedDelayMs != null) {
+        await sleep(Number(options.forcedDelayMs) || 0);
+      } else {
+        await sleep(timing.thinkMs);
+      }
     }
 
     if (!options.skipTyping && chatId) {
@@ -1547,8 +1551,99 @@ class WhatsAppService {
     }
   }
 
+  async showTypingFor(chatId, durationMs) {
+    const ms = Math.max(800, Number(durationMs) || 2000);
+    if (!chatId || !this.client) {
+      await sleep(ms);
+      return;
+    }
+    try {
+      const chat = await this.client.getChatById(chatId);
+      if (chat?.sendStateTyping) {
+        await chat.sendStateTyping();
+        await sleep(ms);
+        try {
+          await chat.clearState?.();
+        } catch (_) {}
+        return;
+      }
+    } catch (err) {
+      console.warn('[WhatsApp] typing state failed:', err.message);
+    }
+    await sleep(ms);
+  }
+
   /**
-   * Send a natural form-share message (name + randomized opener + public URL).
+   * Human-like form share:
+   * 1) typing → natural text
+   * 2) pause
+   * 3) typing → bare clickable form URL (separate message)
+   */
+  async sendNaturalFormPair(phone, formLink, opts = {}) {
+    const { buildNaturalFormParts, humanActionDelayMs } = require('../utils/naturalReply');
+    const { getBaseUrl } = require('../config/baseUrl');
+    const link = sanitizeFormLink(String(formLink || '').trim());
+    if (!link) throw new Error('Empty form link');
+
+    const customTemplate = String(
+      opts.customTemplate != null
+        ? opts.customTemplate
+        : Settings.get('form_link_message') || ''
+    ).trim();
+
+    const { text } = buildNaturalFormParts({
+      name: opts.name || '',
+      formLink: link,
+      customTemplate: customTemplate === '{{form_link}}' ? '' : customTemplate,
+    });
+
+    let chatId =
+      opts.chatId ||
+      opts.replyTo?.from ||
+      opts.replyTo?.author ||
+      null;
+    if (!chatId) {
+      try {
+        chatId = await this.resolveOutboundChatId(phone);
+      } catch (_) {}
+    }
+
+    const baseOpts = {
+      chatId,
+      replyTo: opts.replyTo,
+      skipTyping: true,
+      skipPacing: true,
+    };
+
+    // 1) Typing, then human text (no URL)
+    const typing1 = humanActionDelayMs(2000, 5000);
+    console.log(`[WhatsApp] Form flow: typing ${typing1}ms → text`);
+    await this.showTypingFor(chatId, typing1);
+    await this.sendMessage(phone, text, baseOpts);
+
+    // 2) Natural pause between bubbles
+    const gap = humanActionDelayMs(2000, 5000);
+    console.log(`[WhatsApp] Form flow: pause ${gap}ms before link`);
+    await sleep(gap);
+
+    // 3) Typing, then bare link alone (clickable)
+    const typing2 = humanActionDelayMs(2000, 5000);
+    console.log(`[WhatsApp] Form flow: typing ${typing2}ms → link`);
+    await this.showTypingFor(chatId, typing2);
+    // Prefer chat.sendMessage for the bare URL (cleaner than reply quote)
+    await this.sendMessage(phone, link, {
+      ...baseOpts,
+      replyTo: undefined,
+    });
+
+    console.log(
+      `[WhatsApp] Form pair → ${phone}: "${text}" + ${link} (base=${getBaseUrl()})`
+    );
+    return { text, link };
+  }
+
+  /**
+   * Create/reuse submission then send natural text + separate form URL.
    */
   async sendFormLinkOnly(phone, opts = {}) {
     const existing = Submissions.findLatestOpen(phone);
@@ -1570,24 +1665,12 @@ class WhatsAppService {
     }
 
     const formLink = this.buildFormUrl(submission.token);
-    const { buildNaturalFormReply } = require('../utils/naturalReply');
-    const { getBaseUrl } = require('../config/baseUrl');
-    const customTemplate = String(Settings.get('form_link_message') || '').trim();
-    const outbound = buildNaturalFormReply({
-      name: opts.name || '',
-      formLink,
-      customTemplate:
-        customTemplate === '{{form_link}}' ? '' : customTemplate,
-    });
-
-    await this.sendMessage(phone, outbound, {
+    await this.sendNaturalFormPair(phone, formLink, {
       chatId: opts.chatId,
       replyTo: opts.replyTo,
-      inboundText: opts.inboundText,
+      name: opts.name || '',
+      customTemplate: opts.customTemplate,
     });
-    console.log(
-      `[WhatsApp] Form link → ${phone}: ${formLink} (base=${getBaseUrl()})`
-    );
     return true;
   }
 

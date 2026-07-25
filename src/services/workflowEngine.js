@@ -17,9 +17,6 @@ const {
   sanitizeFormLink,
 } = require('../utils/leadSummary');
 const { buildFormUrl, getBaseUrl } = require('../config/baseUrl');
-const {
-  buildNaturalFormReply,
-} = require('../utils/naturalReply');
 const { forwardLeadToDesk: deskForwardLead } = require('./deskForward');
 const antiBan = require('./antiBan');
 
@@ -514,15 +511,14 @@ class WorkflowEngine {
           node.data?.message || Settings.get('form_link_message') || ''
         ).trim();
 
-        const outbound = buildNaturalFormReply({
+        // Split: natural text bubble, then bare URL (with typing + 2–5s gaps)
+        await this.whatsapp.sendNaturalFormPair(phone, formLink, {
+          ...sendOpts(ctx),
           name,
-          formLink,
           customTemplate:
             customTemplate === '{{form_link}}' ? '' : customTemplate,
         });
-
-        await this.whatsapp.sendMessage(phone, outbound, sendOpts(ctx));
-        console.log(`[Workflow] Form link → ${phone}: ${formLink} (base=${getBaseUrl()})`);
+        console.log(`[Workflow] Form pair → ${phone}: ${formLink} (base=${getBaseUrl()})`);
 
         return {
           output: 'output_1',
