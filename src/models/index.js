@@ -1200,7 +1200,64 @@ const MessageLog = {
       )
       .get(mod).c;
   },
+
+  /** Distinct conversation list for Web Chat (latest message per phone). */
+  conversations(limit = 80) {
+    return db
+      .prepare(
+        `SELECT m.phone,
+                m.body AS last_body,
+                m.direction AS last_direction,
+                m.created_at AS last_at,
+                (SELECT COUNT(*) FROM message_log x
+                 WHERE x.phone = m.phone AND x.direction = 'in'
+                   AND x.created_at >= datetime('now', '-7 days')) AS recent_in
+         FROM message_log m
+         INNER JOIN (
+           SELECT phone, MAX(id) AS max_id
+           FROM message_log
+           WHERE phone IS NOT NULL AND phone != ''
+           GROUP BY phone
+         ) t ON t.max_id = m.id
+         ORDER BY m.created_at DESC
+         LIMIT ?`
+      )
+      .all(limit);
+  },
+
+  thread(phone, limit = 200) {
+    const digits = digitsOnly(phone);
+    if (!digits) return [];
+    return db
+      .prepare(
+        `SELECT * FROM message_log
+         WHERE phone = ?
+         ORDER BY id ASC
+         LIMIT ?`
+      )
+      .all(digits, limit);
+  },
+
+  purgeOlderThanDays(days = 14) {
+    const d = Math.max(1, Number(days) || 14);
+    return db
+      .prepare(
+        `DELETE FROM message_log
+         WHERE created_at < datetime('now', ?)`
+      )
+      .run(`-${d} days`);
+  },
+
+  countAll() {
+    return db.prepare('SELECT COUNT(*) AS c FROM message_log').get().c;
+  },
 };
+
+const {
+  CampaignContacts,
+  Campaigns,
+  CampaignRecipients,
+} = require('./campaigns');
 
 module.exports = {
   Settings,
@@ -1217,6 +1274,9 @@ module.exports = {
   WorkflowRuns,
   ChatSessions,
   MessageLog,
+  CampaignContacts,
+  Campaigns,
+  CampaignRecipients,
   digitsOnly,
   phoneMatchKeys,
   phonesMatch,

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('../partials/styles') %>
+</head>
+<body class="font-sans text-ink page-bg min-h-screen antialiased">
+  <%- include('../partials/nav') %>
+
+  <main class="max-w-7xl mx-auto px-4 py-8 space-y-6 animate-in">
+    <div class="flex flex-wrap items-end justify-between gap-3">
+      <div>
+        <p class="text-sm font-semibold uppercase tracking-wider text-violet mb-1">Outreach</p>
+        <h1 class="font-display text-3xl font-bold">Bulk Campaigns</h1>
+        <p class="text-ink/55 text-sm mt-1"><%= contactCount %> contacts · background queue with human pacing</p>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <a href="/admin/campaigns/contacts" class="btn-ghost">Contacts</a>
+        <a href="/admin/campaigns/new" class="btn-primary">New campaign</a>
+      </div>
+    </div>
+
+    <% if (typeof flash !== 'undefined' && flash) { %>
+      <div class="rounded-2xl px-4 py-3 text-sm font-medium border <%= flash.type === 'error' ? 'bg-coral/10 text-coral border-coral/20' : 'bg-sea/10 text-sea border-sea/20' %>">
+        <%= flash.message %>
+      </div>
+    <% } %>
+
+    <div class="chip <%= waReady ? 'bg-sea/15 text-sea' : 'bg-coral/15 text-coral' %>">
+      WhatsApp <%= waReady ? 'connected — campaigns can run' : 'offline — connect QR before starting' %>
+    </div>
+
+    <section class="panel overflow-hidden">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-left text-xs uppercase text-ink/45 border-b border-ink/10">
+            <th class="px-4 py-3">Campaign</th>
+            <th class="px-4 py-3">Status</th>
+            <th class="px-4 py-3">Progress</th>
+            <th class="px-4 py-3">Pacing</th>
+            <th class="px-4 py-3"></th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-ink/5">
+          <% campaigns.forEach(function (c) { %>
+            <tr class="hover:bg-mist/40">
+              <td class="px-4 py-3">
+                <div class="font-semibold"><%= c.name %></div>
+                <div class="text-xs text-ink/45"><%= c.content_type === 'image_text' ? 'Image + text' : 'Text only' %><%= c.use_quick_replies ? ' · quick replies' : '' %></div>
+              </td>
+              <td class="px-4 py-3">
+                <span class="chip bg-mist text-ink/70"><%= c.status %></span>
+              </td>
+              <td class="px-4 py-3 text-xs">
+                sent <%= c.sent || 0 %> / <%= c.total || 0 %>
+                · pending <%= c.pending || 0 %>
+                · fail <%= c.failed || 0 %>
+              </td>
+              <td class="px-4 py-3 text-xs text-ink/55">
+                <%= Math.round((c.delay_min_ms||0)/60000) %>–<%= Math.round((c.delay_max_ms||0)/60000) %> min
+                · <%= c.batch_size %>/<%= Math.round((c.batch_window_ms||0)/60000) %>m
+              </td>
+              <td class="px-4 py-3 text-right">
+                <a href="/admin/campaigns/<%= c.id %>" class="text-sea font-semibold hover:underline">Open</a>
+              </td>
+            </tr>
+          <% }) %>
+          <% if (!campaigns.length) { %>
+            <tr><td colspan="5" class="px-4 py-8 text-center text-ink/45">No campaigns yet. Import contacts, then create one.</td></tr>
+          <% } %>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>

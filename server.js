@@ -11,6 +11,9 @@ seed();
 
 const whatsapp = require('./src/services/whatsapp');
 const routes = require('./src/routes');
+const campaignRoutes = require('./src/routes/campaigns');
+const { getCampaignRunner } = require('./src/services/campaignRunner');
+const { getHistoryCleanup } = require('./src/services/historyCleanup');
 
 const app = express();
 const server = http.createServer(app);
@@ -31,6 +34,7 @@ app.use(
 );
 
 app.use(routes);
+app.use(campaignRoutes);
 
 whatsapp.attachSocket(io);
 whatsapp.init().catch((err) => {
@@ -40,6 +44,14 @@ whatsapp.init().catch((err) => {
     '[Boot] Try Admin → Reset session, or POST /api/whatsapp/reconnect, then GET /api/whatsapp/qr'
   );
 });
+
+// PM2-persistent background workers
+try {
+  getCampaignRunner(whatsapp).start();
+  getHistoryCleanup().start();
+} catch (err) {
+  console.error('[Boot] background workers failed:', err.message);
+}
 
 const PORT = Number(process.env.PORT) || 3000;
 server.listen(PORT, '0.0.0.0', () => {

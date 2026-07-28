@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('../partials/styles') %>
+</head>
+<body class="font-sans text-ink page-bg min-h-screen antialiased">
+  <%- include('../partials/nav') %>
+
+  <main class="max-w-3xl mx-auto px-4 py-8 space-y-6 animate-in">
+    <div>
+      <a href="/admin/campaigns" class="text-sm font-semibold text-sea hover:underline">← Campaigns</a>
+      <h1 class="font-display text-3xl font-bold mt-2">New campaign</h1>
+      <p class="text-ink/55 text-sm mt-1">Will queue all <%= contactCount %> contacts. Runner uses random delays + batch caps.</p>
+    </div>
+
+    <% if (typeof flash !== 'undefined' && flash) { %>
+      <div class="rounded-2xl px-4 py-3 text-sm font-medium border <%= flash.type === 'error' ? 'bg-coral/10 text-coral border-coral/20' : 'bg-sea/10 text-sea border-sea/20' %>">
+        <%= flash.message %>
+      </div>
+    <% } %>
+
+    <form method="post" action="/admin/campaigns" enctype="multipart/form-data" class="panel p-5 md:p-6 space-y-5">
+      <div>
+        <label class="label">Campaign name</label>
+        <input class="field" name="name" required placeholder="March health promo" />
+      </div>
+
+      <div>
+        <label class="label">Content type</label>
+        <select class="field" name="content_type" id="contentType">
+          <option value="text">Text only</option>
+          <option value="image_text">Image + text</option>
+        </select>
+      </div>
+
+      <div>
+        <label class="label">Message text</label>
+        <textarea class="field min-h-[120px]" name="body_text" required placeholder="Hi! We have a special insurance offer for you…"></textarea>
+      </div>
+
+      <div id="imageWrap" class="hidden">
+        <label class="label">Image</label>
+        <input class="field" type="file" name="image" accept="image/*" />
+      </div>
+
+      <label class="flex items-center gap-2 text-sm">
+        <input type="checkbox" name="use_quick_replies" value="1" checked class="accent-sea" />
+        Append quick-reply prompts (Interested / Not Interested)
+      </label>
+      <p class="text-xs text-ink/45 -mt-3">Native WhatsApp buttons are not available on WhatsApp Web personal accounts — we use text prompts customers can reply to.</p>
+
+      <div class="grid sm:grid-cols-2 gap-4">
+        <div>
+          <label class="label">Min delay (minutes)</label>
+          <input class="field" type="number" name="delay_min_minutes" value="1" min="0.1" step="0.1" />
+        </div>
+        <div>
+          <label class="label">Max delay (minutes)</label>
+          <input class="field" type="number" name="delay_max_minutes" value="5" min="0.1" step="0.1" />
+        </div>
+        <div>
+          <label class="label">Batch size</label>
+          <input class="field" type="number" name="batch_size" value="10" min="1" />
+        </div>
+        <div>
+          <label class="label">Batch window (minutes)</label>
+          <input class="field" type="number" name="batch_window_minutes" value="5" min="1" />
+        </div>
+      </div>
+      <p class="text-xs text-ink/45">Example: random 1–5 min between messages, and at most 10 messages every 5 minutes.</p>
+
+      <div class="flex gap-2">
+        <button type="submit" class="btn-primary" <%= contactCount ? '' : 'disabled' %>>Create campaign</button>
+        <a href="/admin/campaigns/contacts" class="btn-ghost">Manage contacts</a>
+      </div>
+    </form>
+  </main>
+  <script>
+    document.getElementById('contentType').addEventListener('change', function () {
+      document.getElementById('imageWrap').classList.toggle('hidden', this.value !== 'image_text');
+    });
+  </script>
+</body>
+</html>

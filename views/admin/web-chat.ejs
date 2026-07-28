@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('../partials/styles') %>
+  <style>
+    .wa-shell { height: calc(100vh - 7.5rem); min-height: 480px; }
+    .wa-list { overflow-y: auto; }
+    .wa-thread { overflow-y: auto; background: #e5ddd5; background-image: radial-gradient(rgba(0,0,0,.03) 1px, transparent 1px); background-size: 18px 18px; }
+    .bubble-in { background: #fff; border-radius: 0 12px 12px 12px; }
+    .bubble-out { background: #dcf8c6; border-radius: 12px 0 12px 12px; margin-left: auto; }
+  </style>
+</head>
+<body class="font-sans text-ink page-bg min-h-screen antialiased">
+  <%- include('../partials/nav') %>
+
+  <main class="max-w-7xl mx-auto px-4 py-4 animate-in">
+    <div class="flex flex-wrap items-end justify-between gap-3 mb-4">
+      <div>
+        <p class="text-sm font-semibold uppercase tracking-wider text-sea mb-1">Inbox</p>
+        <h1 class="font-display text-3xl font-bold">Web Chat</h1>
+      </div>
+      <span class="chip <%= waReady ? 'bg-sea/15 text-sea' : 'bg-coral/15 text-coral' %>">
+        WA <%= waReady ? 'Ready' : 'Offline' %>
+      </span>
+    </div>
+
+    <% if (typeof flash !== 'undefined' && flash) { %>
+      <div class="mb-4 rounded-2xl px-4 py-3 text-sm font-medium border <%= flash.type === 'error' ? 'bg-coral/10 text-coral border-coral/20' : 'bg-sea/10 text-sea border-sea/20' %>">
+        <%= flash.message %>
+      </div>
+    <% } %>
+
+    <div class="panel overflow-hidden wa-shell grid grid-cols-1 md:grid-cols-[280px_1fr]">
+      <aside class="border-r border-ink/10 bg-white flex flex-col min-h-0">
+        <div class="px-3 py-3 border-b border-ink/10">
+          <input id="chatSearch" class="field text-sm" placeholder="Search phone…" />
+        </div>
+        <div id="convList" class="wa-list flex-1 min-h-0">
+          <% conversations.forEach(function (c) {
+            const active = activePhone && String(activePhone) === String(c.phone);
+          %>
+            <a href="/admin/web-chat?phone=<%= c.phone %>"
+               data-phone="<%= c.phone %>"
+               class="conv-item block px-3 py-3 border-b border-ink/5 hover:bg-mist/80 <%= active ? 'bg-sea/10' : '' %>">
+              <div class="font-semibold text-sm"><%= c.phone %></div>
+              <div class="text-xs text-ink/50 truncate mt-0.5"><%= c.last_body || '—' %></div>
+            </a>
+          <% }) %>
+          <% if (!conversations.length) { %>
+            <p class="p-4 text-sm text-ink/45">No conversations yet. Messages appear here as they arrive.</p>
+          <% } %>
+        </div>
+      </aside>
+
+      <section class="flex flex-col min-h-0 bg-[#efeae2]">
+        <header class="px-4 py-3 bg-white border-b border-ink/10 flex items-center justify-between">
+          <div>
+            <div class="font-semibold" id="threadTitle"><%= activePhone || 'Select a chat' %></div>
+            <div class="text-xs text-ink/45">Admin web chat · replies send from the bot number</div>
+          </div>
+        </header>
+
+        <div id="threadBox" class="wa-thread flex-1 min-h-0 px-4 py-4 space-y-2">
+          <% if (!activePhone) { %>
+            <p class="text-center text-sm text-ink/45 mt-16">Choose a conversation on the left.</p>
+          <% } else { %>
+            <% thread.forEach(function (m) {
+              const out = m.direction === 'out';
+            %>
+              <div class="flex <%= out ? 'justify-end' : 'justify-start' %>">
+                <div class="max-w-[75%] px-3 py-2 text-sm shadow-sm <%= out ? 'bubble-out' : 'bubble-in' %>">
+                  <div class="whitespace-pre-wrap break-words"><%= m.body %></div>
+                  <div class="text-[10px] text-ink/40 mt-1 text-right"><%= m.created_at %></div>
+                </div>
+              </div>
+            <% }) %>
+          <% } %>
+        </div>
+
+        <form id="sendForm" class="bg-white border-t border-ink/10 p-3 flex gap-2" <%= activePhone ? '' : 'hidden' %>>
+          <input type="hidden" id="sendPhone" value="<%= activePhone || '' %>" />
+          <input id="sendText" class="field flex-1" placeholder="Type a message" autocomplete="off" <%= waReady ? '' : 'disabled' %> />
+          <button type="submit" class="btn-primary" <%= waReady ? '' : 'disabled' %>>Send</button>
+        </form>
+      </section>
+    </div>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    (function () {
+      const phone = document.getElementById('sendPhone')?.value || '';
+      const threadBox = document.getElementById('threadBox');
+      const form = document.getElementById('sendForm');
+      const search = document.getElementById('chatSearch');
+
+      function scrollBottom() {
+        if (threadBox) threadBox.scrollTop = threadBox.scrollHeight;
+      }
+      scrollBottom();
+
+      function appendBubble(direction, body, createdAt) {
+        if (!threadBox || !phone) return;
+        const out = direction === 'out';
+        const wrap = document.createElement('div');
+        wrap.className = 'flex ' + (out ? 'justify-end' : 'justify-start');
+        const bubble = document.createElement('div');
+        bubble.className =
+          'max-w-[75%] px-3 py-2 text-sm shadow-sm ' +
+          (out ? 'bubble-out' : 'bubble-in');
+        const bodyEl = document.createElement('div');
+        bodyEl.className = 'whitespace-pre-wrap break-words';
+        bodyEl.textContent = body || '';
+        const meta = document.createElement('div');
+        meta.className = 'text-[10px] text-ink/40 mt-1 text-right';
+        meta.textContent = createdAt || new Date().toLocaleString();
+        bubble.appendChild(bodyEl);
+        bubble.appendChild(meta);
+        wrap.appendChild(bubble);
+        threadBox.appendChild(wrap);
+        scrollBottom();
+      }
+
+      if (form) {
+        form.addEventListener('submit', async function (e) {
+          e.preventDefault();
+          const textEl = document.getElementById('sendText');
+          const text = (textEl.value || '').trim();
+          if (!text || !phone) return;
+          textEl.value = '';
+          try {
+            const res = await fetch('/api/web-chat/send', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ phone: phone, text: text }),
+            });
+            const data = await res.json();
+            if (!data.ok) {
+              alert(data.message || 'Send failed');
+              textEl.value = text;
+              return;
+            }
+            appendBubble('out', text);
+          } catch (err) {
+            alert(err.message || 'Send failed');
+            textEl.value = text;
+          }
+        });
+      }
+
+      if (search) {
+        search.addEventListener('input', function () {
+          const q = search.value.replace(/\D/g, '');
+          document.querySelectorAll('.conv-item').forEach(function (el) {
+            const p = el.getAttribute('data-phone') || '';
+            el.classList.toggle('hidden', q && p.indexOf(q) === -1);
+          });
+        });
+      }
+
+      try {
+        const socket = io();
+        socket.on('webchat:message', function (msg) {
+          if (!msg || !phone) return;
+          if (String(msg.phone) !== String(phone)) return;
+          if (msg.direction === 'out') return; // already appended on send
+          appendBubble(msg.direction || 'in', msg.body, msg.created_at);
+        });
+        socket.on('whatsapp:inbound', function (msg) {
+          if (!msg || !phone) return;
+          if (String(msg.phone || '').replace(/\D/g, '') !== String(phone)) return;
+          appendBubble('in', msg.body, msg.created_at);
+        });
+      } catch (_) {}
+    })();
+  </script>
+</body>
+</html>

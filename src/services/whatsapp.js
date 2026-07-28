@@ -1421,6 +1421,30 @@ class WhatsAppService {
       });
     } catch (_) {}
 
+    // Live Web Chat dashboard + campaign quick-reply tracking
+    try {
+      const digits =
+        String(phone || peerKey || '').replace(/\D/g, '') || null;
+      this.emit('webchat:message', {
+        phone: digits,
+        direction: 'in',
+        body: body || `[${message.type}]`,
+        created_at: new Date().toISOString(),
+        chatId,
+      });
+      this.emit('whatsapp:inbound', {
+        phone: digits,
+        body: body || '',
+        created_at: new Date().toISOString(),
+      });
+      if (digits && body) {
+        const { getCampaignRunner } = require('./campaignRunner');
+        getCampaignRunner(this).handleInboundReply(digits, body);
+      }
+    } catch (err) {
+      console.warn('[WhatsApp] webchat/campaign hook:', err.message);
+    }
+
     // 1) Exact common access code → always start form flow for THIS chat
     //    (never blocked by another user's bridge / waiter / whitelist leftovers)
     let isAccessCode = false;

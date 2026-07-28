@@ -3,6 +3,7 @@ node_modules/
 .wwebjs_cache/
 data/*.db
 data/*.db-*
+data/campaign-media/
 .env
 *.log
 .DS_Store

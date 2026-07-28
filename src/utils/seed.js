@@ -50,6 +50,10 @@ function seed() {
     access_granted_message: '',
     flow_welcome_message: '',
     public_base_url: '',
+    campaign_tick_ms: '5000',
+    cleanup_interval_hours: '6',
+    cleanup_message_log_days: '14',
+    cleanup_campaign_recipient_days: '30',
   };
 
   for (const [key, value] of Object.entries(defaults)) {

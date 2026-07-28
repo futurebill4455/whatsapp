@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('../partials/styles') %>
+</head>
+<body class="font-sans text-ink page-bg min-h-screen antialiased">
+  <%- include('../partials/nav') %>
+
+  <main class="max-w-7xl mx-auto px-4 py-8 space-y-6 animate-in">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <a href="/admin/campaigns" class="text-sm font-semibold text-sea hover:underline">← Campaigns</a>
+        <h1 class="font-display text-3xl font-bold mt-2"><%= campaign.name %></h1>
+        <p class="text-ink/55 text-sm mt-1">
+          <%= campaign.content_type === 'image_text' ? 'Image + text' : 'Text' %>
+          · status <strong id="statusLabel"><%= campaign.status %></strong>
+        </p>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <% if (campaign.status === 'draft' || campaign.status === 'paused') { %>
+          <form method="post" action="/admin/campaigns/<%= campaign.id %>/start">
+            <button class="btn-primary" <%= waReady ? '' : 'disabled' %>>Start / Resume</button>
+          </form>
+        <% } %>
+        <% if (campaign.status === 'running') { %>
+          <form method="post" action="/admin/campaigns/<%= campaign.id %>/pause">
+            <button class="btn-ghost">Pause</button>
+          </form>
+        <% } %>
+        <% if (campaign.status !== 'cancelled' && campaign.status !== 'completed') { %>
+          <form method="post" action="/admin/campaigns/<%= campaign.id %>/cancel"
+                onsubmit="return confirm('Cancel campaign?');">
+            <button class="btn-ghost text-coral border-coral/25">Cancel</button>
+          </form>
+        <% } %>
+        <form method="post" action="/admin/campaigns/<%= campaign.id %>/delete"
+              onsubmit="return confirm('Delete campaign permanently?');">
+          <button class="btn-ghost text-coral border-coral/25">Delete</button>
+        </form>
+      </div>
+    </div>
+
+    <% if (typeof flash !== 'undefined' && flash) { %>
+      <div class="rounded-2xl px-4 py-3 text-sm font-medium border <%= flash.type === 'error' ? 'bg-coral/10 text-coral border-coral/20' : 'bg-sea/10 text-sea border-sea/20' %>">
+        <%= flash.message %>
+      </div>
+    <% } %>
+
+    <div class="grid sm:grid-cols-2 lg:grid-cols-5 gap-3" id="statsGrid">
+      <% const cards = [
+        { label: 'Total', key: 'total' },
+        { label: 'Pending', key: 'pending' },
+        { label: 'Sent', key: 'sent' },
+        { label: 'Failed', key: 'failed' },
+        { label: 'Replied', key: 'replied' },
+      ]; %>
+      <% cards.forEach(function (c) { %>
+        <div class="panel p-4">
+          <div class="text-xs uppercase text-ink/45 font-semibold"><%= c.label %></div>
+          <div class="font-display text-2xl font-semibold mt-1" data-stat="<%= c.key %>"><%= stats[c.key] || 0 %></div>
+        </div>
+      <% }) %>
+    </div>
+
+    <section class="panel p-5 space-y-2">
+      <h2 class="font-display font-semibold">Message preview</h2>
+      <pre class="text-sm whitespace-pre-wrap bg-mist/60 rounded-xl p-4"><%= campaign.body_text %><%= campaign.use_quick_replies ? '\n\n———\nReply with:\n*Interested* or *Not Interested*' : '' %></pre>
+      <p class="text-xs text-ink/45">
+        Delay <%= Math.round(campaign.delay_min_ms/60000) %>–<%= Math.round(campaign.delay_max_ms/60000) %> min ·
+        batch <%= campaign.batch_size %> / <%= Math.round(campaign.batch_window_ms/60000) %> min
+        <% if (campaign.next_send_at) { %> · next send ~ <%= campaign.next_send_at %><% } %>
+      </p>
+    </section>
+
+    <section class="panel overflow-hidden">
+      <div class="px-4 py-3 border-b border-ink/10 font-semibold">Recipients (latest 200)</div>
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-left text-xs uppercase text-ink/45 border-b border-ink/5">
+            <th class="px-4 py-2">Phone</th>
+            <th class="px-4 py-2">Name</th>
+            <th class="px-4 py-2">Status</th>
+            <th class="px-4 py-2">Sent / reply</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-ink/5">
+          <% recipients.forEach(function (r) { %>
+            <tr>
+              <td class="px-4 py-2 font-mono"><%= r.phone %></td>
+              <td class="px-4 py-2"><%= r.name || '—' %></td>
+              <td class="px-4 py-2"><span class="chip bg-mist"><%= r.status %></span></td>
+              <td class="px-4 py-2 text-xs text-ink/55">
+                <%= r.sent_at || '—' %>
+                <% if (r.reply_text) { %><div class="text-ink/70"><%= r.reply_text %></div><% } %>
+                <% if (r.error) { %><div class="text-coral"><%= r.error %></div><% } %>
+              </td>
+            </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    (function () {
+      const id = <%= campaign.id %>;
+      async function refresh() {
+        try {
+          const res = await fetch('/api/campaigns/' + id + '/stats');
+          const data = await res.json();
+          if (!data.ok) return;
+          document.getElementById('statusLabel').textContent = data.campaign.status;
+          ['total','pending','sent','failed','replied'].forEach(function (k) {
+            const el = document.querySelector('[data-stat="'+k+'"]');
+            if (el) el.textContent = data.stats[k] || 0;
+          });
+        } catch (_) {}
+      }
+      setInterval(refresh, 8000);
+      try {
+        const socket = io();
+        socket.on('campaign:update', function (payload) {
+          if (payload && payload.campaign && Number(payload.campaign.id) === id) refresh();
+        });
+      } catch (_) {}
+    })();
+  </script>
+</body>
+</html>

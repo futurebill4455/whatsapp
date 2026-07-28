@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · <%= businessName %></title>
+  <%- include('../partials/styles') %>
+</head>
+<body class="font-sans text-ink page-bg min-h-screen antialiased">
+  <%- include('../partials/nav') %>
+
+  <main class="max-w-7xl mx-auto px-4 py-8 space-y-6 animate-in">
+    <div class="flex flex-wrap items-end justify-between gap-3">
+      <div>
+        <p class="text-sm font-semibold uppercase tracking-wider text-sea mb-1">Audience</p>
+        <h1 class="font-display text-3xl font-bold">Campaign Contacts</h1>
+        <p class="text-ink/55 text-sm mt-1"><%= total %> contacts</p>
+      </div>
+      <div class="flex gap-2">
+        <a href="/admin/campaigns/contacts/export.csv" class="btn-ghost">Export CSV</a>
+        <a href="/admin/campaigns" class="btn-ghost">Campaigns</a>
+      </div>
+    </div>
+
+    <% if (typeof flash !== 'undefined' && flash) { %>
+      <div class="rounded-2xl px-4 py-3 text-sm font-medium border <%= flash.type === 'error' ? 'bg-coral/10 text-coral border-coral/20' : 'bg-sea/10 text-sea border-sea/20' %>">
+        <%= flash.message %>
+      </div>
+    <% } %>
+
+    <div class="grid lg:grid-cols-2 gap-6">
+      <section class="panel p-5 space-y-4">
+        <h2 class="font-display font-semibold">Import Excel / CSV</h2>
+        <p class="text-sm text-ink/55">Columns: <code class="text-xs bg-mist px-1 rounded">name</code>, <code class="text-xs bg-mist px-1 rounded">phone</code>, optional <code class="text-xs bg-mist px-1 rounded">tags</code>.</p>
+        <form method="post" action="/admin/campaigns/contacts/import" enctype="multipart/form-data" class="space-y-3">
+          <input class="field" type="file" name="file" accept=".csv,.xlsx,.xls,text/csv" />
+          <button type="submit" class="btn-primary">Upload file</button>
+        </form>
+      </section>
+
+      <section class="panel p-5 space-y-4">
+        <h2 class="font-display font-semibold">Paste numbers</h2>
+        <p class="text-sm text-ink/55">One phone per line, or <code class="text-xs bg-mist px-1 rounded">Name,phone</code>.</p>
+        <form method="post" action="/admin/campaigns/contacts/import" class="space-y-3">
+          <textarea class="field min-h-[140px] font-mono text-sm" name="paste" placeholder="9198XXXXXXXX&#10;Ravi,9198XXXXXXXX"></textarea>
+          <button type="submit" class="btn-primary">Import paste</button>
+        </form>
+      </section>
+    </div>
+
+    <section class="panel p-5 space-y-4">
+      <h2 class="font-display font-semibold">Add manually</h2>
+      <form method="post" action="/admin/campaigns/contacts/add" class="grid sm:grid-cols-4 gap-3 items-end">
+        <div>
+          <label class="label">Name</label>
+          <input class="field" name="name" />
+        </div>
+        <div>
+          <label class="label">Phone</label>
+          <input class="field" name="phone" required placeholder="9198XXXXXXXX" />
+        </div>
+        <div>
+          <label class="label">Tags</label>
+          <input class="field" name="tags" placeholder="leads" />
+        </div>
+        <button type="submit" class="btn-primary">Add</button>
+      </form>
+    </section>
+
+    <form method="get" class="flex gap-2">
+      <input class="field flex-1" name="q" value="<%= q || '' %>" placeholder="Search name / phone / tags" />
+      <button class="btn-ghost" type="submit">Search</button>
+    </form>
+
+    <section class="panel overflow-hidden">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-left text-xs uppercase text-ink/45 border-b border-ink/10">
+            <th class="px-4 py-3">Name</th>
+            <th class="px-4 py-3">Phone</th>
+            <th class="px-4 py-3">Tags</th>
+            <th class="px-4 py-3">Source</th>
+            <th class="px-4 py-3"></th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-ink/5">
+          <% contacts.forEach(function (c) { %>
+            <tr>
+              <td class="px-4 py-2"><%= c.name || '—' %></td>
+              <td class="px-4 py-2 font-mono"><%= c.phone %></td>
+              <td class="px-4 py-2 text-ink/55"><%= c.tags || '—' %></td>
+              <td class="px-4 py-2 text-xs"><%= c.source %></td>
+              <td class="px-4 py-2 text-right">
+                <form method="post" action="/admin/campaigns/contacts/<%= c.id %>/delete" class="inline"
+                      onsubmit="return confirm('Delete contact?');">
+                  <button class="text-coral text-xs font-semibold">Del</button>
+                </form>
+              </td>
+            </tr>
+          <% }) %>
+          <% if (!contacts.length) { %>
+            <tr><td colspan="5" class="px-4 py-8 text-center text-ink/45">No contacts yet.</td></tr>
+          <% } %>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>
