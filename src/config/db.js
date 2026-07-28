@@ -185,10 +185,23 @@ db.exec(`
     batch_size INTEGER NOT NULL DEFAULT 10,
     batch_window_ms INTEGER NOT NULL DEFAULT 300000,
     next_send_at TEXT,
+    schedule_at TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     started_at TEXT,
     completed_at TEXT,
     updated_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS campaign_steps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL,
+    step_order INTEGER NOT NULL DEFAULT 0,
+    body_text TEXT,
+    content_type TEXT NOT NULL DEFAULT 'text',
+    image_path TEXT,
+    delay_min_ms INTEGER NOT NULL DEFAULT 60000,
+    delay_max_ms INTEGER NOT NULL DEFAULT 300000,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
   );
 
   CREATE TABLE IF NOT EXISTS campaign_recipients (
@@ -198,6 +211,7 @@ db.exec(`
     phone TEXT NOT NULL,
     name TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
+    current_step INTEGER NOT NULL DEFAULT 0,
     error TEXT,
     sent_at TEXT,
     reply_at TEXT,
@@ -212,7 +226,20 @@ db.exec(`
     ON campaign_contacts(phone);
   CREATE INDEX IF NOT EXISTS idx_message_log_phone
     ON message_log(phone, created_at);
+  CREATE INDEX IF NOT EXISTS idx_campaign_steps_campaign
+    ON campaign_steps(campaign_id, step_order);
 `);
+
+// Migrations for existing DBs
+const migrations = [
+  'ALTER TABLE campaigns ADD COLUMN schedule_at TEXT',
+  'ALTER TABLE campaign_recipients ADD COLUMN current_step INTEGER NOT NULL DEFAULT 0',
+];
+for (const sql of migrations) {
+  try {
+    db.exec(sql);
+  } catch (_) {}
+}
 
 // Legacy cleanup — per-user whitelist removed in favour of Settings.common_access_code
 try {

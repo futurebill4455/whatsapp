@@ -13,8 +13,8 @@
     <div class="flex flex-wrap items-end justify-between gap-3">
       <div>
         <p class="text-sm font-semibold uppercase tracking-wider text-violet mb-1">Outreach</p>
-        <h1 class="font-display text-3xl font-bold">Bulk Campaigns</h1>
-        <p class="text-ink/55 text-sm mt-1"><%= contactCount %> contacts · background queue with human pacing</p>
+        <h1 class="font-display text-3xl font-bold dark:text-white">Bulk Campaigns</h1>
+        <p class="text-ink/55 dark:text-slate-400 text-sm mt-1"><%= contactCount %> contacts · scheduled multi-step sends with human pacing</p>
       </div>
       <div class="flex flex-wrap gap-2">
         <a href="/admin/campaigns/contacts" class="btn-ghost">Contacts</a>
@@ -29,46 +29,59 @@
     <% } %>
 
     <div class="chip <%= waReady ? 'bg-sea/15 text-sea' : 'bg-coral/15 text-coral' %>">
-      WhatsApp <%= waReady ? 'connected — campaigns can run' : 'offline — connect QR before starting' %>
+      WhatsApp <%= waReady ? 'connected' : 'offline — connect QR before starting' %>
     </div>
 
     <section class="panel overflow-hidden">
-      <table class="w-full text-sm">
+      <table class="data-table">
         <thead>
-          <tr class="text-left text-xs uppercase text-ink/45 border-b border-ink/10">
-            <th class="px-4 py-3">Campaign</th>
-            <th class="px-4 py-3">Status</th>
-            <th class="px-4 py-3">Progress</th>
-            <th class="px-4 py-3">Pacing</th>
-            <th class="px-4 py-3"></th>
+          <tr>
+            <th>Campaign</th>
+            <th>Status</th>
+            <th>Progress</th>
+            <th>Pacing</th>
+            <th></th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-ink/5">
-          <% campaigns.forEach(function (c) { %>
-            <tr class="hover:bg-mist/40">
-              <td class="px-4 py-3">
-                <div class="font-semibold"><%= c.name %></div>
-                <div class="text-xs text-ink/45"><%= c.content_type === 'image_text' ? 'Image + text' : 'Text only' %><%= c.use_quick_replies ? ' · quick replies' : '' %></div>
+        <tbody>
+          <% campaigns.forEach(function (c) {
+            const total = Number(c.total) || 0;
+            const sent = Number(c.sent) || 0;
+            const pct = total ? Math.round((sent / total) * 100) : 0;
+            const statusClass = c.status === 'running' ? 'bg-sea/15 text-sea'
+              : c.status === 'scheduled' ? 'bg-violet/15 text-violet'
+              : c.status === 'paused' ? 'bg-amber/15 text-amber'
+              : c.status === 'completed' ? 'bg-mist text-ink/60 dark:bg-white/10 dark:text-slate-300'
+              : 'bg-mist text-ink/70 dark:bg-white/10 dark:text-slate-300';
+          %>
+            <tr>
+              <td>
+                <div class="font-semibold dark:text-white"><%= c.name %></div>
+                <div class="text-xs text-ink/45 dark:text-slate-500">
+                  <%= c.content_type === 'image_text' ? 'Image + text' : 'Text' %>
+                  <%= c.schedule_at ? ' · sched ' + c.schedule_at : '' %>
+                </div>
               </td>
-              <td class="px-4 py-3">
-                <span class="chip bg-mist text-ink/70"><%= c.status %></span>
+              <td><span class="chip <%= statusClass %>"><%= c.status %></span></td>
+              <td class="min-w-[160px]">
+                <div class="flex justify-between text-xs text-ink/50 dark:text-slate-400 mb-1">
+                  <span><%= sent %>/<%= total %></span>
+                  <span><%= pct %>%</span>
+                </div>
+                <div class="progress-track"><div class="progress-fill" style="width:<%= pct %>%"></div></div>
+                <div class="text-[10px] text-ink/40 dark:text-slate-500 mt-1">pending <%= c.pending || 0 %> · fail <%= c.failed || 0 %></div>
               </td>
-              <td class="px-4 py-3 text-xs">
-                sent <%= c.sent || 0 %> / <%= c.total || 0 %>
-                · pending <%= c.pending || 0 %>
-                · fail <%= c.failed || 0 %>
-              </td>
-              <td class="px-4 py-3 text-xs text-ink/55">
+              <td class="text-xs text-ink/55 dark:text-slate-400">
                 <%= Math.round((c.delay_min_ms||0)/60000) %>–<%= Math.round((c.delay_max_ms||0)/60000) %> min
                 · <%= c.batch_size %>/<%= Math.round((c.batch_window_ms||0)/60000) %>m
               </td>
-              <td class="px-4 py-3 text-right">
+              <td class="text-right">
                 <a href="/admin/campaigns/<%= c.id %>" class="text-sea font-semibold hover:underline">Open</a>
               </td>
             </tr>
           <% }) %>
           <% if (!campaigns.length) { %>
-            <tr><td colspan="5" class="px-4 py-8 text-center text-ink/45">No campaigns yet. Import contacts, then create one.</td></tr>
+            <tr><td colspan="5" class="text-center text-ink/45 dark:text-slate-500 py-10">No campaigns yet. Import contacts, then create one.</td></tr>
           <% } %>
         </tbody>
       </table>

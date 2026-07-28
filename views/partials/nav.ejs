@@ -12,28 +12,43 @@
     { href: '/admin/submissions', label: 'Leads', match: /^\/admin\/submissions/ },
   ];
 %>
-<header class="sticky top-0 z-40 border-b border-ink/10 bg-white/75 backdrop-blur-md">
+<header class="sticky top-0 z-40 border-b border-ink/10 dark:border-white/10 bg-white/75 dark:bg-slate-950/80 backdrop-blur-md">
   <div class="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center gap-3">
-    <a href="/admin" class="font-display font-bold text-lg bg-gradient-to-r from-sea to-violet bg-clip-text text-transparent">
+    <a href="/admin" class="font-display font-bold text-lg bg-gradient-to-r from-sea to-violet bg-clip-text text-transparent tracking-tight">
       <%= businessName %>
     </a>
-    <nav class="flex flex-wrap items-center gap-1.5 flex-1">
+    <nav class="flex flex-wrap items-center gap-1 flex-1">
       <% links.forEach(function (l) {
         const active = typeof reqPath === 'string' ? l.match.test(reqPath) : false;
       %>
         <a href="<%= l.href %>"
-           class="px-3 py-1.5 rounded-xl text-sm font-semibold transition <%= active ? 'bg-gradient-to-r from-sea/15 to-violet/15 text-ink' : 'text-ink/60 hover:bg-mist hover:text-ink' %>">
+           class="px-2.5 py-1.5 rounded-xl text-xs sm:text-sm font-semibold transition duration-200 <%= active ? 'bg-gradient-to-r from-sea/15 to-violet/15 text-ink dark:text-white shadow-sm' : 'text-ink/55 dark:text-slate-400 hover:bg-mist dark:hover:bg-white/5 hover:text-ink dark:hover:text-white' %>">
           <%= l.label %>
         </a>
       <% }) %>
     </nav>
-    <% if (admin) { %>
-      <div class="flex items-center gap-2">
+    <div class="flex items-center gap-2">
+      <button type="button" id="themeToggle" class="btn-ghost text-xs px-3" title="Toggle dark / light">
+        <span class="dark:hidden">Dark</span>
+        <span class="hidden dark:inline">Light</span>
+      </button>
+      <% if (admin) { %>
         <span class="chip bg-amber/15 text-amber hidden sm:inline-flex"><%= admin %></span>
         <form method="post" action="/admin/logout">
-          <button type="submit" class="btn-ghost text-coral border-coral/20 hover:bg-coral/5">Logout</button>
+          <button type="submit" class="btn-ghost text-coral border-coral/20 hover:bg-coral/5 text-xs">Logout</button>
         </form>
-      </div>
-    <% } %>
+      <% } %>
+    </div>
   </div>
 </header>
+<script>
+  (function () {
+    var btn = document.getElementById('themeToggle');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      var root = document.documentElement;
+      var dark = root.classList.toggle('dark');
+      try { localStorage.setItem('ui-theme', dark ? 'dark' : 'light'); } catch (_) {}
+    });
+  })();
+</script>

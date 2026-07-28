@@ -6,28 +6,70 @@
   body {
     @apply bg-sand text-ink antialiased;
   }
+  html.dark body {
+    @apply bg-slate-950 text-slate-100;
+  }
 }
 
 @layer components {
   .panel {
     @apply bg-white/90 border border-ink/10 rounded-2xl shadow-soft;
   }
+  html.dark .panel {
+    @apply bg-slate-900/90 border-white/10 shadow-none;
+  }
   .btn {
-    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition;
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition duration-200;
   }
   .btn-primary {
-    @apply btn bg-gradient-to-r from-sea to-violet text-white hover:opacity-95;
+    @apply btn bg-gradient-to-r from-sea to-violet text-white hover:opacity-95 hover:shadow-glow;
   }
   .btn-ghost {
     @apply btn bg-white border border-ink/10 text-ink/80 hover:bg-mist;
   }
+  html.dark .btn-ghost {
+    @apply bg-slate-800 border-white/10 text-slate-200 hover:bg-slate-700;
+  }
   .field {
-    @apply w-full rounded-xl border border-ink/15 bg-white px-3 py-2.5 text-sm outline-none focus:border-sea focus:ring-2 focus:ring-sea/20;
+    @apply w-full rounded-xl border border-ink/15 bg-white px-3 py-2.5 text-sm outline-none focus:border-sea focus:ring-2 focus:ring-sea/20 transition;
+  }
+  html.dark .field {
+    @apply bg-slate-950 border-white/15 text-slate-100 placeholder:text-slate-500 focus:border-sea;
   }
   .label {
     @apply block text-xs font-semibold uppercase tracking-wide text-ink/50 mb-1.5;
   }
+  html.dark .label {
+    @apply text-slate-400;
+  }
   .chip {
     @apply inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold;
+  }
+  .progress-track {
+    @apply h-2 rounded-full bg-ink/10 overflow-hidden;
+  }
+  html.dark .progress-track {
+    @apply bg-white/10;
+  }
+  .progress-fill {
+    @apply h-full rounded-full bg-gradient-to-r from-sea to-violet transition-all duration-500;
+  }
+  .data-table {
+    @apply w-full text-sm;
+  }
+  .data-table thead th {
+    @apply text-left text-xs uppercase tracking-wide text-ink/45 font-semibold px-4 py-3 border-b border-ink/10;
+  }
+  html.dark .data-table thead th {
+    @apply text-slate-400 border-white/10;
+  }
+  .data-table tbody tr {
+    @apply border-b border-ink/5 hover:bg-mist/50 transition;
+  }
+  html.dark .data-table tbody tr {
+    @apply border-white/5 hover:bg-white/5;
+  }
+  .data-table td {
+    @apply px-4 py-3;
   }
 }

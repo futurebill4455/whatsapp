@@ -12,8 +12,8 @@
   <main class="max-w-3xl mx-auto px-4 py-8 space-y-6 animate-in">
     <div>
       <a href="/admin/campaigns" class="text-sm font-semibold text-sea hover:underline">← Campaigns</a>
-      <h1 class="font-display text-3xl font-bold mt-2">New campaign</h1>
-      <p class="text-ink/55 text-sm mt-1">Will queue all <%= contactCount %> contacts. Runner uses random delays + batch caps.</p>
+      <h1 class="font-display text-3xl font-bold mt-2 dark:text-white">New campaign</h1>
+      <p class="text-ink/55 dark:text-slate-400 text-sm mt-1">Queues all <%= contactCount %> contacts. Supports schedule, multi-step follow-ups, and random delays.</p>
     </div>
 
     <% if (typeof flash !== 'undefined' && flash) { %>
@@ -28,17 +28,23 @@
         <input class="field" name="name" required placeholder="March health promo" />
       </div>
 
-      <div>
-        <label class="label">Content type</label>
-        <select class="field" name="content_type" id="contentType">
-          <option value="text">Text only</option>
-          <option value="image_text">Image + text</option>
-        </select>
+      <div class="grid sm:grid-cols-2 gap-4">
+        <div>
+          <label class="label">Content type</label>
+          <select class="field" name="content_type" id="contentType">
+            <option value="text">Text only</option>
+            <option value="image_text">Image + text</option>
+          </select>
+        </div>
+        <div>
+          <label class="label">Schedule start (optional)</label>
+          <input class="field" type="datetime-local" name="schedule_at" />
+        </div>
       </div>
 
       <div>
-        <label class="label">Message text</label>
-        <textarea class="field min-h-[120px]" name="body_text" required placeholder="Hi! We have a special insurance offer for you…"></textarea>
+        <label class="label">Message text (step 1)</label>
+        <textarea class="field min-h-[120px]" name="body_text" required placeholder="Hi! We have a special insurance offer…"></textarea>
       </div>
 
       <div id="imageWrap" class="hidden">
@@ -46,11 +52,19 @@
         <input class="field" type="file" name="image" accept="image/*" />
       </div>
 
-      <label class="flex items-center gap-2 text-sm">
+      <label class="flex items-center gap-2 text-sm dark:text-slate-300">
         <input type="checkbox" name="use_quick_replies" value="1" checked class="accent-sea" />
-        Append quick-reply prompts (Interested / Not Interested)
+        Append Interested / Not Interested prompts on the final step
       </label>
-      <p class="text-xs text-ink/45 -mt-3">Native WhatsApp buttons are not available on WhatsApp Web personal accounts — we use text prompts customers can reply to.</p>
+
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="font-display font-semibold dark:text-white">Follow-up steps</h3>
+          <button type="button" id="addStep" class="btn-ghost text-xs">+ Add step</button>
+        </div>
+        <div id="extraSteps" class="space-y-3"></div>
+        <p class="text-xs text-ink/45 dark:text-slate-500 mt-2">Each step sends after the previous with its own random delay window.</p>
+      </div>
 
       <div class="grid sm:grid-cols-2 gap-4">
         <div>
@@ -70,7 +84,6 @@
           <input class="field" type="number" name="batch_window_minutes" value="5" min="1" />
         </div>
       </div>
-      <p class="text-xs text-ink/45">Example: random 1–5 min between messages, and at most 10 messages every 5 minutes.</p>
 
       <div class="flex gap-2">
         <button type="submit" class="btn-primary" <%= contactCount ? '' : 'disabled' %>>Create campaign</button>
@@ -81,6 +94,21 @@
   <script>
     document.getElementById('contentType').addEventListener('change', function () {
       document.getElementById('imageWrap').classList.toggle('hidden', this.value !== 'image_text');
+    });
+    var wrap = document.getElementById('extraSteps');
+    var n = 0;
+    document.getElementById('addStep').addEventListener('click', function () {
+      n += 1;
+      var box = document.createElement('div');
+      box.className = 'rounded-xl border border-ink/10 dark:border-white/10 p-3 space-y-2 bg-mist/40 dark:bg-white/5';
+      box.innerHTML =
+        '<div class="text-xs font-semibold uppercase text-ink/45 dark:text-slate-400">Follow-up step ' + n + '</div>' +
+        '<textarea class="field min-h-[80px]" name="step_body" placeholder="Follow-up message…" required></textarea>' +
+        '<div class="grid grid-cols-2 gap-2">' +
+        '<input class="field" type="number" name="step_delay_min" value="1" step="0.1" placeholder="Min min" />' +
+        '<input class="field" type="number" name="step_delay_max" value="5" step="0.1" placeholder="Max min" />' +
+        '</div>';
+      wrap.appendChild(box);
     });
   </script>
 </body>

@@ -1277,6 +1277,7 @@ module.exports = {
   CampaignContacts,
   Campaigns,
   CampaignRecipients,
+  CampaignSteps: require('./campaigns').CampaignSteps,
   digitsOnly,
   phoneMatchKeys,
   phonesMatch,

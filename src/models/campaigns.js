@@ -191,8 +191,8 @@ const Campaigns = {
           name, status, content_type, body_text,
           image_path, image_mimetype, image_filename,
           use_quick_replies, delay_min_ms, delay_max_ms,
-          batch_size, batch_window_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          batch_size, batch_window_ms, schedule_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.name,
@@ -206,7 +206,8 @@ const Campaigns = {
         data.delay_min_ms != null ? data.delay_min_ms : 60000,
         data.delay_max_ms != null ? data.delay_max_ms : 300000,
         data.batch_size != null ? data.batch_size : 10,
-        data.batch_window_ms != null ? data.batch_window_ms : 300000
+        data.batch_window_ms != null ? data.batch_window_ms : 300000,
+        data.schedule_at || null
       );
     return this.get(result.lastInsertRowid);
   },
@@ -230,6 +231,7 @@ const Campaigns = {
         batch_size = COALESCE(?, batch_size),
         batch_window_ms = COALESCE(?, batch_window_ms),
         next_send_at = CASE WHEN ? THEN ? ELSE next_send_at END,
+        schedule_at = CASE WHEN ? THEN ? ELSE schedule_at END,
         started_at = COALESCE(?, started_at),
         completed_at = CASE WHEN ? THEN ? ELSE completed_at END,
         updated_at = datetime('now')
@@ -249,6 +251,8 @@ const Campaigns = {
       data.batch_window_ms ?? null,
       has('next_send_at') ? 1 : 0,
       has('next_send_at') ? data.next_send_at : null,
+      has('schedule_at') ? 1 : 0,
+      has('schedule_at') ? data.schedule_at : null,
       data.started_at ?? null,
       has('completed_at') ? 1 : 0,
       has('completed_at') ? data.completed_at : null,
@@ -268,11 +272,40 @@ const Campaigns = {
         if (fs.existsSync(camp.image_path)) fs.unlinkSync(camp.image_path);
       } catch (_) {}
     }
+    try {
+      const steps = CampaignSteps.listByCampaign(id);
+      for (const s of steps) {
+        if (s.image_path && fs.existsSync(s.image_path)) {
+          try {
+            fs.unlinkSync(s.image_path);
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
     return db.prepare('DELETE FROM campaigns WHERE id = ?').run(id);
   },
 
-  /** Running campaigns the background worker should process. */
+  /** Promote due scheduled campaigns, then return runnable ones. */
+  activateDueScheduled() {
+    const due = db
+      .prepare(
+        `SELECT id FROM campaigns
+         WHERE status = 'scheduled'
+           AND schedule_at IS NOT NULL
+           AND schedule_at <= datetime('now')`
+      )
+      .all();
+    for (const row of due) {
+      this.setStatus(row.id, 'running', {
+        started_at: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        next_send_at: null,
+      });
+      console.log(`[Campaigns] Scheduled #${row.id} is due — now running`);
+    }
+  },
+
   listRunnable() {
+    this.activateDueScheduled();
     return db
       .prepare(
         `SELECT * FROM campaigns
@@ -303,6 +336,54 @@ const Campaigns = {
       skipped: row?.skipped || 0,
       replied: row?.replied || 0,
     };
+  },
+};
+
+const CampaignSteps = {
+  listByCampaign(campaignId) {
+    return db
+      .prepare(
+        `SELECT * FROM campaign_steps
+         WHERE campaign_id = ?
+         ORDER BY step_order ASC, id ASC`
+      )
+      .all(campaignId);
+  },
+
+  replaceAll(campaignId, steps) {
+    db.prepare('DELETE FROM campaign_steps WHERE campaign_id = ?').run(
+      campaignId
+    );
+    const insert = db.prepare(
+      `INSERT INTO campaign_steps (
+        campaign_id, step_order, body_text, content_type, image_path,
+        delay_min_ms, delay_max_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    );
+    runInTransaction(() => {
+      (steps || []).forEach((s, i) => {
+        insert.run(
+          campaignId,
+          s.step_order != null ? s.step_order : i,
+          s.body_text || '',
+          s.content_type || 'text',
+          s.image_path || null,
+          s.delay_min_ms != null ? s.delay_min_ms : 60000,
+          s.delay_max_ms != null ? s.delay_max_ms : 300000
+        );
+      });
+    });
+    return this.listByCampaign(campaignId);
+  },
+
+  getStep(campaignId, stepOrder) {
+    return db
+      .prepare(
+        `SELECT * FROM campaign_steps
+         WHERE campaign_id = ? AND step_order = ?
+         LIMIT 1`
+      )
+      .get(campaignId, stepOrder);
   },
 };
 
@@ -360,6 +441,14 @@ const CampaignRecipients = {
        SET status = 'sent', sent_at = datetime('now'), error = NULL
        WHERE id = ?`
     ).run(id);
+  },
+
+  advanceStep(id, nextStep) {
+    db.prepare(
+      `UPDATE campaign_recipients
+       SET current_step = ?, status = 'pending', error = NULL
+       WHERE id = ?`
+    ).run(nextStep, id);
   },
 
   markFailed(id, error) {
@@ -444,6 +533,7 @@ module.exports = {
   CampaignContacts,
   Campaigns,
   CampaignRecipients,
+  CampaignSteps,
   MEDIA_DIR,
   ensureMediaDir,
   normalizePhone,

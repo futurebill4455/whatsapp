@@ -132,6 +132,9 @@ class WhatsAppService {
     this._seenIds = new Set();
     this._lastOutboundChatId = null;
     this._unreadPollTimer = null;
+    this._keepAliveTimer = null;
+    this._keepAliveFails = 0;
+    this._fallbackAckAt = new Map();
     this._lastInboundAt = 0;
     /** @type {Map<string, { timer: NodeJS.Timeout, message: any, peerKey: string, body: string, chatId: string, inboundAt: number, msgId: string }>} */
     this._pendingSmartDelay = new Map();
@@ -518,8 +521,124 @@ class WhatsAppService {
     }
   }
 
+  stopKeepAlive() {
+    if (this._keepAliveTimer) {
+      clearInterval(this._keepAliveTimer);
+      this._keepAliveTimer = null;
+    }
+  }
+
+  /**
+   * Periodic session health check — prevents silent disconnects / ghost sessions.
+   */
+  startKeepAlive() {
+    this.stopKeepAlive();
+    const ms = Number(process.env.WA_KEEPALIVE_MS);
+    const interval = Number.isFinite(ms) && ms >= 0 ? ms : 45000;
+    if (interval === 0) {
+      logger.info('[WhatsApp] Keep-alive disabled (WA_KEEPALIVE_MS=0)');
+      return;
+    }
+    logger.info(`[WhatsApp] Keep-alive every ${interval}ms`);
+    this._keepAliveTimer = setInterval(() => {
+      this.keepAliveTick().catch((err) => {
+        logger.warn('[WhatsApp] keepAliveTick:', err.message);
+      });
+    }, interval);
+  }
+
+  async keepAliveTick() {
+    if (this._reconnecting || !this.client) return;
+    try {
+      let state = null;
+      try {
+        state = await this.client.getState();
+      } catch (_) {
+        state = null;
+      }
+
+      if (state === 'CONNECTED') {
+        this._keepAliveFails = 0;
+        // Lightweight CDP pulse so Chromium stays warm
+        try {
+          if (this.client.pupPage && !this.client.pupPage.isClosed?.()) {
+            await this.client.pupPage.evaluate(() => 1);
+          }
+        } catch (_) {}
+        return;
+      }
+
+      if (
+        state === 'CONFLICT' ||
+        state === 'UNPAIRED' ||
+        state === 'UNPAIRED_IDLE' ||
+        state === 'TIMEOUT' ||
+        state === 'UNLAUNCHED'
+      ) {
+        logger.warn(`[WhatsApp] Keep-alive state=${state} — safe reinit`);
+        this._keepAliveFails = 0;
+        await this.safeReinit(`keepalive:${state}`);
+        return;
+      }
+
+      // null / OPENING / PAIRING — count soft failures
+      this._keepAliveFails += 1;
+      if (this._keepAliveFails >= 3 && this.ready) {
+        logger.warn(
+          `[WhatsApp] Keep-alive failed ${this._keepAliveFails}x (state=${state}) — reinit`
+        );
+        this._keepAliveFails = 0;
+        await this.safeReinit('keepalive:soft-fail');
+      }
+    } catch (err) {
+      this._keepAliveFails += 1;
+      if (this._keepAliveFails >= 3) {
+        this._keepAliveFails = 0;
+        await this.safeReinit('keepalive:exception');
+      }
+    }
+  }
+
+  /**
+   * Rate-limited fallback acknowledgment so the bot never goes fully silent
+   * when the main handler crashes. Controlled by Settings.
+   */
+  async sendFallbackAck(phoneOrChat, reason = 'handler_error') {
+    try {
+      const enabled = Settings.get('fallback_ack_enabled');
+      if (enabled === '0' || enabled === 'false') return false;
+
+      const digits = String(phoneOrChat || '').replace(/\D/g, '');
+      const key = digits || String(phoneOrChat || '');
+      if (!key) return false;
+
+      const now = Date.now();
+      const last = this._fallbackAckAt.get(key) || 0;
+      if (now - last < 5 * 60 * 1000) return false; // max 1 ack / 5 min / peer
+      this._fallbackAckAt.set(key, now);
+
+      const msg =
+        Settings.get('fallback_ack_message') ||
+        'Thanks for your message! Our team will get back to you shortly. Reply *close* anytime to end the chat.';
+
+      await this.sendMessage(digits || phoneOrChat, msg, {
+        skipPacing: true,
+        skipLimiter: true,
+        chatId: String(phoneOrChat || '').includes('@')
+          ? phoneOrChat
+          : undefined,
+      });
+      logger.warn(`[WhatsApp] Fallback ack sent → ${key} (${reason})`);
+      return true;
+    } catch (err) {
+      logger.error('[WhatsApp] Fallback ack failed:', err.message);
+      return false;
+    }
+  }
+
   async destroyClient() {
     this.stopUnreadPoller();
+    this.stopKeepAlive();
     const client = this.client;
     this.client = null;
     this.ready = false;
@@ -773,6 +892,7 @@ class WhatsAppService {
         '[WhatsApp] Inbound listeners active: message, message_create, message_ciphertext (+ unread poller)'
       );
       this.startUnreadPoller();
+      this.startKeepAlive();
     });
 
     client.on('auth_failure', async (msg) => {
@@ -801,6 +921,7 @@ class WhatsAppService {
     client.on('disconnected', async (reason) => {
       try {
         this.stopUnreadPoller();
+        this.stopKeepAlive();
         this.status = 'disconnected';
         this.ready = false;
         this.info = null;
@@ -873,39 +994,46 @@ class WhatsAppService {
    * Shared entry for WA Web message events — keep logging light (LOG_LEVEL=debug for verbose).
    */
   onClientMessageEvent(source, message) {
-    if (!message) return;
-    const from = message.from || message.author || '?';
-    const msgType = String(message.type || 'unknown').toLowerCase();
-    const mediaLike = isMediaLikeMessage(message);
+    try {
+      if (!message) return;
+      const from = message.from || message.author || '?';
+      const msgType = String(message.type || 'unknown').toLowerCase();
+      const mediaLike = isMediaLikeMessage(message);
 
-    if (logger.isDebug()) {
-      const bodyPreview = String(message.body || '')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 80);
-      logger.debug(
-        `Received [${source}] from=${from} type=${msgType}` +
-          (message.fromMe ? ' fromMe' : '') +
-          (mediaLike ? ' MEDIA' : '') +
-          (bodyPreview ? ` "${bodyPreview}"` : '')
-      );
-      if (mediaLike && !message.fromMe) {
-        try {
-          this.pm.logInboundMediaDetails(message, source);
-        } catch (_) {}
+      if (logger.isDebug()) {
+        const bodyPreview = String(message.body || '')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 80);
+        logger.debug(
+          `Received [${source}] from=${from} type=${msgType}` +
+            (message.fromMe ? ' fromMe' : '') +
+            (mediaLike ? ' MEDIA' : '') +
+            (bodyPreview ? ` "${bodyPreview}"` : '')
+        );
+        if (mediaLike && !message.fromMe) {
+          try {
+            this.pm.logInboundMediaDetails(message, source);
+          } catch (_) {}
+        }
+      }
+
+      if (source === 'message_ciphertext') return;
+
+      if (message.fromMe) {
+        this.notePossibleManualReply(message);
+        return;
+      }
+
+      this._lastInboundAt = Date.now();
+      this.enqueueIncomingMessage(message);
+    } catch (err) {
+      logger.error('[WhatsApp] onClientMessageEvent FATAL:', err.message);
+      const peer = message?.from || message?.author;
+      if (peer && !message?.fromMe) {
+        void this.sendFallbackAck(peer, 'listener_crash');
       }
     }
-
-    if (source === 'message_ciphertext') return; // wait for decrypt / poller
-
-    // Track our own sends so the smart-delay window can detect manual replies
-    if (message.fromMe) {
-      this.notePossibleManualReply(message);
-      return;
-    }
-
-    this._lastInboundAt = Date.now();
-    this.enqueueIncomingMessage(message);
   }
 
   chatKeyFromMessage(message) {
@@ -1380,6 +1508,10 @@ class WhatsAppService {
       .catch((err) => {
         logger.error('[WhatsApp] Inbound handler error:', err.message);
         if (logger.isDebug()) logger.error(err.stack);
+        const peer = message?.from || message?.author;
+        if (peer) {
+          void this.sendFallbackAck(peer, 'queue_handler');
+        }
       })
       .finally(() => {
         this._msgQueueDepth = Math.max(0, this._msgQueueDepth - 1);

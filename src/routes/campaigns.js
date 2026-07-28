@@ -12,6 +12,7 @@ const {
   CampaignContacts,
   Campaigns,
   CampaignRecipients,
+  CampaignSteps,
 } = require('../models');
 const { ensureMediaDir } = require('../models/campaigns');
 const {
@@ -240,6 +241,7 @@ router.get('/admin/campaigns/:id', requireAdmin, (req, res) => {
   }
   const stats = Campaigns.stats(id);
   const recipients = CampaignRecipients.listByCampaign(id, { limit: 200 });
+  const steps = CampaignSteps.listByCampaign(id);
   res.render(
     'admin/campaign-detail',
     layoutLocals(req, {
@@ -247,6 +249,7 @@ router.get('/admin/campaigns/:id', requireAdmin, (req, res) => {
       campaign,
       stats,
       recipients,
+      steps,
       waReady: !!(whatsapp.ready && whatsapp.client),
     })
   );
@@ -294,6 +297,15 @@ router.post(
       const batch_size = Number(req.body.batch_size) || 10;
       const batch_window_min = Number(req.body.batch_window_minutes) || 5;
 
+      let schedule_at = null;
+      const rawSched = String(req.body.schedule_at || '').trim();
+      if (rawSched) {
+        const d = new Date(rawSched);
+        if (!Number.isNaN(d.getTime())) {
+          schedule_at = d.toISOString().replace('T', ' ').slice(0, 19);
+        }
+      }
+
       const camp = Campaigns.create({
         name,
         body_text,
@@ -306,14 +318,40 @@ router.post(
         delay_max_ms: Math.max(delay_min_ms, delay_max_ms),
         batch_size,
         batch_window_ms: Math.round(batch_window_min * 60 * 1000),
+        schedule_at,
         status: 'draft',
       });
+
+      const stepBodies = [].concat(req.body.step_body || []).filter((t) => String(t || '').trim());
+      const stepDelayMins = [].concat(req.body.step_delay_min || []);
+      const stepDelayMaxs = [].concat(req.body.step_delay_max || []);
+      if (stepBodies.length) {
+        CampaignSteps.replaceAll(
+          camp.id,
+          stepBodies.map((text, i) => {
+            const dMin = Number(stepDelayMins[i]);
+            const dMax = Number(stepDelayMaxs[i]);
+            const minMs = Math.round((Number.isFinite(dMin) ? dMin : 1) * 60 * 1000);
+            const maxMs = Math.round((Number.isFinite(dMax) ? dMax : 5) * 60 * 1000);
+            return {
+              step_order: i + 1,
+              body_text: String(text).trim(),
+              content_type: 'text',
+              delay_min_ms: Math.min(minMs, maxMs),
+              delay_max_ms: Math.max(minMs, maxMs),
+            };
+          })
+        );
+      }
 
       const contacts = CampaignContacts.listAllPhones();
       const added = CampaignRecipients.addMany(camp.id, contacts);
       req.session.flash = {
         type: 'success',
-        message: `Campaign created with ${added} recipients.`,
+        message:
+          `Campaign created with ${added} recipients` +
+          (stepBodies.length ? ` + ${stepBodies.length} follow-up step(s)` : '') +
+          '.',
       };
       res.redirect(`/admin/campaigns/${camp.id}`);
     } catch (err) {
@@ -338,6 +376,22 @@ router.post('/admin/campaigns/:id/start', requireAdmin, (req, res) => {
     };
     return res.redirect(`/admin/campaigns/${id}`);
   }
+
+  if (camp.schedule_at) {
+    const when = Date.parse(String(camp.schedule_at).replace(' ', 'T'));
+    if (Number.isFinite(when) && when > Date.now()) {
+      Campaigns.setStatus(id, 'scheduled', {
+        next_send_at: null,
+        completed_at: null,
+      });
+      req.session.flash = {
+        type: 'success',
+        message: `Campaign scheduled for ${camp.schedule_at}.`,
+      };
+      return res.redirect(`/admin/campaigns/${id}`);
+    }
+  }
+
   Campaigns.setStatus(id, 'running', {
     started_at:
       camp.started_at ||

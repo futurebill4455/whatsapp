@@ -54,6 +54,9 @@ function seed() {
     cleanup_interval_hours: '6',
     cleanup_message_log_days: '14',
     cleanup_campaign_recipient_days: '30',
+    fallback_ack_enabled: '1',
+    fallback_ack_message:
+      'Thanks for your message! Our team will get back to you shortly. Reply *close* anytime to end the chat.',
   };
 
   for (const [key, value] of Object.entries(defaults)) {

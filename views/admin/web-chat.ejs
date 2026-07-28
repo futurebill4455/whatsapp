@@ -6,11 +6,9 @@
   <title><%= title %> · <%= businessName %></title>
   <%- include('../partials/styles') %>
   <style>
-    .wa-shell { height: calc(100vh - 7.5rem); min-height: 480px; }
+    .wa-shell { height: calc(100vh - 7rem); min-height: 520px; }
     .wa-list { overflow-y: auto; }
-    .wa-thread { overflow-y: auto; background: #e5ddd5; background-image: radial-gradient(rgba(0,0,0,.03) 1px, transparent 1px); background-size: 18px 18px; }
-    .bubble-in { background: #fff; border-radius: 0 12px 12px 12px; }
-    .bubble-out { background: #dcf8c6; border-radius: 12px 0 12px 12px; margin-left: auto; }
+    .wa-thread { overflow-y: auto; }
   </style>
 </head>
 <body class="font-sans text-ink page-bg min-h-screen antialiased">
@@ -19,23 +17,18 @@
   <main class="max-w-7xl mx-auto px-4 py-4 animate-in">
     <div class="flex flex-wrap items-end justify-between gap-3 mb-4">
       <div>
-        <p class="text-sm font-semibold uppercase tracking-wider text-sea mb-1">Inbox</p>
-        <h1 class="font-display text-3xl font-bold">Web Chat</h1>
+        <p class="text-sm font-semibold uppercase tracking-wider text-sea mb-1">Live inbox</p>
+        <h1 class="font-display text-3xl font-bold dark:text-white">Web Chat</h1>
       </div>
-      <span class="chip <%= waReady ? 'bg-sea/15 text-sea' : 'bg-coral/15 text-coral' %>">
+      <span class="chip <%= waReady ? 'bg-sea/15 text-sea badge-live' : 'bg-coral/15 text-coral' %>">
+        <span class="inline-block w-1.5 h-1.5 rounded-full <%= waReady ? 'bg-sea animate-pulse-soft' : 'bg-coral' %> mr-1.5"></span>
         WA <%= waReady ? 'Ready' : 'Offline' %>
       </span>
     </div>
 
-    <% if (typeof flash !== 'undefined' && flash) { %>
-      <div class="mb-4 rounded-2xl px-4 py-3 text-sm font-medium border <%= flash.type === 'error' ? 'bg-coral/10 text-coral border-coral/20' : 'bg-sea/10 text-sea border-sea/20' %>">
-        <%= flash.message %>
-      </div>
-    <% } %>
-
-    <div class="panel overflow-hidden wa-shell grid grid-cols-1 md:grid-cols-[280px_1fr]">
-      <aside class="border-r border-ink/10 bg-white flex flex-col min-h-0">
-        <div class="px-3 py-3 border-b border-ink/10">
+    <div class="panel overflow-hidden wa-shell grid grid-cols-1 md:grid-cols-[300px_1fr] shadow-glow">
+      <aside class="border-r border-ink/10 dark:border-white/10 bg-white dark:bg-slate-900 flex flex-col min-h-0">
+        <div class="px-3 py-3 border-b border-ink/10 dark:border-white/10">
           <input id="chatSearch" class="field text-sm" placeholder="Search phone…" />
         </div>
         <div id="convList" class="wa-list flex-1 min-h-0">
@@ -44,46 +37,52 @@
           %>
             <a href="/admin/web-chat?phone=<%= c.phone %>"
                data-phone="<%= c.phone %>"
-               class="conv-item block px-3 py-3 border-b border-ink/5 hover:bg-mist/80 <%= active ? 'bg-sea/10' : '' %>">
-              <div class="font-semibold text-sm"><%= c.phone %></div>
-              <div class="text-xs text-ink/50 truncate mt-0.5"><%= c.last_body || '—' %></div>
+               class="conv-item block px-3 py-3 border-b border-ink/5 dark:border-white/5 hover:bg-mist/80 dark:hover:bg-white/5 transition <%= active ? 'bg-sea/10 dark:bg-sea/20 border-l-2 border-l-sea' : '' %>">
+              <div class="flex items-center justify-between gap-2">
+                <div class="font-semibold text-sm dark:text-slate-100"><%= c.phone %></div>
+                <div class="text-[10px] text-ink/40 dark:text-slate-500"><%= String(c.last_at || '').slice(11, 16) %></div>
+              </div>
+              <div class="text-xs text-ink/50 dark:text-slate-400 truncate mt-0.5"><%= c.last_body || '—' %></div>
             </a>
           <% }) %>
           <% if (!conversations.length) { %>
-            <p class="p-4 text-sm text-ink/45">No conversations yet. Messages appear here as they arrive.</p>
+            <p class="p-6 text-sm text-ink/45 dark:text-slate-500 text-center">No conversations yet.</p>
           <% } %>
         </div>
       </aside>
 
-      <section class="flex flex-col min-h-0 bg-[#efeae2]">
-        <header class="px-4 py-3 bg-white border-b border-ink/10 flex items-center justify-between">
+      <section class="flex flex-col min-h-0">
+        <header class="px-4 py-3 bg-white dark:bg-slate-900 border-b border-ink/10 dark:border-white/10 flex items-center gap-3">
+          <div class="w-10 h-10 rounded-full bg-gradient-to-br from-sea to-violet text-white flex items-center justify-center font-bold text-sm">
+            <%= activePhone ? String(activePhone).slice(-2) : '?' %>
+          </div>
           <div>
-            <div class="font-semibold" id="threadTitle"><%= activePhone || 'Select a chat' %></div>
-            <div class="text-xs text-ink/45">Admin web chat · replies send from the bot number</div>
+            <div class="font-semibold dark:text-white" id="threadTitle"><%= activePhone || 'Select a chat' %></div>
+            <div class="text-xs text-ink/45 dark:text-slate-400">Replies send from the connected WhatsApp number</div>
           </div>
         </header>
 
-        <div id="threadBox" class="wa-thread flex-1 min-h-0 px-4 py-4 space-y-2">
+        <div id="threadBox" class="wa-thread flex-1 min-h-0 px-4 py-4 space-y-2.5">
           <% if (!activePhone) { %>
-            <p class="text-center text-sm text-ink/45 mt-16">Choose a conversation on the left.</p>
+            <p class="text-center text-sm text-ink/45 dark:text-slate-500 mt-20">Choose a conversation on the left to start chatting.</p>
           <% } else { %>
             <% thread.forEach(function (m) {
               const out = m.direction === 'out';
             %>
               <div class="flex <%= out ? 'justify-end' : 'justify-start' %>">
-                <div class="max-w-[75%] px-3 py-2 text-sm shadow-sm <%= out ? 'bubble-out' : 'bubble-in' %>">
-                  <div class="whitespace-pre-wrap break-words"><%= m.body %></div>
-                  <div class="text-[10px] text-ink/40 mt-1 text-right"><%= m.created_at %></div>
+                <div class="max-w-[78%] px-3.5 py-2 text-sm <%= out ? 'bubble-out' : 'bubble-in' %>">
+                  <div class="whitespace-pre-wrap break-words leading-relaxed"><%= m.body %></div>
+                  <div class="text-[10px] opacity-50 mt-1 text-right"><%= m.created_at %></div>
                 </div>
               </div>
             <% }) %>
           <% } %>
         </div>
 
-        <form id="sendForm" class="bg-white border-t border-ink/10 p-3 flex gap-2" <%= activePhone ? '' : 'hidden' %>>
+        <form id="sendForm" class="bg-white dark:bg-slate-900 border-t border-ink/10 dark:border-white/10 p-3 flex gap-2" <%= activePhone ? '' : 'hidden' %>>
           <input type="hidden" id="sendPhone" value="<%= activePhone || '' %>" />
-          <input id="sendText" class="field flex-1" placeholder="Type a message" autocomplete="off" <%= waReady ? '' : 'disabled' %> />
-          <button type="submit" class="btn-primary" <%= waReady ? '' : 'disabled' %>>Send</button>
+          <input id="sendText" class="field flex-1" placeholder="Type a message…" autocomplete="off" <%= waReady ? '' : 'disabled' %> />
+          <button type="submit" class="btn-primary px-5" <%= waReady ? '' : 'disabled' %>>Send</button>
         </form>
       </section>
     </div>
@@ -108,14 +107,12 @@
         const wrap = document.createElement('div');
         wrap.className = 'flex ' + (out ? 'justify-end' : 'justify-start');
         const bubble = document.createElement('div');
-        bubble.className =
-          'max-w-[75%] px-3 py-2 text-sm shadow-sm ' +
-          (out ? 'bubble-out' : 'bubble-in');
+        bubble.className = 'max-w-[78%] px-3.5 py-2 text-sm ' + (out ? 'bubble-out' : 'bubble-in');
         const bodyEl = document.createElement('div');
-        bodyEl.className = 'whitespace-pre-wrap break-words';
+        bodyEl.className = 'whitespace-pre-wrap break-words leading-relaxed';
         bodyEl.textContent = body || '';
         const meta = document.createElement('div');
-        meta.className = 'text-[10px] text-ink/40 mt-1 text-right';
+        meta.className = 'text-[10px] opacity-50 mt-1 text-right';
         meta.textContent = createdAt || new Date().toLocaleString();
         bubble.appendChild(bodyEl);
         bubble.appendChild(meta);
@@ -166,7 +163,7 @@
         socket.on('webchat:message', function (msg) {
           if (!msg || !phone) return;
           if (String(msg.phone) !== String(phone)) return;
-          if (msg.direction === 'out') return; // already appended on send
+          if (msg.direction === 'out') return;
           appendBubble(msg.direction || 'in', msg.body, msg.created_at);
         });
         socket.on('whatsapp:inbound', function (msg) {

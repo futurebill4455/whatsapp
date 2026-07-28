@@ -13,9 +13,13 @@
     <div class="flex flex-wrap items-end justify-between gap-4">
       <div>
         <p class="text-sm font-semibold uppercase tracking-wider text-violet mb-1">Overview</p>
-        <h1 class="font-display text-3xl font-bold">Dashboard</h1>
+        <h1 class="font-display text-3xl font-bold dark:text-white">Dashboard</h1>
       </div>
-      <a href="/" class="btn-ghost">Open QR page</a>
+      <div class="flex flex-wrap gap-2">
+        <a href="/admin/web-chat" class="btn-ghost">Web Chat</a>
+        <a href="/admin/campaigns" class="btn-primary">Campaigns</a>
+        <a href="/" class="btn-ghost">QR</a>
+      </div>
     </div>
 
     <% if (typeof flash !== 'undefined' && flash) { %>
@@ -36,25 +40,25 @@
       <% cards.forEach(function (c) { %>
         <div class="stat-card panel p-4 relative overflow-hidden">
           <div class="absolute inset-x-0 top-0 h-1 bg-gradient-to-r <%= c.from %> <%= c.to %>"></div>
-          <div class="text-xs uppercase tracking-wide text-ink/45 font-semibold"><%= c.label %></div>
-          <div class="font-display text-3xl font-semibold mt-1"><%= c.value %></div>
+          <div class="text-xs uppercase tracking-wide text-ink/45 dark:text-slate-400 font-semibold"><%= c.label %></div>
+          <div class="font-display text-3xl font-semibold mt-1 dark:text-white"><%= c.value %></div>
         </div>
       <% }) %>
     </div>
 
     <div class="grid lg:grid-cols-2 gap-6">
-      <section class="panel p-5 md:p-6 bg-gradient-to-br from-sea/5 via-white to-violet/5">
+      <section class="panel p-5 md:p-6 bg-gradient-to-br from-sea/5 via-white to-violet/5 dark:from-sea/10 dark:via-slate-900 dark:to-violet/10">
         <div class="flex items-center justify-between gap-3 mb-3">
-          <h2 class="font-display text-lg font-semibold">Chat flow</h2>
+          <h2 class="font-display text-lg font-semibold dark:text-white">Chat flow</h2>
           <a href="/admin/chat-flow" class="text-sm font-semibold text-sea hover:underline">Edit</a>
         </div>
-        <p class="text-sm text-ink/55 mb-4">
+        <p class="text-sm text-ink/55 dark:text-slate-400 mb-4">
           Shared access code for all senders — no Users list, no per-phone codes.
         </p>
-        <div class="rounded-xl bg-mist/70 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+        <div class="rounded-xl bg-mist/70 dark:bg-white/5 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <div class="text-xs uppercase tracking-wide text-ink/45 font-semibold">Common access code</div>
-            <div class="font-mono text-xl font-bold tracking-wider mt-1"><%= commonAccessCode || 'INSU2026' %></div>
+            <div class="text-xs uppercase tracking-wide text-ink/45 dark:text-slate-400 font-semibold">Common access code</div>
+            <div class="font-mono text-xl font-bold tracking-wider mt-1 dark:text-white"><%= commonAccessCode || 'INSU2026' %></div>
           </div>
           <a href="/admin/chat-flow" class="btn-primary">Configure messages</a>
         </div>
@@ -62,20 +66,20 @@
 
       <section class="panel p-5 md:p-6">
         <div class="flex items-center justify-between gap-3 mb-4">
-          <h2 class="font-display text-lg font-semibold">WhatsApp</h2>
+          <h2 class="font-display text-lg font-semibold dark:text-white">WhatsApp</h2>
           <% const st = waStatus && waStatus.status ? waStatus.status : 'unknown'; %>
           <span class="chip <%= waStatus && waStatus.ready ? 'bg-sea/15 text-sea' : (st === 'qr' ? 'bg-amber/15 text-amber' : 'bg-coral/15 text-coral') %>">
             <%= waStatus && waStatus.ready ? 'Ready' : st %>
           </span>
         </div>
         <dl class="grid grid-cols-2 gap-3 text-sm mb-5">
-          <div class="rounded-xl bg-mist/60 p-3">
-            <dt class="text-ink/45 text-xs font-semibold uppercase">Status</dt>
-            <dd class="font-semibold mt-0.5"><%= st %></dd>
+          <div class="rounded-xl bg-mist/60 dark:bg-white/5 p-3">
+            <dt class="text-ink/45 dark:text-slate-400 text-xs font-semibold uppercase">Status</dt>
+            <dd class="font-semibold mt-0.5 dark:text-white"><%= st %></dd>
           </div>
-          <div class="rounded-xl bg-mist/60 p-3">
-            <dt class="text-ink/45 text-xs font-semibold uppercase">Ready</dt>
-            <dd class="font-semibold mt-0.5"><%= waStatus && waStatus.ready ? 'Yes' : 'No' %></dd>
+          <div class="rounded-xl bg-mist/60 dark:bg-white/5 p-3">
+            <dt class="text-ink/45 dark:text-slate-400 text-xs font-semibold uppercase">Ready</dt>
+            <dd class="font-semibold mt-0.5 dark:text-white"><%= waStatus && waStatus.ready ? 'Yes' : 'No' %></dd>
           </div>
         </dl>
         <% if (waStatus && waStatus.lastError) { %>
@@ -94,16 +98,16 @@
 
     <div class="grid lg:grid-cols-2 gap-6">
       <section class="panel p-5 md:p-6 lg:col-span-2">
-        <h2 class="font-display text-lg font-semibold mb-4">Active chats</h2>
+        <h2 class="font-display text-lg font-semibold mb-4 dark:text-white">Active chats</h2>
         <% if (!activeChatList || !activeChatList.length) { %>
-          <p class="text-sm text-ink/50">No live desk bridges right now.</p>
+          <p class="text-sm text-ink/50 dark:text-slate-500">No live desk bridges right now.</p>
         <% } else { %>
           <ul class="space-y-2 max-h-56 overflow-auto">
             <% activeChatList.forEach(function (c) { %>
-              <li class="flex items-center justify-between gap-3 rounded-xl bg-mist/50 px-3 py-2 text-sm">
+              <li class="flex items-center justify-between gap-3 rounded-xl bg-mist/50 dark:bg-white/5 px-3 py-2 text-sm">
                 <div>
-                  <div class="font-semibold"><%= c.customer_phone %></div>
-                  <div class="text-ink/45 text-xs"><%= c.company_name || 'Desk' %> · #<%= c.session_code || c.id %></div>
+                  <div class="font-semibold dark:text-white"><%= c.customer_phone %></div>
+                  <div class="text-ink/45 dark:text-slate-500 text-xs"><%= c.company_name || 'Desk' %> · #<%= c.session_code || c.id %></div>
                 </div>
                 <span class="chip bg-sea/15 text-sea">live</span>
               </li>
@@ -114,31 +118,31 @@
 
       <section class="panel p-5 md:p-6">
         <div class="flex items-center justify-between mb-4">
-          <h2 class="font-display text-lg font-semibold">Recent leads</h2>
+          <h2 class="font-display text-lg font-semibold dark:text-white">Recent leads</h2>
           <a href="/admin/submissions" class="text-sm font-semibold text-sea hover:underline">View all</a>
         </div>
         <div class="overflow-x-auto">
-          <table class="w-full text-sm">
+          <table class="data-table">
             <thead>
-              <tr class="text-left text-ink/45 text-xs uppercase tracking-wide">
-                <th class="pb-2 font-semibold">Customer</th>
-                <th class="pb-2 font-semibold">Type</th>
-                <th class="pb-2 font-semibold">Status</th>
+              <tr>
+                <th>Customer</th>
+                <th>Type</th>
+                <th>Status</th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-ink/5">
+            <tbody>
               <% (recentLeads || []).forEach(function (l) { %>
                 <tr>
-                  <td class="py-2.5">
-                    <div class="font-semibold"><%= l.customer_name || '—' %></div>
-                    <div class="text-xs text-ink/45"><%= l.customer_phone %></div>
+                  <td>
+                    <div class="font-semibold dark:text-white"><%= l.customer_name || '—' %></div>
+                    <div class="text-xs text-ink/45 dark:text-slate-500"><%= l.customer_phone %></div>
                   </td>
-                  <td class="py-2.5"><%= l.insurance_type || '—' %></td>
-                  <td class="py-2.5"><span class="chip bg-violet/10 text-violet"><%= l.status %></span></td>
+                  <td><%= l.insurance_type || '—' %></td>
+                  <td><span class="chip bg-violet/10 text-violet"><%= l.status %></span></td>
                 </tr>
               <% }) %>
               <% if (!recentLeads || !recentLeads.length) { %>
-                <tr><td colspan="3" class="py-6 text-ink/45">No leads yet.</td></tr>
+                <tr><td colspan="3" class="py-6 text-ink/45 dark:text-slate-500">No leads yet.</td></tr>
               <% } %>
             </tbody>
           </table>
@@ -146,20 +150,20 @@
       </section>
 
       <section class="panel p-5 md:p-6">
-        <h2 class="font-display text-lg font-semibold mb-4">Recent messages</h2>
+        <h2 class="font-display text-lg font-semibold mb-4 dark:text-white">Recent messages</h2>
         <ul class="space-y-2 max-h-72 overflow-auto">
           <% (recentMessages || []).forEach(function (m) { %>
-            <li class="rounded-xl border border-ink/5 px-3 py-2 text-sm">
+            <li class="rounded-xl border border-ink/5 dark:border-white/10 px-3 py-2 text-sm">
               <div class="flex items-center gap-2 mb-1">
                 <span class="chip <%= m.direction === 'out' ? 'bg-sea/15 text-sea' : 'bg-amber/15 text-amber' %>"><%= m.direction %></span>
-                <span class="text-xs text-ink/45"><%= m.phone || '—' %></span>
-                <span class="text-xs text-ink/35 ml-auto"><%= m.created_at %></span>
+                <span class="text-xs text-ink/45 dark:text-slate-500"><%= m.phone || '—' %></span>
+                <span class="text-xs text-ink/35 dark:text-slate-600 ml-auto"><%= m.created_at %></span>
               </div>
-              <p class="text-ink/70 line-clamp-2"><%= m.body %></p>
+              <p class="text-ink/70 dark:text-slate-300 line-clamp-2"><%= m.body %></p>
             </li>
           <% }) %>
           <% if (!recentMessages || !recentMessages.length) { %>
-            <li class="text-sm text-ink/45 py-4">No messages logged yet.</li>
+            <li class="text-sm text-ink/45 dark:text-slate-500 py-4">No messages logged yet.</li>
           <% } %>
         </ul>
       </section>

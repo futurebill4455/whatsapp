@@ -13,16 +13,19 @@
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
         <a href="/admin/campaigns" class="text-sm font-semibold text-sea hover:underline">← Campaigns</a>
-        <h1 class="font-display text-3xl font-bold mt-2"><%= campaign.name %></h1>
-        <p class="text-ink/55 text-sm mt-1">
+        <h1 class="font-display text-3xl font-bold mt-2 dark:text-white"><%= campaign.name %></h1>
+        <p class="text-ink/55 dark:text-slate-400 text-sm mt-1">
           <%= campaign.content_type === 'image_text' ? 'Image + text' : 'Text' %>
-          · status <strong id="statusLabel"><%= campaign.status %></strong>
+          · status <strong id="statusLabel" class="dark:text-white"><%= campaign.status %></strong>
+          <% if (campaign.schedule_at) { %> · schedule <%= campaign.schedule_at %><% } %>
         </p>
       </div>
       <div class="flex flex-wrap gap-2">
-        <% if (campaign.status === 'draft' || campaign.status === 'paused') { %>
+        <% if (campaign.status === 'draft' || campaign.status === 'paused' || campaign.status === 'scheduled') { %>
           <form method="post" action="/admin/campaigns/<%= campaign.id %>/start">
-            <button class="btn-primary" <%= waReady ? '' : 'disabled' %>>Start / Resume</button>
+            <button class="btn-primary" <%= waReady ? '' : 'disabled' %>>
+              <%= campaign.status === 'scheduled' ? 'Arm / Run now' : 'Start / Resume' %>
+            </button>
           </form>
         <% } %>
         <% if (campaign.status === 'running') { %>
@@ -49,52 +52,71 @@
       </div>
     <% } %>
 
+    <% const total = Number(stats.total)||0; const sent = Number(stats.sent)||0; const pct = total ? Math.round(sent/total*100) : 0; %>
+    <div class="panel p-5">
+      <div class="flex justify-between text-sm mb-2 dark:text-slate-300">
+        <span>Delivery progress</span>
+        <span id="pctLabel"><%= pct %>%</span>
+      </div>
+      <div class="progress-track h-3"><div id="progressFill" class="progress-fill" style="width:<%= pct %>%"></div></div>
+    </div>
+
     <div class="grid sm:grid-cols-2 lg:grid-cols-5 gap-3" id="statsGrid">
-      <% const cards = [
+      <% [
         { label: 'Total', key: 'total' },
         { label: 'Pending', key: 'pending' },
         { label: 'Sent', key: 'sent' },
         { label: 'Failed', key: 'failed' },
         { label: 'Replied', key: 'replied' },
-      ]; %>
-      <% cards.forEach(function (c) { %>
-        <div class="panel p-4">
-          <div class="text-xs uppercase text-ink/45 font-semibold"><%= c.label %></div>
-          <div class="font-display text-2xl font-semibold mt-1" data-stat="<%= c.key %>"><%= stats[c.key] || 0 %></div>
+      ].forEach(function (c) { %>
+        <div class="panel p-4 stat-card">
+          <div class="text-xs uppercase text-ink/45 dark:text-slate-400 font-semibold"><%= c.label %></div>
+          <div class="font-display text-2xl font-semibold mt-1 dark:text-white" data-stat="<%= c.key %>"><%= stats[c.key] || 0 %></div>
         </div>
       <% }) %>
     </div>
 
-    <section class="panel p-5 space-y-2">
-      <h2 class="font-display font-semibold">Message preview</h2>
-      <pre class="text-sm whitespace-pre-wrap bg-mist/60 rounded-xl p-4"><%= campaign.body_text %><%= campaign.use_quick_replies ? '\n\n———\nReply with:\n*Interested* or *Not Interested*' : '' %></pre>
-      <p class="text-xs text-ink/45">
-        Delay <%= Math.round(campaign.delay_min_ms/60000) %>–<%= Math.round(campaign.delay_max_ms/60000) %> min ·
+    <section class="panel p-5 space-y-3">
+      <h2 class="font-display font-semibold dark:text-white">Message sequence</h2>
+      <div class="rounded-xl bg-mist/60 dark:bg-white/5 p-4">
+        <div class="text-xs font-semibold uppercase text-ink/45 dark:text-slate-400 mb-1">Step 1</div>
+        <pre class="text-sm whitespace-pre-wrap dark:text-slate-200"><%= campaign.body_text %></pre>
+      </div>
+      <% (typeof steps !== 'undefined' ? steps : []).forEach(function (s, i) { %>
+        <div class="rounded-xl bg-mist/60 dark:bg-white/5 p-4">
+          <div class="text-xs font-semibold uppercase text-ink/45 dark:text-slate-400 mb-1">Step <%= i + 2 %> · delay <%= Math.round(s.delay_min_ms/60000) %>–<%= Math.round(s.delay_max_ms/60000) %> min</div>
+          <pre class="text-sm whitespace-pre-wrap dark:text-slate-200"><%= s.body_text %></pre>
+        </div>
+      <% }) %>
+      <p class="text-xs text-ink/45 dark:text-slate-500">
+        Base delay <%= Math.round(campaign.delay_min_ms/60000) %>–<%= Math.round(campaign.delay_max_ms/60000) %> min ·
         batch <%= campaign.batch_size %> / <%= Math.round(campaign.batch_window_ms/60000) %> min
-        <% if (campaign.next_send_at) { %> · next send ~ <%= campaign.next_send_at %><% } %>
+        <% if (campaign.next_send_at) { %> · next ~ <%= campaign.next_send_at %><% } %>
       </p>
     </section>
 
     <section class="panel overflow-hidden">
-      <div class="px-4 py-3 border-b border-ink/10 font-semibold">Recipients (latest 200)</div>
-      <table class="w-full text-sm">
+      <div class="px-4 py-3 border-b border-ink/10 dark:border-white/10 font-semibold dark:text-white">Recipients (live)</div>
+      <table class="data-table">
         <thead>
-          <tr class="text-left text-xs uppercase text-ink/45 border-b border-ink/5">
-            <th class="px-4 py-2">Phone</th>
-            <th class="px-4 py-2">Name</th>
-            <th class="px-4 py-2">Status</th>
-            <th class="px-4 py-2">Sent / reply</th>
+          <tr>
+            <th>Phone</th>
+            <th>Name</th>
+            <th>Status</th>
+            <th>Step</th>
+            <th>Sent / reply</th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-ink/5">
+        <tbody>
           <% recipients.forEach(function (r) { %>
             <tr>
-              <td class="px-4 py-2 font-mono"><%= r.phone %></td>
-              <td class="px-4 py-2"><%= r.name || '—' %></td>
-              <td class="px-4 py-2"><span class="chip bg-mist"><%= r.status %></span></td>
-              <td class="px-4 py-2 text-xs text-ink/55">
+              <td class="font-mono text-xs"><%= r.phone %></td>
+              <td><%= r.name || '—' %></td>
+              <td><span class="chip bg-mist dark:bg-white/10"><%= r.status %></span></td>
+              <td class="text-xs"><%= (r.current_step || 0) + 1 %></td>
+              <td class="text-xs text-ink/55 dark:text-slate-400">
                 <%= r.sent_at || '—' %>
-                <% if (r.reply_text) { %><div class="text-ink/70"><%= r.reply_text %></div><% } %>
+                <% if (r.reply_text) { %><div class="text-ink/70 dark:text-slate-300"><%= r.reply_text %></div><% } %>
                 <% if (r.error) { %><div class="text-coral"><%= r.error %></div><% } %>
               </td>
             </tr>
@@ -118,9 +140,16 @@
             const el = document.querySelector('[data-stat="'+k+'"]');
             if (el) el.textContent = data.stats[k] || 0;
           });
+          const total = Number(data.stats.total) || 0;
+          const sent = Number(data.stats.sent) || 0;
+          const pct = total ? Math.round((sent / total) * 100) : 0;
+          const fill = document.getElementById('progressFill');
+          const lbl = document.getElementById('pctLabel');
+          if (fill) fill.style.width = pct + '%';
+          if (lbl) lbl.textContent = pct + '%';
         } catch (_) {}
       }
-      setInterval(refresh, 8000);
+      setInterval(refresh, 5000);
       try {
         const socket = io();
         socket.on('campaign:update', function (payload) {

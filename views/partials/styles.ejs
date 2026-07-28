@@ -3,12 +3,26 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="/css/tailwind.css" />
 <style>
+  :root {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
   .page-bg {
     background:
       radial-gradient(1200px 600px at 10% -10%, rgba(13, 148, 136, 0.18), transparent 55%),
       radial-gradient(900px 500px at 95% 0%, rgba(124, 58, 237, 0.14), transparent 50%),
       radial-gradient(700px 400px at 50% 100%, rgba(245, 158, 11, 0.10), transparent 45%),
       #f8fafc;
+    min-height: 100vh;
+  }
+  html.dark .page-bg {
+    background:
+      radial-gradient(1000px 500px at 8% -5%, rgba(13, 148, 136, 0.22), transparent 55%),
+      radial-gradient(800px 480px at 100% 0%, rgba(124, 58, 237, 0.18), transparent 50%),
+      radial-gradient(600px 360px at 50% 110%, rgba(245, 158, 11, 0.08), transparent 45%),
+      #020617;
   }
   .animate-in { animation: fadeUp 0.45s ease both; }
   @keyframes fadeUp {
@@ -18,7 +32,50 @@
   .stat-card {
     background: linear-gradient(135deg, rgba(255,255,255,0.95), rgba(255,255,255,0.8));
   }
+  html.dark .stat-card {
+    background: linear-gradient(135deg, rgba(30,41,59,0.95), rgba(15,23,42,0.85));
+  }
   .badge-live {
     box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.15);
   }
+  .wa-thread {
+    background-color: #e5ddd5;
+    background-image:
+      radial-gradient(rgba(0,0,0,.04) 1px, transparent 1px);
+    background-size: 18px 18px;
+  }
+  html.dark .wa-thread {
+    background-color: #0b141a;
+    background-image:
+      radial-gradient(rgba(255,255,255,.035) 1px, transparent 1px);
+  }
+  .bubble-in {
+    background: #fff;
+    border-radius: 0 14px 14px 14px;
+    box-shadow: 0 1px 1px rgba(0,0,0,.06);
+  }
+  .bubble-out {
+    background: #dcf8c6;
+    border-radius: 14px 0 14px 14px;
+    margin-left: auto;
+    box-shadow: 0 1px 1px rgba(0,0,0,.06);
+  }
+  html.dark .bubble-in {
+    background: #1f2c34;
+    color: #e2e8f0;
+  }
+  html.dark .bubble-out {
+    background: #005c4b;
+    color: #e2e8f0;
+  }
 </style>
+<script>
+  (function () {
+    try {
+      var t = localStorage.getItem('ui-theme');
+      if (t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        document.documentElement.classList.add('dark');
+      }
+    } catch (_) {}
+  })();
+</script>
