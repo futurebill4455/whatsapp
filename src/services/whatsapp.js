@@ -22,6 +22,7 @@ const { sanitizeFormLink } = require('../utils/leadSummary');
 const { buildFormUrl } = require('../config/baseUrl');
 const antiBan = require('./antiBan');
 const logger = require('../utils/logger');
+const corePipeline = require('./corePipeline');
 const {
   createPresenceMediaHelpers,
   isMediaLikeMessage,
@@ -127,6 +128,7 @@ class WhatsAppService {
     this.ready = false;
     this._initPromise = null;
     this._initAttempt = 0;
+    /** @deprecated global serial queue — replaced by corePipeline.inbound */
     this._msgQueue = Promise.resolve();
     this._msgQueueDepth = 0;
     this._seenIds = new Set();
@@ -134,6 +136,9 @@ class WhatsAppService {
     this._unreadPollTimer = null;
     this._keepAliveTimer = null;
     this._keepAliveFails = 0;
+    this._reconnectBackoffMs = 1500;
+    this._sessionWatchdogTimer = null;
+    this._lastReadyAt = 0;
     this._fallbackAckAt = new Map();
     this._lastInboundAt = 0;
     /** @type {Map<string, { timer: NodeJS.Timeout, message: any, peerKey: string, body: string, chatId: string, inboundAt: number, msgId: string }>} */
@@ -526,25 +531,115 @@ class WhatsAppService {
       clearInterval(this._keepAliveTimer);
       this._keepAliveTimer = null;
     }
+    this.stopSessionWatchdog();
   }
 
   /**
-   * Periodic session health check — prevents silent disconnects / ghost sessions.
+   * Periodic session health check — aggressive silent recovery.
+   * Default 20s (WA_KEEPALIVE_MS). Set 0 to disable.
    */
   startKeepAlive() {
     this.stopKeepAlive();
+    this.stopSessionWatchdog();
     const ms = Number(process.env.WA_KEEPALIVE_MS);
-    const interval = Number.isFinite(ms) && ms >= 0 ? ms : 45000;
+    const interval = Number.isFinite(ms) && ms >= 0 ? ms : 20000;
     if (interval === 0) {
       logger.info('[WhatsApp] Keep-alive disabled (WA_KEEPALIVE_MS=0)');
       return;
     }
-    logger.info(`[WhatsApp] Keep-alive every ${interval}ms`);
+    logger.info(`[WhatsApp] Keep-alive every ${interval}ms (core-priority)`);
     this._keepAliveTimer = setInterval(() => {
       this.keepAliveTick().catch((err) => {
         logger.warn('[WhatsApp] keepAliveTick:', err.message);
       });
     }, interval);
+    // Unref so keep-alive alone cannot keep the process alive during shutdown
+    if (typeof this._keepAliveTimer.unref === 'function') {
+      this._keepAliveTimer.unref();
+    }
+    this.startSessionWatchdog();
+  }
+
+  stopSessionWatchdog() {
+    if (this._sessionWatchdogTimer) {
+      clearInterval(this._sessionWatchdogTimer);
+      this._sessionWatchdogTimer = null;
+    }
+  }
+
+  /**
+   * Secondary watchdog: if we thought we were ready but went silent / not-ready,
+   * silently reinit without throwing.
+   */
+  startSessionWatchdog() {
+    this.stopSessionWatchdog();
+    const ms = Number(process.env.WA_SESSION_WATCHDOG_MS);
+    const interval = Number.isFinite(ms) && ms >= 0 ? ms : 60000;
+    if (interval === 0) return;
+    this._sessionWatchdogTimer = setInterval(() => {
+      this.sessionWatchdogTick().catch(() => {});
+    }, interval);
+    if (typeof this._sessionWatchdogTimer.unref === 'function') {
+      this._sessionWatchdogTimer.unref();
+    }
+  }
+
+  async sessionWatchdogTick() {
+    if (this._reconnecting) return;
+    try {
+      // Stuck initializing / never reached ready
+      if (
+        (this.status === 'initializing' || this.status === 'authenticated') &&
+        !this.ready &&
+        this._lastReadyAt &&
+        Date.now() - this._lastReadyAt > 5 * 60 * 1000
+      ) {
+        // Had ready before — something's stuck
+        await this.silentReconnect('watchdog:stuck-status');
+        return;
+      }
+      if (!this.ready || !this.client) {
+        if (this.status === 'disconnected' || this.status === 'error') {
+          await this.silentReconnect(`watchdog:${this.status}`);
+        }
+        return;
+      }
+      // Ready but no inbound AND state not CONNECTED
+      let state = null;
+      try {
+        state = await this.client.getState();
+      } catch (_) {
+        state = null;
+      }
+      if (state && state !== 'CONNECTED' && state !== 'OPENING' && state !== 'PAIRING') {
+        await this.silentReconnect(`watchdog:state:${state}`);
+      }
+    } catch (err) {
+      logger.debug('[WhatsApp] sessionWatchdog:', err.message);
+    }
+  }
+
+  /**
+   * Silent reconnect with exponential backoff — never throws to callers.
+   */
+  async silentReconnect(reason = 'silent') {
+    if (this._reconnecting) return;
+    const backoff = Math.min(60000, this._reconnectBackoffMs || 1500);
+    logger.warn(
+      `[WhatsApp] Silent reconnect (${reason}) in ${backoff}ms…`
+    );
+    try {
+      await sleep(backoff);
+      await this.safeReinit(reason);
+      this._reconnectBackoffMs = 1500;
+    } catch (err) {
+      this._reconnectBackoffMs = Math.min(60000, backoff * 2);
+      logger.error(
+        `[WhatsApp] Silent reconnect failed (${reason}):`,
+        err.message
+      );
+      // Never throw
+    }
   }
 
   async keepAliveTick() {
@@ -552,19 +647,35 @@ class WhatsAppService {
     try {
       let state = null;
       try {
-        state = await this.client.getState();
+        state = await Promise.race([
+          this.client.getState(),
+          sleep(8000).then(() => 'TIMEOUT'),
+        ]);
       } catch (_) {
         state = null;
       }
 
       if (state === 'CONNECTED') {
         this._keepAliveFails = 0;
+        this._reconnectBackoffMs = 1500;
         // Lightweight CDP pulse so Chromium stays warm
         try {
           if (this.client.pupPage && !this.client.pupPage.isClosed?.()) {
-            await this.client.pupPage.evaluate(() => 1);
+            await Promise.race([
+              this.client.pupPage.evaluate(() => 1),
+              sleep(5000).then(() => {
+                throw new Error('cdp_pulse_timeout');
+              }),
+            ]);
           }
-        } catch (_) {}
+        } catch (err) {
+          this._keepAliveFails += 1;
+          logger.debug('[WhatsApp] CDP pulse:', err.message);
+          if (this._keepAliveFails >= 2) {
+            this._keepAliveFails = 0;
+            await this.silentReconnect('keepalive:cdp');
+          }
+        }
         return;
       }
 
@@ -575,26 +686,26 @@ class WhatsAppService {
         state === 'TIMEOUT' ||
         state === 'UNLAUNCHED'
       ) {
-        logger.warn(`[WhatsApp] Keep-alive state=${state} — safe reinit`);
+        logger.warn(`[WhatsApp] Keep-alive state=${state} — silent reinit`);
         this._keepAliveFails = 0;
-        await this.safeReinit(`keepalive:${state}`);
+        await this.silentReconnect(`keepalive:${state}`);
         return;
       }
 
       // null / OPENING / PAIRING — count soft failures
       this._keepAliveFails += 1;
-      if (this._keepAliveFails >= 3 && this.ready) {
+      if (this._keepAliveFails >= 2 && this.ready) {
         logger.warn(
-          `[WhatsApp] Keep-alive failed ${this._keepAliveFails}x (state=${state}) — reinit`
+          `[WhatsApp] Keep-alive soft-fail ${this._keepAliveFails}x (state=${state}) — reinit`
         );
         this._keepAliveFails = 0;
-        await this.safeReinit('keepalive:soft-fail');
+        await this.silentReconnect('keepalive:soft-fail');
       }
     } catch (err) {
       this._keepAliveFails += 1;
-      if (this._keepAliveFails >= 3) {
+      if (this._keepAliveFails >= 2) {
         this._keepAliveFails = 0;
-        await this.safeReinit('keepalive:exception');
+        await this.silentReconnect('keepalive:exception');
       }
     }
   }
@@ -870,6 +981,9 @@ class WhatsAppService {
     client.on('ready', async () => {
       this.status = 'ready';
       this.ready = true;
+      this._lastReadyAt = Date.now();
+      this._keepAliveFails = 0;
+      this._reconnectBackoffMs = 1500;
       this.clearQr('ready');
       try {
         const wid = client.info?.wid;
@@ -889,7 +1003,7 @@ class WhatsAppService {
         );
       } catch (_) {}
       console.log(
-        '[WhatsApp] Inbound listeners active: message, message_create, message_ciphertext (+ unread poller)'
+        '[WhatsApp] Core pipeline active: priority inbound + dual outbound lanes'
       );
       this.startUnreadPoller();
       this.startKeepAlive();
@@ -991,7 +1105,8 @@ class WhatsAppService {
   }
 
   /**
-   * Shared entry for WA Web message events — keep logging light (LOG_LEVEL=debug for verbose).
+   * Shared entry for WA Web message events — MUST return instantly.
+   * Heavy work is scheduled on the isolated core inbound pipeline.
    */
   onClientMessageEvent(source, message) {
     try {
@@ -1021,11 +1136,17 @@ class WhatsAppService {
       if (source === 'message_ciphertext') return;
 
       if (message.fromMe) {
-        this.notePossibleManualReply(message);
+        // Never block the WA event loop on manual-reply bookkeeping
+        setImmediate(() => {
+          try {
+            this.notePossibleManualReply(message);
+          } catch (_) {}
+        });
         return;
       }
 
       this._lastInboundAt = Date.now();
+      // Fire-and-forget onto high-priority core lane — listener stays non-blocking
       this.enqueueIncomingMessage(message);
     } catch (err) {
       logger.error('[WhatsApp] onClientMessageEvent FATAL:', err.message);
@@ -1488,34 +1609,46 @@ class WhatsAppService {
     this.emit('whatsapp:status', this.getPublicStatus());
   }
 
+  /**
+   * Enqueue onto isolated CORE inbound scheduler (per-chat, parallel across peers).
+   * Never shares a queue with campaigns / DB / admin work.
+   */
   enqueueIncomingMessage(message) {
-    const maxDepth = Number(process.env.WA_MSG_QUEUE_MAX) || 40;
-    if (this._msgQueueDepth >= maxDepth) {
-      logger.warn(
-        `[WhatsApp] Inbound queue full — dropping type=${message?.type || '?'} from=${message?.from || '?'}`
-      );
-      return;
-    }
-    this._msgQueueDepth += 1;
-    this._msgQueue = this._msgQueue
-      .then(async () => {
-        // Yield to event loop so Puppeteer/CDP heartbeats stay responsive
-        const yieldMs = Number(process.env.WA_MSG_YIELD_MS);
-        const wait = Number.isFinite(yieldMs) ? yieldMs : 10;
-        if (wait > 0) await sleep(wait);
-        await this.handleIncomingMessage(message);
-      })
-      .catch((err) => {
-        logger.error('[WhatsApp] Inbound handler error:', err.message);
+    const accepted = corePipeline.inbound.enqueue(
+      message,
+      (msg) => this.handleIncomingMessage(msg),
+      async (err, msg) => {
+        logger.error('[WhatsApp] Core inbound handler error:', err.message);
         if (logger.isDebug()) logger.error(err.stack);
-        const peer = message?.from || message?.author;
+        const peer = msg?.from || msg?.author;
         if (peer) {
-          void this.sendFallbackAck(peer, 'queue_handler');
+          await this.sendFallbackAck(peer, 'queue_handler');
         }
-      })
-      .finally(() => {
-        this._msgQueueDepth = Math.max(0, this._msgQueueDepth - 1);
-      });
+      }
+    );
+    if (!accepted) {
+      const peer = message?.from || message?.author;
+      if (peer) {
+        void this.sendFallbackAck(peer, 'queue_overflow');
+      }
+    }
+    this._msgQueueDepth = corePipeline.inbound.depth;
+  }
+
+  /**
+   * Resolve outbound priority lane.
+   * CORE = auto-chat / bridge / workflow (never waits on bulk)
+   * BULK = campaigns / admin web-chat
+   */
+  resolveSendLane(options = {}) {
+    if (options.lane === 'bulk' || options.priority === 'low') return 'bulk';
+    if (options.lane === 'core' || options.priority === 'high') return 'core';
+    return 'core';
+  }
+
+  /** True while core auto-chat/forward is actively sending — campaigns should yield. */
+  get coreBusy() {
+    return corePipeline.outbound.coreBusy;
   }
 
   normalizeIncomingMessageIds(message) {
@@ -1586,7 +1719,7 @@ class WhatsAppService {
         .replace(/\D/g, '') ||
       String(chatId || 'unknown');
 
-    // Defer sync SQLite + socket emit off the critical path
+    // Defer SQLite + socket + campaign tagging onto BACKGROUND queue (never blocks core)
     const logPhone = peerKey || chatId;
     const logBody = body || `[${message.type}]`;
     const logMeta = {
@@ -1596,7 +1729,7 @@ class WhatsAppService {
       id: msgId,
       phoneResolved: !!phone,
     };
-    setImmediate(() => {
+    corePipeline.background.schedule(() => {
       try {
         MessageLog.add({
           direction: 'in',
@@ -1627,7 +1760,7 @@ class WhatsAppService {
       } catch (err) {
         logger.debug('[WhatsApp] webchat/campaign hook:', err.message);
       }
-    });
+    }, 'inbound-side-effects');
 
     // 1) Exact common access code → always start form flow for THIS chat
     let isAccessCode = false;
@@ -1762,7 +1895,7 @@ class WhatsAppService {
   }
 
   /**
-   * Outbound text with rate caps, unique 1–45s jitter, typing (24/7 — no hours gate).
+   * Outbound text — CORE lane (auto-chat) never waits on BULK (campaigns/admin).
    */
   async sendMessage(phoneOrChat, text, options = {}) {
     if (!this.client || !this.ready) {
@@ -1774,6 +1907,7 @@ class WhatsAppService {
       throw new Error('Empty message');
     }
 
+    const lane = this.resolveSendLane(options);
     const digits = this.formatPhone(
       String(phoneOrChat || '').includes('@')
         ? String(phoneOrChat).replace(/@.+$/, '')
@@ -1796,11 +1930,20 @@ class WhatsAppService {
       }
     }
 
-    if (!options.skipLimiter) {
-      await antiBan.outboundLimiter.waitTurn();
+    // Mark CORE busy early so bulk campaigns yield during typing/pacing
+    if (lane === 'core') corePipeline.outbound.markCoreStart();
+    try {
+    if (options.skipLimiter && lane === 'core') {
+      await sleep(antiBan.randInt(80, 220));
+    } else if (!options.skipLimiter) {
+      await corePipeline.outbound.waitTurn(lane, {
+        minGapMs:
+          lane === 'bulk'
+            ? Number(process.env.WA_BULK_GAP_MS) || 4500
+            : Number(process.env.WA_CORE_GAP_MS) || 800,
+      });
     } else {
-      // Tiny breath so two bubbles in a pair don't collide on the WA socket
-      await sleep(antiBan.randInt(120, 400));
+      await corePipeline.outbound.waitTurn(lane);
     }
 
     if (!chatId) {
@@ -1863,46 +2006,54 @@ class WhatsAppService {
     };
 
     try {
-      if (preferChat || !canReply) {
-        console.log(`[WhatsApp] Sending via chat → ${chatId}`);
-        result = await tryChatSend(chatId);
-      } else {
-        console.log(
-          `[WhatsApp] Sending via msg.reply → ${options.replyTo.from || chatId}`
-        );
-        result = await options.replyTo.reply(rawText);
-      }
+      result = await corePipeline.outbound.withSocket(async () => {
+        try {
+          if (preferChat || !canReply) {
+            console.log(`[WhatsApp] Sending via chat → ${chatId} [${lane}]`);
+            return await tryChatSend(chatId);
+          }
+          console.log(
+            `[WhatsApp] Sending via msg.reply → ${options.replyTo.from || chatId} [${lane}]`
+          );
+          return await options.replyTo.reply(rawText);
+        } catch (err) {
+          console.warn('[WhatsApp] send retry:', err.message);
+          const errors = [err.message];
+          let retryResult = null;
+
+          // Fallback order: reply (works for @lid) → client.sendMessage → getChatById
+          if (canReply) {
+            try {
+              console.log('[WhatsApp] Fallback: msg.reply');
+              retryResult = await options.replyTo.reply(rawText);
+            } catch (e2) {
+              errors.push(e2.message);
+            }
+          }
+
+          if (!retryResult) {
+            const fallbackId =
+              chatId ||
+              options.replyTo?.from ||
+              (digits
+                ? await this.resolveOutboundChatId(digits).catch(() => null)
+                : null) ||
+              phoneOrChat;
+            this.markBotOutbound(fallbackId, 25000);
+            try {
+              console.log(`[WhatsApp] Fallback: chat → ${fallbackId}`);
+              retryResult = await tryChatSend(fallbackId);
+              chatId = fallbackId;
+            } catch (e3) {
+              errors.push(e3.message);
+              throw new Error(`WhatsApp send failed: ${errors.join(' | ')}`);
+            }
+          }
+          return retryResult;
+        }
+      });
     } catch (err) {
-      console.warn('[WhatsApp] send retry:', err.message);
-      const errors = [err.message];
-      result = null;
-
-      // Fallback order: reply (works for @lid) → client.sendMessage → getChatById
-      if (canReply) {
-        try {
-          console.log('[WhatsApp] Fallback: msg.reply');
-          result = await options.replyTo.reply(rawText);
-        } catch (e2) {
-          errors.push(e2.message);
-        }
-      }
-
-      if (!result) {
-        const fallbackId =
-          chatId ||
-          options.replyTo?.from ||
-          (digits ? await this.resolveOutboundChatId(digits).catch(() => null) : null) ||
-          phoneOrChat;
-        this.markBotOutbound(fallbackId, 25000);
-        try {
-          console.log(`[WhatsApp] Fallback: chat → ${fallbackId}`);
-          result = await tryChatSend(fallbackId);
-          chatId = fallbackId;
-        } catch (e3) {
-          errors.push(e3.message);
-          throw new Error(`WhatsApp send failed: ${errors.join(' | ')}`);
-        }
-      }
+      throw err;
     }
 
     // Capture chat id from WA message model when possible
@@ -1920,16 +2071,23 @@ class WhatsAppService {
       25000
     );
 
-    try {
-      MessageLog.add({
-        direction: 'out',
-        phone: digits || chatId,
-        body: rawText,
-        meta: { chatId, id: result?.id?._serialized },
-      });
-    } catch (_) {}
+    const outPhone = digits || chatId;
+    const outId = result?.id?._serialized;
+    corePipeline.background.schedule(() => {
+      try {
+        MessageLog.add({
+          direction: 'out',
+          phone: outPhone,
+          body: rawText,
+          meta: { chatId, id: outId, lane },
+        });
+      } catch (_) {}
+    }, 'out-log');
 
     return result;
+    } finally {
+      if (lane === 'core') corePipeline.outbound.markCoreEnd();
+    }
   }
 
   async sendMedia(phoneOrChat, media, options = {}) {
@@ -1962,14 +2120,26 @@ class WhatsAppService {
 
     if (!payload.data) throw new Error('Media has empty data buffer');
 
+    const lane = this.resolveSendLane(options);
     const digits = this.formatPhone(
       String(phoneOrChat || '').includes('@')
         ? String(phoneOrChat).replace(/@.+$/, '')
         : phoneOrChat
     );
 
-    if (!options.skipLimiter) {
-      await antiBan.outboundLimiter.waitTurn();
+    if (lane === 'core') corePipeline.outbound.markCoreStart();
+    try {
+    if (options.skipLimiter && lane === 'core') {
+      await sleep(antiBan.randInt(60, 180));
+    } else if (!options.skipLimiter) {
+      await corePipeline.outbound.waitTurn(lane, {
+        minGapMs:
+          lane === 'bulk'
+            ? Number(process.env.WA_BULK_GAP_MS) || 4500
+            : Number(process.env.WA_CORE_GAP_MS) || 800,
+      });
+    } else {
+      await corePipeline.outbound.waitTurn(lane);
     }
 
     let chatId =
@@ -2048,7 +2218,9 @@ class WhatsAppService {
         let result;
         let sentWithoutThrow = false;
         try {
-          result = await this.client.sendMessage(chatId, payload, opts);
+          result = await corePipeline.outbound.withSocket(() =>
+            this.client.sendMessage(chatId, payload, opts)
+          );
           sentWithoutThrow = true;
         } catch (err) {
           console.error(
@@ -2082,7 +2254,9 @@ class WhatsAppService {
               );
               const fromFile = MessageMedia.fromFilePath(tmp);
               try {
-                result = await this.client.sendMessage(chatId, fromFile, opts);
+                result = await corePipeline.outbound.withSocket(() =>
+                  this.client.sendMessage(chatId, fromFile, opts)
+                );
                 sentWithoutThrow = true;
               } finally {
                 try {
@@ -2126,12 +2300,13 @@ class WhatsAppService {
               mimetype: payload.mimetype,
               filename: payload.filename,
               attempt: label,
+              lane,
             },
           });
         } catch (_) {}
 
         console.log(
-          `[Media] send OK → ${chatId} via ${label} (once=${!!options.once || sentWithoutThrow})`
+          `[Media] send OK → ${chatId} via ${label} (once=${!!options.once || sentWithoutThrow}) [${lane}]`
         );
         return result;
       } catch (err) {
@@ -2146,6 +2321,9 @@ class WhatsAppService {
     const summary = errors.join(' | ') || 'unknown';
     console.error(`[Media] sendMedia ALL attempts failed → ${chatId}: ${summary}`);
     throw new Error(`sendMedia failed: ${summary}`);
+    } finally {
+      if (lane === 'core') corePipeline.outbound.markCoreEnd();
+    }
   }
 
   async showTypingFor(chatId, durationMs) {

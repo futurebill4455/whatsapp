@@ -66,11 +66,14 @@ class CampaignRunner {
 
   async tick() {
     if (this._tickBusy || this._runningSend) return;
+    // Never compete with auto-chat / media forwarding
+    if (this.wa?.coreBusy) return;
     this._tickBusy = true;
     try {
       if (!this.wa?.ready || !this.wa?.client) return;
       const campaigns = Campaigns.listRunnable();
       for (const camp of campaigns) {
+        if (this.wa?.coreBusy) break;
         await this.processCampaign(camp);
       }
     } finally {
@@ -172,13 +175,15 @@ class CampaignRunner {
         await this.wa.sendMedia(phone, media, {
           caption: body,
           skipPacing: true,
-          skipLimiter: false,
+          lane: 'bulk',
+          priority: 'low',
           once: true,
         });
       } else {
         await this.wa.sendMessage(phone, body, {
           skipPacing: true,
-          skipLimiter: false,
+          lane: 'bulk',
+          priority: 'low',
         });
       }
 

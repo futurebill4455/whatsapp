@@ -102,7 +102,8 @@ router.post('/api/web-chat/send', requireAdmin, async (req, res) => {
     }
     await whatsapp.sendMessage(phone, text, {
       skipPacing: false,
-      skipLimiter: false,
+      lane: 'bulk',
+      priority: 'low',
     });
     // sendMessage already writes MessageLog — emit for live UI only
     whatsapp.emit('webchat:message', {

@@ -263,6 +263,7 @@ class OutboundRateLimiter {
 
 const outboundLimiter = new OutboundRateLimiter();
 
+/** @deprecated Prefer corePipeline.outbound — kept for any legacy callers */
 module.exports = {
   DELAY_MIN_MS,
   DELAY_MAX_MS,
@@ -283,4 +284,5 @@ module.exports = {
   lightlyVaryTextStructure,
   cleanRelayText,
   outboundLimiter,
+  OutboundRateLimiter,
 };
