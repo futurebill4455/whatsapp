@@ -6,12 +6,20 @@
  *  2. System Chrome/Chromium (preferred on 2GB Linux VPS + local Windows/macOS)
  *  3. Sparticuz fallback when no system browser is found
  *
- * Tuned for ~2GB VPS (not free-tier starvation): heap 768MB, multi-process Chrome,
- * faster protocol timeouts than serverless.
+ * Always includes Linux-safe headless flags so Chromium does not crash
+ * under root / Docker / low-/dev/shm environments.
  */
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+
+/** Required for stable Chromium on Linux servers (also fine on Windows/macOS). */
+const REQUIRED_CHROME_ARGS = [
+  '--no-sandbox',
+  '--disable-setuid-sandbox',
+  '--disable-dev-shm-usage',
+  '--disable-accelerated-2d-canvas',
+];
 
 /** True only when we must use the Sparticuz serverless binary */
 function forceSparticuz() {
@@ -47,11 +55,9 @@ function buildArgs(chromiumArgs = [], opts = {}) {
   const base = Array.isArray(chromiumArgs) ? [...chromiumArgs] : [];
 
   const extras = [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
+    ...REQUIRED_CHROME_ARGS,
     '--disable-gpu',
-    '--disable-accelerated-2d-canvas',
+    '--disable-software-rasterizer',
     '--no-first-run',
     '--no-zygote',
     '--disable-extensions',
@@ -61,6 +67,7 @@ function buildArgs(chromiumArgs = [], opts = {}) {
     '--disable-translate',
     '--mute-audio',
     '--no-default-browser-check',
+    '--disable-features=IsolateOrigins,site-per-process,VizDisplayCompositor',
     `--js-flags=--max-old-space-size=${heapMb}`,
     '--window-size=800,600',
   ];
@@ -74,13 +81,17 @@ function buildArgs(chromiumArgs = [], opts = {}) {
     allowSingle = process.env.PUPPETEER_NO_SINGLE_PROCESS !== '1';
   }
 
-  if (allowSingle && !base.includes('--single-process') && !extras.includes('--single-process')) {
+  if (
+    allowSingle &&
+    !base.includes('--single-process') &&
+    !extras.includes('--single-process')
+  ) {
     extras.push('--single-process');
   }
 
   const merged = [];
   const seen = new Set();
-  for (const a of [...base, ...extras]) {
+  for (const a of [...REQUIRED_CHROME_ARGS, ...base, ...extras]) {
     if (!a) continue;
     if (String(a).startsWith('--headless')) continue;
     if (String(a).startsWith('--js-flags') && seen.has('js-flags')) continue;
@@ -89,6 +100,11 @@ function buildArgs(chromiumArgs = [], opts = {}) {
     if (!allowSingle && a === '--single-process') continue;
     seen.add(key);
     merged.push(a);
+  }
+
+  // Hard guarantee — never ship a launch without the Linux crash-prevention flags
+  for (const req of REQUIRED_CHROME_ARGS) {
+    if (!merged.includes(req)) merged.unshift(req);
   }
 
   return merged;
@@ -105,7 +121,13 @@ function findSystemChrome() {
     process.platform === 'win32'
       ? [
           process.env.LOCALAPPDATA &&
-            path.join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+            path.join(
+              process.env.LOCALAPPDATA,
+              'Google',
+              'Chrome',
+              'Application',
+              'chrome.exe'
+            ),
           'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
           'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
         ]
@@ -126,17 +148,20 @@ function findSystemChrome() {
 }
 
 function systemLaunchOptions(executablePath) {
-  const protocolTimeout = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT) || 180000;
+  const protocolTimeout =
+    Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT) || 180000;
   const timeout = Number(process.env.PUPPETEER_TIMEOUT) || 120000;
+  const args = buildArgs([], { mode: 'system' });
   console.log(
     `[Chromium] System Chrome (${isVpsLinux() ? 'Linux VPS' : process.platform}): ${executablePath}` +
       ` heap=${Number(process.env.CHROMIUM_MAX_OLD_SPACE_MB) || 768}MB` +
-      ` single-process=${process.env.PUPPETEER_SINGLE_PROCESS === '1' ? 'yes' : 'no'}`
+      ` single-process=${process.env.PUPPETEER_SINGLE_PROCESS === '1' ? 'yes' : 'no'}` +
+      ` flags=${REQUIRED_CHROME_ARGS.join(',')}`
   );
   return {
     headless: process.env.PUPPETEER_HEADLESS === 'false' ? false : true,
     executablePath,
-    args: buildArgs([], { mode: 'system' }),
+    args,
     defaultViewport: { width: 800, height: 600, deviceScaleFactor: 1 },
     protocolTimeout,
     timeout,
@@ -154,10 +179,14 @@ async function sparticuzLaunchOptions() {
     chromium.setGraphicsMode = false;
   } catch (_) {}
 
-  console.log('[Chromium] Inflating @sparticuz/chromium binary (first boot can take ~30–90s)…');
+  console.log(
+    '[Chromium] Inflating @sparticuz/chromium binary (first boot can take ~30–90s)…'
+  );
   const started = Date.now();
   const executablePath = await chromium.executablePath();
-  console.log(`[Chromium] Ready in ${Date.now() - started}ms → ${executablePath}`);
+  console.log(
+    `[Chromium] Ready in ${Date.now() - started}ms → ${executablePath}`
+  );
 
   if (!executablePath || !fs.existsSync(executablePath)) {
     throw new Error(
@@ -171,12 +200,14 @@ async function sparticuzLaunchOptions() {
   else if (process.env.PUPPETEER_HEADLESS === 'true') headless = true;
   else if (process.env.PUPPETEER_HEADLESS === 'shell') headless = 'shell';
 
-  // Serverless / free-tier needs longer timeouts; still allow env override
-  const protocolTimeout = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT) || 600000;
+  const protocolTimeout =
+    Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT) || 600000;
   const timeout = Number(process.env.PUPPETEER_TIMEOUT) || 300000;
 
   console.log(
-    `[Chromium] Launching Sparticuz headless=${headless} args=${args.length} heap=${Number(process.env.CHROMIUM_MAX_OLD_SPACE_MB) || 768}MB`
+    `[Chromium] Launching Sparticuz headless=${headless} args=${args.length}` +
+      ` heap=${Number(process.env.CHROMIUM_MAX_OLD_SPACE_MB) || 768}MB` +
+      ` flags=${REQUIRED_CHROME_ARGS.join(',')}`
   );
 
   return {
@@ -208,7 +239,6 @@ async function buildPuppeteerLaunchOptions() {
     return sparticuzLaunchOptions();
   }
 
-  // Prefer system Chrome/Chromium on Linux VPS and local desktops
   const system = findSystemChrome();
   if (system) {
     return systemLaunchOptions(system);
@@ -226,4 +256,6 @@ module.exports = {
   isVpsLinux,
   findSystemChrome,
   buildPuppeteerLaunchOptions,
+  REQUIRED_CHROME_ARGS,
+  buildArgs,
 };

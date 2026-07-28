@@ -65,6 +65,21 @@ function isTransientBrowserError(err) {
   );
 }
 
+function isSessionCorruptError(err) {
+  const msg = String(err?.message || err || '');
+  return /SingletonLock|Profile appears to be in use|userDataDir|Failed to launch|EBUSY|EPERM|ENOENT|The browser is already running|corrupt|Authentication timed out|auth_failure|Evaluation failed/i.test(
+    msg
+  );
+}
+
+const CHROME_LOCK_NAMES = new Set([
+  'singletonlock',
+  'singletoncookie',
+  'singletonsocket',
+  'lockfile',
+  'devtoolsactiveport',
+]);
+
 function patchPuppeteerPageHelpers() {
   let Page;
   for (const id of [
@@ -126,16 +141,21 @@ class WhatsAppService {
     this._qrEncodeBusy = false;
     this._pendingQrRaw = null;
     this._lastQrEmitAt = 0;
+    this._lastQrRawPrinted = null;
+    this.qrRaw = null;
     this._presenceMedia = null;
     this._bridgeRelay = null;
+    this._reconnecting = false;
     this.engine = bindEngine(this);
   }
 
   /**
-   * Encode QR without blocking the event loop; keep payload small for fast tab switches.
+   * Encode QR without blocking the event loop; print ASCII in terminal;
+   * keep data-URL for web UI / API fallback.
    */
   queueQrEncode(qrRaw) {
     this._pendingQrRaw = qrRaw;
+    this.qrRaw = qrRaw;
     if (this._qrEncodeBusy) return;
     this._qrEncodeBusy = true;
 
@@ -152,14 +172,57 @@ class WhatsAppService {
             rendererOpts: { quality: 0.8 },
           });
           this.qrDataUrl = dataUrl;
+          this.qrRaw = raw;
           this.status = 'qr';
           this.ready = false;
           this._lastQrEmitAt = Date.now();
           this.emit('whatsapp:qr', { qr: this.qrDataUrl });
           this.emit('whatsapp:status', this.getPublicStatus());
-          console.log('[WhatsApp] QR ready — scan with phone');
+
+          // Print ASCII QR once per unique payload (WA refreshes often)
+          if (raw !== this._lastQrRawPrinted) {
+            this._lastQrRawPrinted = raw;
+            try {
+              const ascii = await qrcode.toString(raw, {
+                type: 'terminal',
+                small: true,
+              });
+              console.log('\n========== SCAN WHATSAPP QR ==========');
+              console.log(ascii);
+              console.log(
+                '======================================'
+              );
+              console.log(
+                '[WhatsApp] QR ready — scan with phone (also on / and GET /api/whatsapp/qr)\n'
+              );
+            } catch (asciiErr) {
+              console.log(
+                '[WhatsApp] QR ready — scan with phone (ASCII print failed:',
+                asciiErr.message,
+                ') — use GET /api/whatsapp/qr'
+              );
+            }
+          } else {
+            console.log('[WhatsApp] QR refreshed (same payload coalesced)');
+          }
         } catch (err) {
           console.error('[WhatsApp] QR encode failed:', err.message);
+          // Still keep raw so API / console fallback can work
+          this.qrRaw = raw;
+          this.status = 'qr';
+          try {
+            const ascii = await qrcode.toString(raw, {
+              type: 'terminal',
+              small: true,
+            });
+            console.log('\n========== SCAN WHATSAPP QR (fallback) ==========');
+            console.log(ascii);
+            console.log('================================================\n');
+          } catch (_) {
+            console.log(
+              '[WhatsApp] Raw QR string available via GET /api/whatsapp/qr'
+            );
+          }
         }
         await new Promise((r) => setImmediate(r));
       }
@@ -207,7 +270,7 @@ class WhatsAppService {
     return {
       status: this.status,
       ready: this.ready,
-      qr: !!this.qrDataUrl,
+      qr: !!this.qrDataUrl || !!this.qrRaw,
       info: this.info,
       lastError: this.lastError,
       platform: process.platform,
@@ -216,8 +279,21 @@ class WhatsAppService {
     };
   }
 
+  /** Instant QR payload for API / UI fallback. */
+  getQrPayload() {
+    return {
+      status: this.status,
+      ready: this.ready,
+      qr: this.qrDataUrl || null,
+      qrRaw: this.qrRaw || null,
+      updatedAt: this._lastQrEmitAt || null,
+    };
+  }
+
   clearQr(reason) {
     this.qrDataUrl = null;
+    this.qrRaw = null;
+    this._lastQrRawPrinted = null;
     if (reason) console.log(`[WhatsApp] QR cleared (${reason})`);
   }
 
@@ -448,22 +524,108 @@ class WhatsAppService {
     this.ready = false;
     if (!client) return;
     try {
+      // Prefer closing puppeteer browser first so lock files release
+      if (client.pupBrowser) {
+        try {
+          await client.pupBrowser.close();
+        } catch (_) {}
+      }
+    } catch (_) {}
+    try {
       await client.destroy();
     } catch (err) {
       console.warn('[WhatsApp] destroy:', err.message);
     }
   }
 
-  clearSessionFiles() {
+  /**
+   * Remove Chromium SingletonLock / DevToolsActivePort files that block relaunch
+   * after a crash or unclean logout.
+   */
+  clearChromeLocks(rootDir) {
+    if (!rootDir || !fs.existsSync(rootDir)) return 0;
+    let removed = 0;
+    const walk = (dir) => {
+      let entries = [];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch (_) {
+        return;
+      }
+      for (const ent of entries) {
+        const full = path.join(dir, ent.name);
+        if (ent.isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (CHROME_LOCK_NAMES.has(String(ent.name).toLowerCase())) {
+          try {
+            fs.unlinkSync(full);
+            removed += 1;
+            console.log(`[WhatsApp] Removed lock: ${full}`);
+          } catch (err) {
+            console.warn(
+              `[WhatsApp] Could not remove lock ${full}:`,
+              err.message
+            );
+          }
+        }
+      }
+    };
+    walk(rootDir);
+    return removed;
+  }
+
+  /**
+   * Gracefully clear LocalAuth + cache. Retries on EBUSY (Windows/OneDrive).
+   * Never throws — session recovery must not crash PM2.
+   */
+  async clearSessionFiles() {
     for (const dir of [AUTH_PATH, CACHE_PATH]) {
       try {
-        if (fs.existsSync(dir)) {
-          fs.rmSync(dir, { recursive: true, force: true });
-          console.log(`[WhatsApp] Cleared ${dir}`);
-        }
+        this.clearChromeLocks(dir);
       } catch (err) {
-        console.warn('[WhatsApp] clearSessionFiles:', err.message);
+        console.warn('[WhatsApp] clearChromeLocks:', err.message);
       }
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          if (fs.existsSync(dir)) {
+            fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+            console.log(`[WhatsApp] Cleared ${dir}`);
+          }
+          break;
+        } catch (err) {
+          console.warn(
+            `[WhatsApp] clearSessionFiles attempt ${attempt}:`,
+            err.message
+          );
+          if (attempt < 3) await sleep(400 * attempt);
+        }
+      }
+    }
+  }
+
+  async safeReinit(reason = 'recovery') {
+    if (this._reconnecting) {
+      console.log(`[WhatsApp] Reinit already in progress (${reason}) — skip`);
+      return;
+    }
+    this._reconnecting = true;
+    try {
+      console.log(`[WhatsApp] Safe reinit (${reason})…`);
+      await this.destroyClient();
+      await sleep(1500);
+      this.clearChromeLocks(AUTH_PATH);
+      await this.init({ force: true });
+    } catch (err) {
+      console.error(
+        `[WhatsApp] Safe reinit failed (${reason}):`,
+        err.message
+      );
+      console.error(err.stack);
+      // Never rethrow — keep process alive
+    } finally {
+      this._reconnecting = false;
     }
   }
 
@@ -480,6 +642,12 @@ class WhatsAppService {
   async _doInit() {
     this._initAttempt += 1;
     await this.destroyClient();
+    // Stale locks from a previous crash freeze QR generation — clear them first
+    try {
+      this.clearChromeLocks(AUTH_PATH);
+      this.clearChromeLocks(CACHE_PATH);
+    } catch (_) {}
+
     this.status = 'initializing';
     this.lastError = null;
     this.clearQr('reinit');
@@ -487,7 +655,17 @@ class WhatsAppService {
 
     patchPuppeteerPageHelpers();
 
-    const launchOpts = await buildPuppeteerLaunchOptions();
+    let launchOpts;
+    try {
+      launchOpts = await buildPuppeteerLaunchOptions();
+    } catch (err) {
+      this.lastError = err.message;
+      this.status = 'error';
+      this.emit('whatsapp:status', this.getPublicStatus());
+      console.error('[WhatsApp] Chromium launch options failed:', err.message);
+      throw err;
+    }
+
     console.log(
       `[WhatsApp] Launching browser via puppeteer-core` +
         ` headless=${launchOpts.headless} executablePath=${launchOpts.executablePath}` +
@@ -511,6 +689,7 @@ class WhatsAppService {
     });
 
     this.client = client;
+    // Bind QR + lifecycle BEFORE initialize so the first QR is never missed
     this._bindClientEvents(client);
 
     try {
@@ -520,18 +699,45 @@ class WhatsAppService {
       this.status = 'error';
       this.emit('whatsapp:status', this.getPublicStatus());
       console.error('[WhatsApp] initialize failed:', err.message);
-      if (isTransientBrowserError(err) && this._initAttempt < 3) {
-        await sleep(4000);
+
+      const corrupt = isSessionCorruptError(err);
+      const transient = isTransientBrowserError(err);
+
+      if ((corrupt || transient) && this._initAttempt < 4) {
+        try {
+          await this.destroyClient();
+        } catch (_) {}
+        if (corrupt || this._initAttempt >= 2) {
+          console.warn(
+            '[WhatsApp] Clearing corrupted/stale session — will generate fresh QR'
+          );
+          await this.clearSessionFiles();
+        } else {
+          this.clearChromeLocks(AUTH_PATH);
+        }
+        await sleep(3000);
         return this.init({ force: true });
       }
-      throw err;
+      // Do not throw unhandled — leave status=error for admin reset
+      console.error(
+        '[WhatsApp] Giving up initialize after retries. Use Admin → Reset session or GET /api/whatsapp/qr after reconnect.'
+      );
+      return null;
     }
   }
 
   _bindClientEvents(client) {
     client.on('qr', (qr) => {
-      // Encode off the critical path; coalesce rapid QR refreshes
-      this.queueQrEncode(qr);
+      console.log('[WhatsApp] qr event received — encoding / printing…');
+      try {
+        this.queueQrEncode(qr);
+      } catch (err) {
+        console.error('[WhatsApp] qr handler error:', err.message);
+      }
+    });
+
+    client.on('loading_screen', (percent, message) => {
+      console.log(`[WhatsApp] loading ${percent}% ${message || ''}`);
     });
 
     client.on('authenticated', () => {
@@ -568,12 +774,27 @@ class WhatsAppService {
       this.startUnreadPoller();
     });
 
-    client.on('auth_failure', (msg) => {
-      this.status = 'auth_failure';
-      this.ready = false;
-      this.lastError = String(msg || 'auth_failure');
-      this.emit('whatsapp:status', this.getPublicStatus());
-      console.error('[WhatsApp] Auth failure:', msg);
+    client.on('auth_failure', async (msg) => {
+      try {
+        this.status = 'auth_failure';
+        this.ready = false;
+        this.lastError = String(msg || 'auth_failure');
+        this.emit('whatsapp:status', this.getPublicStatus());
+        console.error('[WhatsApp] Auth failure:', msg);
+        console.warn(
+          '[WhatsApp] Clearing session after auth_failure — fresh QR next'
+        );
+        await this.destroyClient();
+        await this.clearSessionFiles();
+        await sleep(2000);
+        this._initAttempt = 0;
+        await this.safeReinit('auth_failure');
+      } catch (err) {
+        console.error(
+          '[WhatsApp] auth_failure handler FATAL (swallowed):',
+          err.message
+        );
+      }
     });
 
     client.on('disconnected', async (reason) => {
@@ -588,30 +809,38 @@ class WhatsAppService {
         console.warn('[WhatsApp] Disconnected:', reason);
 
         const reasonStr = String(reason || '').toUpperCase();
-        if (reasonStr.includes('LOGOUT') || reasonStr.includes('CONFLICT')) {
+        const wipeSession =
+          reasonStr.includes('LOGOUT') ||
+          reasonStr.includes('CONFLICT') ||
+          reasonStr.includes('UNPAIRED') ||
+          reasonStr.includes('NAVIGATION');
+
+        try {
+          await this.destroyClient();
+        } catch (err) {
+          console.error('[WhatsApp] destroyClient on disconnect:', err.message);
+        }
+
+        if (wipeSession) {
           try {
-            await this.destroyClient();
-          } catch (err) {
-            console.error('[WhatsApp] destroyClient on disconnect:', err.message);
-          }
-          try {
-            this.clearSessionFiles();
+            await this.clearSessionFiles();
           } catch (err) {
             console.error('[WhatsApp] clearSessionFiles:', err.message);
           }
+        } else {
+          try {
+            this.clearChromeLocks(AUTH_PATH);
+          } catch (_) {}
         }
 
         await sleep(4000);
-        try {
-          console.log('[WhatsApp] Auto-reconnecting after disconnect…');
-          await this.init({ force: true });
-        } catch (err) {
-          console.error('[WhatsApp] Reconnect failed (will retry on next event):', err.message);
-          console.error(err.stack);
-          // Never rethrow — keep PM2 process alive
-        }
+        this._initAttempt = 0;
+        await this.safeReinit(`disconnect:${reason}`);
       } catch (err) {
-        console.error('[WhatsApp] disconnected handler FATAL (swallowed):', err.message);
+        console.error(
+          '[WhatsApp] disconnected handler FATAL (swallowed):',
+          err.message
+        );
         console.error(err.stack);
       }
     });
@@ -1856,7 +2085,7 @@ class WhatsAppService {
 
   async resetSession() {
     await this.destroyClient();
-    this.clearSessionFiles();
+    await this.clearSessionFiles();
     this._initAttempt = 0;
     await this.init({ force: true });
   }
@@ -1866,10 +2095,15 @@ class WhatsAppService {
       if (this.client) await this.client.logout();
     } catch (_) {}
     await this.destroyClient();
-    this.clearSessionFiles();
+    await this.clearSessionFiles();
     this.status = 'disconnected';
     this.ready = false;
+    this.info = null;
+    this.clearQr('logout');
     this.emit('whatsapp:status', this.getPublicStatus());
+    // Immediately start a fresh session so a new QR appears (console + /api/whatsapp/qr)
+    this._initAttempt = 0;
+    await this.safeReinit('logout');
   }
 }
 

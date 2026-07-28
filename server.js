@@ -34,7 +34,11 @@ app.use(routes);
 
 whatsapp.attachSocket(io);
 whatsapp.init().catch((err) => {
-  console.error('[Boot] WhatsApp init failed:', err.message);
+  console.error('[Boot] WhatsApp init failed (process stays up):', err.message);
+  console.error(err.stack);
+  console.error(
+    '[Boot] Try Admin → Reset session, or POST /api/whatsapp/reconnect, then GET /api/whatsapp/qr'
+  );
 });
 
 const PORT = Number(process.env.PORT) || 3000;

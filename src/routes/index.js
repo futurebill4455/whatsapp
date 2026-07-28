@@ -81,6 +81,35 @@ router.get('/api/whatsapp/status', (req, res) => {
   });
 });
 
+/** Instant QR fallback — data URL + raw string for terminal/UI. */
+router.get('/api/whatsapp/qr', (req, res) => {
+  const payload = whatsapp.getQrPayload();
+  if (!payload.qr && !payload.qrRaw) {
+    return res.status(404).json({
+      ok: false,
+      message:
+        'No QR available yet. Status: ' +
+        (payload.status || 'unknown') +
+        '. Wait for initialize or use Admin → Reset session.',
+      ...payload,
+    });
+  }
+  return res.json({ ok: true, ...payload });
+});
+
+router.post('/api/whatsapp/reconnect', async (req, res) => {
+  try {
+    await whatsapp.resetSession();
+    res.json({
+      ok: true,
+      message: 'Session reset — watch console / GET /api/whatsapp/qr for QR',
+      status: whatsapp.getPublicStatus(),
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, message: err.message });
+  }
+});
+
 router.get('/form/:token', (req, res) => {
   const submission = Submissions.getByToken(req.params.token);
   if (!submission) {
