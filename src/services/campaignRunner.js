@@ -144,9 +144,11 @@ class CampaignRunner {
       .replace('T', ' ')
       .slice(0, 19);
     Campaigns.update(camp.id, { next_send_at: nextAt });
-    console.log(
-      `[CampaignRunner] #${camp.id} → ${recipient.phone} done; next in ${Math.round(delayMs / 1000)}s`
-    );
+    if (process.env.LOG_LEVEL === 'debug' || process.env.WA_DEBUG === '1') {
+      console.log(
+        `[CampaignRunner] #${camp.id} → ${recipient.phone}; next in ${Math.round(delayMs / 1000)}s`
+      );
+    }
     this.emitStatus(camp.id);
   }
 
@@ -172,13 +174,11 @@ class CampaignRunner {
         });
       }
       CampaignRecipients.markSent(recipient.id);
-      console.log(
-        `[CampaignRunner] SENT campaign=#${camp.id} recipient=#${recipient.id} phone=${phone}`
-      );
+      console.log(`[CampaignRunner] SENT #${camp.id} → ${phone}`);
     } catch (err) {
       CampaignRecipients.markFailed(recipient.id, err.message);
       console.error(
-        `[CampaignRunner] FAIL campaign=#${camp.id} phone=${phone}:`,
+        `[CampaignRunner] FAIL #${camp.id} → ${phone}:`,
         err.message
       );
     }

@@ -10,6 +10,7 @@ const Settings = (() => {
     return { get: (_k, fb) => fb };
   }
 })();
+const logger = require('../utils/logger');
 
 /** Absolute delay window (ms) — product requirement */
 const DELAY_MIN_MS = 1000;
@@ -91,8 +92,8 @@ function nextVariableDelayMs() {
   }
   _recentDelays.push(delay);
   while (_recentDelays.length > RECENT_DELAY_WINDOW) _recentDelays.shift();
-  console.log(
-    `[AntiBan] human delay = ${delay}ms (${(delay / 1000).toFixed(1)}s) window=${lo}-${hi}ms`
+  logger.debug(
+    `[AntiBan] human delay = ${delay}ms window=${lo}-${hi}ms`
   );
   return delay;
 }

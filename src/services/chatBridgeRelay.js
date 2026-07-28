@@ -59,6 +59,8 @@ class ChatBridgeRelay {
     this._relayedMediaIds = new Set();
     /** In-flight media keys (prevent concurrent double relay) */
     this._inflightMediaIds = new Set();
+    /** @type {Map<string, number>} key → claimedAt ms */
+    this._inflightSince = new Map();
   }
 
   mediaDedupeKey(message, direction = '') {
@@ -94,6 +96,7 @@ class ChatBridgeRelay {
       return false;
     }
     this._inflightMediaIds.add(key);
+    this._inflightSince.set(key, Date.now());
     return true;
   }
 
@@ -110,6 +113,7 @@ class ChatBridgeRelay {
     }
     if (!this._inflightMediaIds.has(key)) {
       this._inflightMediaIds.add(key);
+      this._inflightSince.set(key, Date.now());
     }
     return true;
   }
@@ -117,18 +121,33 @@ class ChatBridgeRelay {
   markMediaRelayed(key) {
     if (!key) return;
     this._inflightMediaIds.delete(key);
+    this._inflightSince.delete(key);
     this._relayedMediaIds.add(key);
-    // Bound set size
+    // Bound set size — avoid large temporary arrays
     if (this._relayedMediaIds.size > 3000) {
-      const drop = [...this._relayedMediaIds].slice(0, 800);
-      drop.forEach((k) => this._relayedMediaIds.delete(k));
+      let i = 0;
+      for (const k of this._relayedMediaIds) {
+        this._relayedMediaIds.delete(k);
+        if (++i >= 800) break;
+      }
     }
-    console.log(`[BridgeRelay] DEDUPE marked relayed: ${key}`);
   }
 
   releaseMediaClaim(key) {
     if (!key) return;
     this._inflightMediaIds.delete(key);
+    this._inflightSince.delete(key);
+  }
+
+  /** Drop stuck in-flight claims older than ttlMs (crash / hung relay). */
+  pruneInflight(ttlMs = 600000) {
+    const cutoff = Date.now() - ttlMs;
+    for (const [key, since] of this._inflightSince) {
+      if (!since || since < cutoff) {
+        this._inflightMediaIds.delete(key);
+        this._inflightSince.delete(key);
+      }
+    }
   }
 
   /**
@@ -211,9 +230,12 @@ class ChatBridgeRelay {
           if (!this.claimMediaRelay(key)) return true;
         }
 
-        await this.enqueueSession(customerSession.id, () =>
+        // Fire-and-forget on session queue — do not block global inbound queue
+        void this.enqueueSession(customerSession.id, () =>
           this.relay(message, customerSession, 'customer_to_desk', body, hasMedia)
-        );
+        ).catch((err) => {
+          console.error('[BridgeRelay] customer enqueue:', err.message);
+        });
         return true;
       }
 
@@ -288,9 +310,11 @@ class ChatBridgeRelay {
         if (!this.claimMediaRelay(key)) return true;
       }
 
-      await this.enqueueSession(deskSession.id, () =>
+      void this.enqueueSession(deskSession.id, () =>
         this.relay(message, deskSession, 'desk_to_customer', body, hasMedia)
-      );
+      ).catch((err) => {
+        console.error('[BridgeRelay] desk enqueue:', err.message);
+      });
       return true;
     } catch (err) {
       console.error('[BridgeRelay] handleInbound FATAL:', err.message);

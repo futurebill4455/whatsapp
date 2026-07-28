@@ -21,6 +21,7 @@ const { buildPuppeteerLaunchOptions, isRenderLike, isVpsLinux } = require('./chr
 const { sanitizeFormLink } = require('../utils/leadSummary');
 const { buildFormUrl } = require('../config/baseUrl');
 const antiBan = require('./antiBan');
+const logger = require('../utils/logger');
 const {
   createPresenceMediaHelpers,
   isMediaLikeMessage,
@@ -869,31 +870,29 @@ class WhatsAppService {
   }
 
   /**
-   * Shared entry for WA Web message events — always logs so terminal proves listener is alive.
+   * Shared entry for WA Web message events — keep logging light (LOG_LEVEL=debug for verbose).
    */
   onClientMessageEvent(source, message) {
     if (!message) return;
     const from = message.from || message.author || '?';
     const msgType = String(message.type || 'unknown').toLowerCase();
-    const bodyPreview = String(message.body || '')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 120);
     const mediaLike = isMediaLikeMessage(message);
-    console.log(
-      `Received message [${source}]: "${bodyPreview || `[${msgType}]`}" from: ${from}` +
-        (message.fromMe ? ' (fromMe)' : '') +
-        (mediaLike
-          ? ` MEDIA hasMedia=${!!message.hasMedia} type=${msgType}`
-          : '')
-    );
 
-    if (mediaLike && !message.fromMe) {
-      try {
-        this.pm.logInboundMediaDetails(message, source);
-      } catch (err) {
-        console.error('[Media] listener log failed:', err.message);
-        console.error(err.stack);
+    if (logger.isDebug()) {
+      const bodyPreview = String(message.body || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 80);
+      logger.debug(
+        `Received [${source}] from=${from} type=${msgType}` +
+          (message.fromMe ? ' fromMe' : '') +
+          (mediaLike ? ' MEDIA' : '') +
+          (bodyPreview ? ` "${bodyPreview}"` : '')
+      );
+      if (mediaLike && !message.fromMe) {
+        try {
+          this.pm.logInboundMediaDetails(message, source);
+        } catch (_) {}
       }
     }
 
@@ -942,8 +941,9 @@ class WhatsAppService {
 
     const at = now;
     for (const key of altKeys) this._manualReplyAt.set(key, at);
-    console.log(
-      `[WhatsApp] Manual/outbound fromMe noted in ${chatKey} — pending smart delays will stay silent if still waiting`
+    this.pruneMemoryMaps();
+    logger.debug(
+      `[WhatsApp] Manual/outbound fromMe noted in ${chatKey}`
     );
 
     // If a smart delay is pending for this chat, cancel it immediately (human took over)
@@ -967,6 +967,7 @@ class WhatsAppService {
       if (!key) continue;
       this._botOutboundIgnoreUntil.set(key, until);
     }
+    if (this._botOutboundIgnoreUntil.size > 400) this.pruneMemoryMaps();
   }
 
   getSmartDelayMs() {
@@ -1228,26 +1229,32 @@ class WhatsAppService {
   startUnreadPoller() {
     this.stopUnreadPoller();
     const intervalMs = Number(process.env.WA_UNREAD_POLL_MS);
-    const ms = Number.isFinite(intervalMs) && intervalMs >= 0 ? intervalMs : 5000;
+    // Default 15s — getChats() every 5s was a major lag source on low-RAM hosts
+    const ms =
+      Number.isFinite(intervalMs) && intervalMs >= 0 ? intervalMs : 15000;
     if (ms === 0) {
-      console.log('[WhatsApp] Unread poller disabled (WA_UNREAD_POLL_MS=0)');
+      logger.info('[WhatsApp] Unread poller disabled (WA_UNREAD_POLL_MS=0)');
       return;
     }
 
-    console.log(`[WhatsApp] Unread poller every ${ms}ms`);
+    logger.info(`[WhatsApp] Unread poller every ${ms}ms`);
     this._unreadPollTimer = setInterval(() => {
       this.pollUnreadChats().catch((err) => {
-        console.warn('[WhatsApp] Unread poll error:', err.message);
+        logger.warn('[WhatsApp] Unread poll error:', err.message);
       });
     }, ms);
-    // Kick once shortly after ready
     setTimeout(() => {
       this.pollUnreadChats().catch(() => {});
-    }, 2500);
+    }, 4000);
   }
 
   async pollUnreadChats() {
     if (!this.ready || !this.client) return;
+    // Skip heavy getChats() when traffic was just handled
+    if (this._lastInboundAt && Date.now() - this._lastInboundAt < 8000) {
+      return;
+    }
+
     let chats;
     try {
       chats = await this.client.getChats();
@@ -1265,13 +1272,14 @@ class WhatsAppService {
 
     if (!candidates.length) return;
 
-    console.log(
+    logger.debug(
       `[WhatsApp] Unread poll: ${candidates.length} chat(s) with unread`
     );
 
-    for (const chat of candidates.slice(0, 12)) {
+    let totalFed = 0;
+    for (const chat of candidates.slice(0, 8)) {
       try {
-        const limit = Math.min(Math.max(Number(chat.unreadCount) || 1, 1), 15);
+        const limit = Math.min(Math.max(Number(chat.unreadCount) || 1, 1), 10);
         const msgs = await chat.fetchMessages({ limit });
         let fed = 0;
         for (const m of msgs) {
@@ -1279,28 +1287,70 @@ class WhatsAppService {
           if (String(m.type || '') === 'ciphertext') continue;
           const mid = m.id?._serialized || m.id?.id;
           if (mid && this._seenIds.has(mid)) continue;
-          console.log(
-            `Received message [unread_poll]: "${String(m.body || '')
-              .replace(/\s+/g, ' ')
-              .trim()
-              .slice(0, 120) || `[${m.type}]`}" from: ${m.from}`
-          );
           this.enqueueIncomingMessage(m);
           fed += 1;
         }
         if (fed > 0) {
+          totalFed += fed;
           this._lastInboundAt = Date.now();
           try {
             await chat.sendSeen();
           } catch (_) {}
         }
       } catch (err) {
-        console.warn(
+        logger.debug(
           `[WhatsApp] Unread poll chat ${chat?.id?._serialized || '?'}:`,
           err.message
         );
       }
     }
+    if (totalFed > 0) {
+      logger.info(`[WhatsApp] Unread poll recovered ${totalFed} message(s)`);
+    }
+    this.pruneMemoryMaps();
+  }
+
+  /**
+   * Bound in-memory Maps/Sets so long-running PM2 processes stay light.
+   */
+  pruneMemoryMaps() {
+    const now = Date.now();
+    const maxEntries = 500;
+    const maxAgeMs = 60 * 60 * 1000; // 1h
+
+    // Drop expired bot-outbound ignore windows
+    for (const [k, until] of this._botOutboundIgnoreUntil) {
+      if (!until || until < now) this._botOutboundIgnoreUntil.delete(k);
+    }
+    // Drop old manual-reply markers
+    for (const [k, at] of this._manualReplyAt) {
+      if (!at || now - at > maxAgeMs) this._manualReplyAt.delete(k);
+    }
+
+    const trimMap = (map) => {
+      if (map.size <= maxEntries) return;
+      const drop = map.size - maxEntries;
+      let i = 0;
+      for (const key of map.keys()) {
+        map.delete(key);
+        if (++i >= drop) break;
+      }
+    };
+    trimMap(this._manualReplyAt);
+    trimMap(this._botOutboundIgnoreUntil);
+
+    if (this._seenIds.size > 2000) {
+      let i = 0;
+      for (const id of this._seenIds) {
+        this._seenIds.delete(id);
+        if (++i >= 500) break;
+      }
+    }
+
+    // Inflight media TTL via bridge helper
+    try {
+      this.bridge?.pruneInflight?.(10 * 60 * 1000);
+    } catch (_) {}
   }
 
   async destroy() {
@@ -1313,21 +1363,23 @@ class WhatsAppService {
   enqueueIncomingMessage(message) {
     const maxDepth = Number(process.env.WA_MSG_QUEUE_MAX) || 40;
     if (this._msgQueueDepth >= maxDepth) {
-      console.warn(
-        `[WhatsApp] Inbound queue full — dropping message type=${message?.type || '?'} media=${isMediaLikeMessage(message)} from=${message?.from || '?'}`
+      logger.warn(
+        `[WhatsApp] Inbound queue full — dropping type=${message?.type || '?'} from=${message?.from || '?'}`
       );
       return;
     }
     this._msgQueueDepth += 1;
     this._msgQueue = this._msgQueue
       .then(async () => {
-        const yieldMs = Number(process.env.WA_MSG_YIELD_MS) || 40;
-        if (yieldMs > 0) await sleep(yieldMs);
+        // Yield to event loop so Puppeteer/CDP heartbeats stay responsive
+        const yieldMs = Number(process.env.WA_MSG_YIELD_MS);
+        const wait = Number.isFinite(yieldMs) ? yieldMs : 10;
+        if (wait > 0) await sleep(wait);
         await this.handleIncomingMessage(message);
       })
       .catch((err) => {
-        console.error('[WhatsApp] Inbound handler error:', err.message);
-        console.error(err.stack);
+        logger.error('[WhatsApp] Inbound handler error:', err.message);
+        if (logger.isDebug()) logger.error(err.stack);
       })
       .finally(() => {
         this._msgQueueDepth = Math.max(0, this._msgQueueDepth - 1);
@@ -1337,20 +1389,21 @@ class WhatsAppService {
   normalizeIncomingMessageIds(message) {
     try {
       if (!message?.id || typeof message.id !== 'object') return;
-      if (message.id._serialized && /^(true|false)_.+@.+_.+/.test(message.id._serialized)) {
+      if (
+        message.id._serialized &&
+        /^(true|false)_.+@.+_.+/.test(message.id._serialized)
+      ) {
         return;
       }
-      const remote =
-        message.id.remote || message.from || message.to || null;
+      const remote = message.id.remote || message.from || message.to || null;
       const mid = message.id.id != null ? String(message.id.id) : null;
       if (!remote || !mid) return;
-      // NEVER set _serialized to bare id.id — wwebjs requires true|false_jid_hash
       const fromMe = message.id.fromMe === true;
       const built = `${fromMe}_${remote}_${mid}`;
       message.id._serialized = built;
-      console.log(`[WhatsApp] Normalized message id → ${built}`);
+      logger.debug(`[WhatsApp] Normalized message id → ${built}`);
     } catch (err) {
-      console.warn('[WhatsApp] normalizeIncomingMessageIds:', err.message);
+      logger.debug('[WhatsApp] normalizeIncomingMessageIds:', err.message);
     }
   }
 
@@ -1364,8 +1417,11 @@ class WhatsAppService {
     if (msgId) {
       this._seenIds.add(msgId);
       if (this._seenIds.size > 2000) {
-        const drop = [...this._seenIds].slice(0, 500);
-        drop.forEach((id) => this._seenIds.delete(id));
+        let i = 0;
+        for (const id of this._seenIds) {
+          this._seenIds.delete(id);
+          if (++i >= 500) break;
+        }
       }
     }
 
@@ -1375,8 +1431,8 @@ class WhatsAppService {
 
     // Wait for ciphertext decrypt — never treat encrypted stubs as empty text
     if (String(message.type || '').toLowerCase() === 'ciphertext') {
-      console.log(
-        `[WhatsApp] Skipping ciphertext stub from=${message.from} — waiting for decrypt`
+      logger.debug(
+        `[WhatsApp] Skipping ciphertext stub from=${message.from}`
       );
       this.watchCiphertextMessage(message);
       return;
@@ -1384,20 +1440,12 @@ class WhatsAppService {
 
     const body = String(message.body || '').trim();
     const mediaLike = isMediaLikeMessage(message);
-    console.log(
-      `[WhatsApp] Processing inbound type=${message.type || '?'} from=${message.from} hasMedia=${!!message.hasMedia} mediaLike=${mediaLike} body="${body.slice(0, 80)}"`
+    logger.debug(
+      `[WhatsApp] Processing type=${message.type || '?'} from=${message.from} media=${mediaLike}`
     );
-    if (mediaLike) {
-      try {
-        this.pm.logInboundMediaDetails(message, 'handleIncoming');
-      } catch (err) {
-        console.error('[Media] handleIncoming log failed:', err.message);
-      }
-    }
 
     const { phone, chatId } = await this.resolveIncomingPeer(message);
 
-    // Stable peer key for DB rows when MSISDN can't be resolved (@lid)
     const peerKey =
       phone ||
       this.formatPhone(chatId) ||
@@ -1406,47 +1454,50 @@ class WhatsAppService {
         .replace(/\D/g, '') ||
       String(chatId || 'unknown');
 
-    try {
-      MessageLog.add({
-        direction: 'in',
-        phone: peerKey || chatId,
-        body: body || `[${message.type}]`,
-        meta: {
-          type: message.type,
+    // Defer sync SQLite + socket emit off the critical path
+    const logPhone = peerKey || chatId;
+    const logBody = body || `[${message.type}]`;
+    const logMeta = {
+      type: message.type,
+      chatId,
+      hasMedia: !!message.hasMedia,
+      id: msgId,
+      phoneResolved: !!phone,
+    };
+    setImmediate(() => {
+      try {
+        MessageLog.add({
+          direction: 'in',
+          phone: logPhone,
+          body: logBody,
+          meta: logMeta,
+        });
+      } catch (_) {}
+      try {
+        const digits =
+          String(phone || peerKey || '').replace(/\D/g, '') || null;
+        this.emit('webchat:message', {
+          phone: digits,
+          direction: 'in',
+          body: logBody,
+          created_at: new Date().toISOString(),
           chatId,
-          hasMedia: !!message.hasMedia,
-          id: msgId,
-          phoneResolved: !!phone,
-        },
-      });
-    } catch (_) {}
-
-    // Live Web Chat dashboard + campaign quick-reply tracking
-    try {
-      const digits =
-        String(phone || peerKey || '').replace(/\D/g, '') || null;
-      this.emit('webchat:message', {
-        phone: digits,
-        direction: 'in',
-        body: body || `[${message.type}]`,
-        created_at: new Date().toISOString(),
-        chatId,
-      });
-      this.emit('whatsapp:inbound', {
-        phone: digits,
-        body: body || '',
-        created_at: new Date().toISOString(),
-      });
-      if (digits && body) {
-        const { getCampaignRunner } = require('./campaignRunner');
-        getCampaignRunner(this).handleInboundReply(digits, body);
+        });
+        this.emit('whatsapp:inbound', {
+          phone: digits,
+          body: body || '',
+          created_at: new Date().toISOString(),
+        });
+        if (digits && body) {
+          const { getCampaignRunner } = require('./campaignRunner');
+          getCampaignRunner(this).handleInboundReply(digits, body);
+        }
+      } catch (err) {
+        logger.debug('[WhatsApp] webchat/campaign hook:', err.message);
       }
-    } catch (err) {
-      console.warn('[WhatsApp] webchat/campaign hook:', err.message);
-    }
+    });
 
     // 1) Exact common access code → always start form flow for THIS chat
-    //    (never blocked by another user's bridge / waiter / whitelist leftovers)
     let isAccessCode = false;
     try {
       const { AccessGate } = require('../models');
@@ -1454,9 +1505,7 @@ class WhatsAppService {
     } catch (_) {}
 
     if (isAccessCode) {
-      console.log(
-        `[WhatsApp] Common access code from peer=${peerKey} chatId=${chatId || '—'} — universal unlock (any number)`
-      );
+      logger.info(`[WhatsApp] Access code unlock peer=${peerKey}`);
       this.scheduleSmartAccessDelay({
         message,
         peerKey,

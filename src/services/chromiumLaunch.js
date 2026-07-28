@@ -51,23 +51,33 @@ function getChromium() {
  */
 function buildArgs(chromiumArgs = [], opts = {}) {
   const mode = opts.mode || 'sparticuz';
-  const heapMb = Number(process.env.CHROMIUM_MAX_OLD_SPACE_MB) || 768;
+  // Default 512MB heap — safer on 1–2GB VPS; override with CHROMIUM_MAX_OLD_SPACE_MB
+  const heapMb = Number(process.env.CHROMIUM_MAX_OLD_SPACE_MB) || 512;
   const base = Array.isArray(chromiumArgs) ? [...chromiumArgs] : [];
 
   const extras = [
     ...REQUIRED_CHROME_ARGS,
     '--disable-gpu',
     '--disable-software-rasterizer',
+    '--renderer-process-limit=1',
+    '--disable-hang-monitor',
+    '--disable-component-update',
+    '--disable-domain-reliability',
+    '--disable-breakpad',
     '--no-first-run',
     '--no-zygote',
     '--disable-extensions',
     '--disable-background-networking',
+    '--disable-background-timer-throttling',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
     '--disable-default-apps',
     '--disable-sync',
     '--disable-translate',
     '--mute-audio',
     '--no-default-browser-check',
-    '--disable-features=IsolateOrigins,site-per-process,VizDisplayCompositor',
+    '--metrics-recording-only',
+    '--disable-features=IsolateOrigins,site-per-process,VizDisplayCompositor,TranslateUI,BlinkGenPropertyTrees,AudioServiceOutOfProcess',
     `--js-flags=--max-old-space-size=${heapMb}`,
     '--window-size=800,600',
   ];
@@ -154,7 +164,7 @@ function systemLaunchOptions(executablePath) {
   const args = buildArgs([], { mode: 'system' });
   console.log(
     `[Chromium] System Chrome (${isVpsLinux() ? 'Linux VPS' : process.platform}): ${executablePath}` +
-      ` heap=${Number(process.env.CHROMIUM_MAX_OLD_SPACE_MB) || 768}MB` +
+      ` heap=${Number(process.env.CHROMIUM_MAX_OLD_SPACE_MB) || 512}MB` +
       ` single-process=${process.env.PUPPETEER_SINGLE_PROCESS === '1' ? 'yes' : 'no'}` +
       ` flags=${REQUIRED_CHROME_ARGS.join(',')}`
   );
@@ -206,7 +216,7 @@ async function sparticuzLaunchOptions() {
 
   console.log(
     `[Chromium] Launching Sparticuz headless=${headless} args=${args.length}` +
-      ` heap=${Number(process.env.CHROMIUM_MAX_OLD_SPACE_MB) || 768}MB` +
+      ` heap=${Number(process.env.CHROMIUM_MAX_OLD_SPACE_MB) || 512}MB` +
       ` flags=${REQUIRED_CHROME_ARGS.join(',')}`
   );
 

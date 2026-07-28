@@ -4,6 +4,7 @@
  */
 const { MessageMedia } = require('whatsapp-web.js');
 const antiBan = require('./antiBan');
+const logger = require('../utils/logger');
 
 function sleep(ms) {
   return antiBan.sleep(ms);
@@ -157,14 +158,13 @@ function createPresenceMediaHelpers(wa) {
         kind
       );
       if (ok?.ok) {
-        console.log(`[Presence] ${kind} → ${id} (${ok.via})`);
+        logger.debug(`[Presence] ${kind} → ${id} (${ok.via})`);
         return true;
       }
-      console.warn(`[Presence] ${kind} failed → ${id}:`, ok?.error || ok?.via || ok);
+      logger.debug(`[Presence] ${kind} failed → ${id}:`, ok?.error || ok?.via || ok);
       return false;
     } catch (err) {
-      console.error(`[Presence] ${kind} evaluate error → ${id}:`, err.message);
-      console.error(err.stack);
+      logger.warn(`[Presence] ${kind} evaluate error → ${id}:`, err.message);
       return false;
     }
   }
@@ -181,10 +181,9 @@ function createPresenceMediaHelpers(wa) {
     const ms = Math.max(1000, Math.min(45000, Number(durationMs) || 2000));
     const id = String(chatId || '').trim();
     const kind = state === 'recording' ? 'recording' : 'typing';
-    console.log(`[Presence] start ${kind} ${ms}ms for ${id || '(none)'}`);
+    logger.debug(`[Presence] start ${kind} ${ms}ms for ${id || '(none)'}`);
 
     if (!id || !wa.client) {
-      console.warn(`[Presence] no chatId/client — sleeping without ${kind}`);
       await sleep(ms);
       return false;
     }
@@ -197,9 +196,7 @@ function createPresenceMediaHelpers(wa) {
       if (wa.client.interface?.openChatWindow) {
         await wa.client.interface.openChatWindow(id);
       }
-    } catch (err) {
-      console.warn('[Presence] openChatWindow:', err.message);
-    }
+    } catch (_) {}
 
     while (Date.now() - started < ms) {
       lastOk = await sendChatState(id, kind);
@@ -210,17 +207,15 @@ function createPresenceMediaHelpers(wa) {
             await chat.sendStateRecording();
             lastOk = true;
             pulses += 1;
-            console.log(`[Presence] Chat.sendStateRecording OK → ${id}`);
           } else if (chat?.sendStateTyping) {
             await chat.sendStateTyping();
             lastOk = true;
             pulses += 1;
-            console.log(`[Presence] Chat.sendStateTyping OK → ${id}`);
           } else {
-            console.warn(`[Presence] chat has no state API → ${id}`);
+            logger.debug(`[Presence] chat has no state API → ${id}`);
           }
         } catch (err) {
-          console.warn(`[Presence] getChatById/${kind} → ${id}:`, err.message);
+          logger.debug(`[Presence] getChatById/${kind} → ${id}:`, err.message);
         }
       } else {
         pulses += 1;
@@ -230,7 +225,7 @@ function createPresenceMediaHelpers(wa) {
     }
 
     lastOk = (await sendChatState(id, kind)) || lastOk;
-    console.log(
+    logger.debug(
       `[Presence] done ${kind} ${ms}ms → ${id} pulses=${pulses} lastOk=${lastOk}`
     );
     return lastOk;
@@ -1242,30 +1237,20 @@ function createPresenceMediaHelpers(wa) {
   }
 
   /**
-   * Verbose inbound media dump for the message listener / relay.
+   * Inbound media dump — debug only (LOG_LEVEL=debug or WA_DEBUG=1).
    */
   function logInboundMediaDetails(message, source = 'listener') {
+    if (!logger.isDebug()) return;
     try {
       const data = message?._data || {};
-      console.log(`[Media] ===== INBOUND MEDIA (${source}) =====`);
-      console.log(`[Media] type=${message?.type}`);
-      console.log(`[Media] hasMedia=${!!message?.hasMedia}`);
-      console.log(`[Media] id=${message?.id?._serialized || message?.id?.id || '?'}`);
-      console.log(`[Media] from=${message?.from}`);
-      console.log(`[Media] mimetype=${data.mimetype || message?.mimetype || '—'}`);
-      console.log(`[Media] filename=${data.filename || message?.filename || '—'}`);
-      console.log(`[Media] directPath=${!!data.directPath}`);
-      console.log(`[Media] mediaKey=${!!data.mediaKey}`);
-      console.log(`[Media] filehash=${!!data.filehash}`);
-      console.log(`[Media] encFilehash=${!!data.encFilehash}`);
-      console.log(`[Media] mediaStage=${data.mediaData?.mediaStage || '—'}`);
-      console.log(`[Media] size=${data.size || data.fileLength || '—'}`);
-      console.log(`[Media] caption/body="${String(message?.body || '').slice(0, 80)}"`);
-      console.log(`[Media] downloadMedia typeof=${typeof message?.downloadMedia}`);
-      console.log(`[Media] mediaLike=${isMediaLikeMessage(message)}`);
-      console.log(`[Media] ===== END INBOUND MEDIA =====`);
+      logger.debug(
+        `[Media] inbound(${source}) type=${message?.type} hasMedia=${!!message?.hasMedia}` +
+          ` id=${message?.id?._serialized || message?.id?.id || '?'}` +
+          ` mime=${data.mimetype || '—'} size=${data.size || data.fileLength || '—'}` +
+          ` directPath=${!!data.directPath}`
+      );
     } catch (err) {
-      console.error('[Media] logInboundMediaDetails error:', err.message);
+      logger.debug('[Media] logInboundMediaDetails error:', err.message);
     }
   }
 

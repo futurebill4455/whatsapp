@@ -49,7 +49,12 @@ class HistoryCleanup {
     const recipResult = CampaignRecipients.purgeOldCompleted(recipDays);
     const mediaRemoved = this.purgeOrphanMedia();
 
-    // Soft-trim Node heap pressure: force GC if exposed
+    // Prune in-memory WhatsApp maps/sets (session state leaks)
+    try {
+      const wa = require('./whatsapp');
+      if (typeof wa.pruneMemoryMaps === 'function') wa.pruneMemoryMaps();
+    } catch (_) {}
+
     try {
       if (global.gc) global.gc();
     } catch (_) {}
