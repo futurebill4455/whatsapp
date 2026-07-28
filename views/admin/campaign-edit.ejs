@@ -13,7 +13,9 @@
     <div>
       <a href="/admin/campaigns" class="text-sm font-semibold text-sea hover:underline">← Campaigns</a>
       <h1 class="font-display text-3xl font-bold mt-2 dark:text-white">New campaign</h1>
-      <p class="text-ink/55 dark:text-slate-400 text-sm mt-1">Queues all <%= contactCount %> contacts. Supports schedule, multi-step follow-ups, and random delays.</p>
+      <p class="text-ink/55 dark:text-slate-400 text-sm mt-1">
+        Message + contacts + speed limits. Queue runs in the background (PM2) even if you close this tab.
+      </p>
     </div>
 
     <% if (typeof flash !== 'undefined' && flash) { %>
@@ -22,93 +24,133 @@
       </div>
     <% } %>
 
-    <form method="post" action="/admin/campaigns" enctype="multipart/form-data" class="panel p-5 md:p-6 space-y-5">
-      <div>
-        <label class="label">Campaign name</label>
-        <input class="field" name="name" required placeholder="March health promo" />
-      </div>
+    <div class="chip <%= waReady ? 'bg-sea/15 text-sea' : 'bg-coral/15 text-coral' %>">
+      WhatsApp <%= waReady ? 'connected — ready to start' : 'offline — connect QR before starting' %>
+    </div>
 
-      <div class="grid sm:grid-cols-2 gap-4">
+    <form method="post" action="/admin/campaigns" enctype="multipart/form-data" class="space-y-5">
+      <!-- 1. Message -->
+      <section class="panel p-5 md:p-6 space-y-4">
+        <h2 class="font-display font-semibold dark:text-white">Message</h2>
+
         <div>
           <label class="label">Content type</label>
           <select class="field" name="content_type" id="contentType">
             <option value="text">Text only</option>
-            <option value="image_text">Image + text</option>
+            <option value="image_text">Text with Image</option>
           </select>
         </div>
+
         <div>
-          <label class="label">Schedule start (optional)</label>
-          <input class="field" type="datetime-local" name="schedule_at" />
+          <label class="label">Message text</label>
+          <textarea
+            class="field min-h-[160px]"
+            name="body_text"
+            required
+            placeholder="Type your WhatsApp message here…"
+          ></textarea>
         </div>
-      </div>
 
-      <div>
-        <label class="label">Message text (step 1)</label>
-        <textarea class="field min-h-[120px]" name="body_text" required placeholder="Hi! We have a special insurance offer…"></textarea>
-      </div>
-
-      <div id="imageWrap" class="hidden">
-        <label class="label">Image</label>
-        <input class="field" type="file" name="image" accept="image/*" />
-      </div>
-
-      <label class="flex items-center gap-2 text-sm dark:text-slate-300">
-        <input type="checkbox" name="use_quick_replies" value="1" checked class="accent-sea" />
-        Append Interested / Not Interested prompts on the final step
-      </label>
-
-      <div>
-        <div class="flex items-center justify-between mb-2">
-          <h3 class="font-display font-semibold dark:text-white">Follow-up steps</h3>
-          <button type="button" id="addStep" class="btn-ghost text-xs">+ Add step</button>
+        <div id="imageWrap" class="hidden">
+          <label class="label">Image upload</label>
+          <input class="field" type="file" name="image" accept="image/*" />
+          <p class="text-xs text-ink/45 dark:text-slate-500 mt-1.5">Sent as image with your text as caption.</p>
         </div>
-        <div id="extraSteps" class="space-y-3"></div>
-        <p class="text-xs text-ink/45 dark:text-slate-500 mt-2">Each step sends after the previous with its own random delay window.</p>
-      </div>
 
-      <div class="grid sm:grid-cols-2 gap-4">
+        <label class="flex items-center gap-2 text-sm dark:text-slate-300">
+          <input type="checkbox" name="use_quick_replies" value="1" checked class="accent-sea" />
+          Append Interested / Not Interested reply prompts
+        </label>
+      </section>
+
+      <!-- 2. Speed & rate limits -->
+      <section class="panel p-5 md:p-6 space-y-4">
+        <h2 class="font-display font-semibold dark:text-white">Speed &amp; rate limits</h2>
+        <p class="text-sm text-ink/55 dark:text-slate-400">
+          Delays between messages are <strong class="dark:text-slate-200">randomized</strong> from your per-minute rate — never a fixed clock tick.
+        </p>
+        <div class="grid sm:grid-cols-2 gap-4">
+          <div>
+            <label class="label">Messages per minute</label>
+            <input
+              class="field"
+              type="number"
+              name="msgs_per_minute"
+              value="5"
+              min="1"
+              max="30"
+              step="1"
+              required
+            />
+            <p class="text-xs text-ink/45 dark:text-slate-500 mt-1.5">e.g. 5 or 10 — sets the random pacing window</p>
+          </div>
+          <div>
+            <label class="label">Hourly limit</label>
+            <input
+              class="field"
+              type="number"
+              name="hourly_limit"
+              value="40"
+              min="1"
+              max="500"
+              step="1"
+              required
+            />
+            <p class="text-xs text-ink/45 dark:text-slate-500 mt-1.5">Max sends in any rolling 60 minutes</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. Contacts -->
+      <section class="panel p-5 md:p-6 space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h2 class="font-display font-semibold dark:text-white">Contacts</h2>
+          <a href="/admin/campaigns/contacts/export.csv" class="btn-ghost text-xs">Export CSV</a>
+        </div>
+        <p class="text-sm text-ink/55 dark:text-slate-400">
+          Upload Excel/CSV and/or paste numbers below. Saved contacts (<%= contactCount %>) are included automatically if you leave paste empty.
+        </p>
+
         <div>
-          <label class="label">Min delay (minutes)</label>
-          <input class="field" type="number" name="delay_min_minutes" value="1" min="0.1" step="0.1" />
+          <label class="label">Excel / CSV upload</label>
+          <input class="field" type="file" name="contacts_file" accept=".csv,.xlsx,.xls,text/csv" />
+          <p class="text-xs text-ink/45 dark:text-slate-500 mt-1.5">
+            Columns: <code class="bg-mist dark:bg-white/10 px-1 rounded">name</code>,
+            <code class="bg-mist dark:bg-white/10 px-1 rounded">phone</code>
+          </p>
         </div>
-        <div>
-          <label class="label">Max delay (minutes)</label>
-          <input class="field" type="number" name="delay_max_minutes" value="5" min="0.1" step="0.1" />
-        </div>
-        <div>
-          <label class="label">Batch size</label>
-          <input class="field" type="number" name="batch_size" value="10" min="1" />
-        </div>
-        <div>
-          <label class="label">Batch window (minutes)</label>
-          <input class="field" type="number" name="batch_window_minutes" value="5" min="1" />
-        </div>
-      </div>
 
-      <div class="flex gap-2">
-        <button type="submit" class="btn-primary" <%= contactCount ? '' : 'disabled' %>>Create campaign</button>
-        <a href="/admin/campaigns/contacts" class="btn-ghost">Manage contacts</a>
+        <div>
+          <label class="label">Paste phone numbers</label>
+          <textarea
+            class="field min-h-[180px] font-mono text-sm"
+            name="paste_phones"
+            placeholder="9198XXXXXXXX&#10;Ravi,9198XXXXXXXX&#10;98765XXXXX"
+          ></textarea>
+          <p class="text-xs text-ink/45 dark:text-slate-500 mt-1.5">One phone per line, or Name,phone</p>
+        </div>
+      </section>
+
+      <div class="flex flex-wrap gap-2">
+        <button
+          type="submit"
+          name="action"
+          value="start"
+          class="btn-primary"
+          <%= waReady ? '' : 'disabled' %>
+        >
+          Start Campaign
+        </button>
+        <button type="submit" name="action" value="draft" class="btn-ghost">
+          Save as draft
+        </button>
+        <a href="/admin/campaigns/contacts" class="btn-ghost">Contact library</a>
       </div>
     </form>
   </main>
   <script>
     document.getElementById('contentType').addEventListener('change', function () {
       document.getElementById('imageWrap').classList.toggle('hidden', this.value !== 'image_text');
-    });
-    var wrap = document.getElementById('extraSteps');
-    var n = 0;
-    document.getElementById('addStep').addEventListener('click', function () {
-      n += 1;
-      var box = document.createElement('div');
-      box.className = 'rounded-xl border border-ink/10 dark:border-white/10 p-3 space-y-2 bg-mist/40 dark:bg-white/5';
-      box.innerHTML =
-        '<div class="text-xs font-semibold uppercase text-ink/45 dark:text-slate-400">Follow-up step ' + n + '</div>' +
-        '<textarea class="field min-h-[80px]" name="step_body" placeholder="Follow-up message…" required></textarea>' +
-        '<div class="grid grid-cols-2 gap-2">' +
-        '<input class="field" type="number" name="step_delay_min" value="1" step="0.1" placeholder="Min min" />' +
-        '<input class="field" type="number" name="step_delay_max" value="5" step="0.1" placeholder="Max min" />' +
-        '</div>';
-      wrap.appendChild(box);
     });
   </script>
 </body>

@@ -1,6 +1,6 @@
 /**
  * Background campaign queue runner — PM2-persistent, DB-backed.
- * Supports schedule_at, multi-step sequences, random delays + batch caps.
+ * Smart randomized delays derived from msgs_per_minute (never fixed intervals).
  */
 const fs = require('fs');
 const { MessageMedia } = require('whatsapp-web.js');
@@ -27,6 +27,58 @@ function randomBetween(min, max) {
   return a + Math.floor(Math.random() * (b - a + 1));
 }
 
+/**
+ * Convert admin "messages per minute" into a humanized random delay window.
+ * Never uses a fixed interval — each send rolls a fresh random gap.
+ */
+function pacingFromMsgsPerMinute(msgsPerMinute) {
+  const rate = Math.max(1, Math.min(30, Number(msgsPerMinute) || 5));
+  const avgMs = Math.round(60_000 / rate);
+  const delay_min_ms = Math.max(2_000, Math.floor(avgMs * 0.4));
+  const delay_max_ms = Math.max(delay_min_ms + 500, Math.ceil(avgMs * 1.65));
+  return { msgs_per_minute: rate, delay_min_ms, delay_max_ms, avgMs };
+}
+
+function hourlyCapFromLimit(hourlyLimit) {
+  const hourly = Math.max(1, Math.min(500, Number(hourlyLimit) || 40));
+  return {
+    hourly_limit: hourly,
+    batch_size: hourly,
+    batch_window_ms: 60 * 60 * 1000,
+  };
+}
+
+/**
+ * Fresh random delay for the next send — mimics human pacing.
+ * Prefer msgs_per_minute; fall back to stored min/max window.
+ */
+function nextRandomDelayMs(camp) {
+  const mpm = Number(camp.msgs_per_minute);
+  if (Number.isFinite(mpm) && mpm > 0) {
+    const { delay_min_ms, delay_max_ms, avgMs } = pacingFromMsgsPerMinute(mpm);
+    // Weighted mix so gaps cluster near average but still vary
+    const roll = Math.random();
+    let delay;
+    if (roll < 0.2) {
+      delay = randomBetween(delay_min_ms, Math.floor(avgMs * 0.75));
+    } else if (roll < 0.4) {
+      delay = randomBetween(Math.ceil(avgMs * 1.15), delay_max_ms);
+    } else {
+      delay = randomBetween(
+        Math.floor(avgMs * 0.7),
+        Math.ceil(avgMs * 1.3)
+      );
+    }
+    // Tiny extra jitter so two campaigns never sync
+    delay += randomBetween(0, 900);
+    return Math.max(delay_min_ms, Math.min(delay_max_ms + 900, delay));
+  }
+  return randomBetween(
+    camp.delay_min_ms || 60_000,
+    camp.delay_max_ms || 300_000
+  );
+}
+
 function buildBody(text, useQuickReplies, isLastStep) {
   let out = String(text || '').trim();
   if (useQuickReplies && isLastStep) {
@@ -45,16 +97,17 @@ class CampaignRunner {
 
   start() {
     if (this._timer) return;
-    const intervalMs = Number(Settings.get('campaign_tick_ms')) || 5000;
-    console.log(`[CampaignRunner] started (tick=${intervalMs}ms)`);
+    const intervalMs = Number(Settings.get('campaign_tick_ms')) || 3000;
+    console.log(`[CampaignRunner] started (tick=${intervalMs}ms, PM2-persistent)`);
     this._timer = setInterval(() => {
       this.tick().catch((err) => {
         console.error('[CampaignRunner] tick error:', err.message);
       });
     }, intervalMs);
+    if (typeof this._timer.unref === 'function') this._timer.unref();
     setTimeout(() => {
       this.tick().catch(() => {});
-    }, 2500);
+    }, 1500);
   }
 
   stop() {
@@ -83,6 +136,7 @@ class CampaignRunner {
 
   resolveSteps(camp) {
     const extra = CampaignSteps.listByCampaign(camp.id);
+    const pacing = pacingFromMsgsPerMinute(camp.msgs_per_minute);
     // Step 0 = campaign primary message; extras are follow-ups
     const steps = [
       {
@@ -90,8 +144,8 @@ class CampaignRunner {
         body_text: camp.body_text,
         content_type: camp.content_type || 'text',
         image_path: camp.image_path,
-        delay_min_ms: camp.delay_min_ms,
-        delay_max_ms: camp.delay_max_ms,
+        delay_min_ms: camp.delay_min_ms || pacing.delay_min_ms,
+        delay_max_ms: camp.delay_max_ms || pacing.delay_max_ms,
       },
       ...extra.map((s, i) => ({
         ...s,
@@ -118,19 +172,31 @@ class CampaignRunner {
       if (Number.isFinite(nextLocal) && Date.now() < nextLocal) return;
     }
 
-    const batchSize = Math.max(1, Number(camp.batch_size) || 10);
-    const batchWindow = Math.max(60_000, Number(camp.batch_window_ms) || 300_000);
+    // Hourly cap (or legacy batch window)
+    const hourly =
+      Number(camp.hourly_limit) > 0
+        ? Number(camp.hourly_limit)
+        : Math.max(1, Number(camp.batch_size) || 40);
+    const windowMs =
+      Number(camp.hourly_limit) > 0
+        ? 60 * 60 * 1000
+        : Math.max(60_000, Number(camp.batch_window_ms) || 3_600_000);
+
     const sentInWindow = CampaignRecipients.countSentInWindow(
       camp.id,
-      batchWindow
+      windowMs
     );
-    if (sentInWindow >= batchSize) {
-      const waitMs = randomBetween(15_000, 60_000);
+    if (sentInWindow >= hourly) {
+      // Soft pause with random cool-down — not a rigid hour boundary
+      const waitMs = randomBetween(90_000, 280_000);
       const nextAt = new Date(Date.now() + waitMs)
         .toISOString()
         .replace('T', ' ')
         .slice(0, 19);
       Campaigns.update(camp.id, { next_send_at: nextAt });
+      console.log(
+        `[CampaignRunner] #${camp.id} hourly cap ${sentInWindow}/${hourly} — cool-down ${Math.round(waitMs / 1000)}s`
+      );
       return;
     }
 
@@ -144,18 +210,16 @@ class CampaignRunner {
       this._runningSend = false;
     }
 
-    const steps = this.resolveSteps(camp);
-    const stepIdx = Math.max(0, Number(recipient.current_step) || 0);
-    const step = steps[stepIdx] || steps[0];
-    const delayMs = randomBetween(
-      step?.delay_min_ms || camp.delay_min_ms || 60_000,
-      step?.delay_max_ms || camp.delay_max_ms || 300_000
-    );
+    // Crucial: fresh randomized delay from msgs/min — never fixed spacing
+    const delayMs = nextRandomDelayMs(camp);
     const nextAt = new Date(Date.now() + delayMs)
       .toISOString()
       .replace('T', ' ')
       .slice(0, 19);
     Campaigns.update(camp.id, { next_send_at: nextAt });
+    console.log(
+      `[CampaignRunner] #${camp.id} next delay ${Math.round(delayMs / 1000)}s (random, ~${camp.msgs_per_minute || '?'} msg/min)`
+    );
     this.emitStatus(camp.id);
   }
 
@@ -262,4 +326,7 @@ module.exports = {
   CampaignRunner,
   getCampaignRunner,
   QUICK_REPLY_FOOTER,
+  pacingFromMsgsPerMinute,
+  hourlyCapFromLimit,
+  nextRandomDelayMs,
 };

@@ -184,6 +184,8 @@ db.exec(`
     delay_max_ms INTEGER NOT NULL DEFAULT 300000,
     batch_size INTEGER NOT NULL DEFAULT 10,
     batch_window_ms INTEGER NOT NULL DEFAULT 300000,
+    msgs_per_minute INTEGER NOT NULL DEFAULT 5,
+    hourly_limit INTEGER NOT NULL DEFAULT 40,
     next_send_at TEXT,
     schedule_at TEXT,
     created_at TEXT DEFAULT (datetime('now')),
@@ -234,6 +236,8 @@ db.exec(`
 const migrations = [
   'ALTER TABLE campaigns ADD COLUMN schedule_at TEXT',
   'ALTER TABLE campaign_recipients ADD COLUMN current_step INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE campaigns ADD COLUMN msgs_per_minute INTEGER NOT NULL DEFAULT 5',
+  'ALTER TABLE campaigns ADD COLUMN hourly_limit INTEGER NOT NULL DEFAULT 40',
 ];
 for (const sql of migrations) {
   try {

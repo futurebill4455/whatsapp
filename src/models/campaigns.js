@@ -191,8 +191,9 @@ const Campaigns = {
           name, status, content_type, body_text,
           image_path, image_mimetype, image_filename,
           use_quick_replies, delay_min_ms, delay_max_ms,
-          batch_size, batch_window_ms, schedule_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          batch_size, batch_window_ms, schedule_at,
+          msgs_per_minute, hourly_limit
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.name,
@@ -207,7 +208,9 @@ const Campaigns = {
         data.delay_max_ms != null ? data.delay_max_ms : 300000,
         data.batch_size != null ? data.batch_size : 10,
         data.batch_window_ms != null ? data.batch_window_ms : 300000,
-        data.schedule_at || null
+        data.schedule_at || null,
+        data.msgs_per_minute != null ? data.msgs_per_minute : 5,
+        data.hourly_limit != null ? data.hourly_limit : 40
       );
     return this.get(result.lastInsertRowid);
   },
@@ -230,6 +233,8 @@ const Campaigns = {
         delay_max_ms = COALESCE(?, delay_max_ms),
         batch_size = COALESCE(?, batch_size),
         batch_window_ms = COALESCE(?, batch_window_ms),
+        msgs_per_minute = COALESCE(?, msgs_per_minute),
+        hourly_limit = COALESCE(?, hourly_limit),
         next_send_at = CASE WHEN ? THEN ? ELSE next_send_at END,
         schedule_at = CASE WHEN ? THEN ? ELSE schedule_at END,
         started_at = COALESCE(?, started_at),
@@ -249,6 +254,8 @@ const Campaigns = {
       data.delay_max_ms ?? null,
       data.batch_size ?? null,
       data.batch_window_ms ?? null,
+      data.msgs_per_minute ?? null,
+      data.hourly_limit ?? null,
       has('next_send_at') ? 1 : 0,
       has('next_send_at') ? data.next_send_at : null,
       has('schedule_at') ? 1 : 0,

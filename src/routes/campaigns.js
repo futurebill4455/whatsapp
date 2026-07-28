@@ -229,6 +229,7 @@ router.get('/admin/campaigns/new', requireAdmin, (req, res) => {
       title: 'New Campaign',
       campaign: null,
       contactCount: CampaignContacts.count(),
+      waReady: !!(whatsapp.ready && whatsapp.client),
     })
   );
 });
@@ -260,7 +261,10 @@ router.post(
   '/admin/campaigns',
   requireAdmin,
   (req, res, next) => {
-    imageUpload.single('image')(req, res, (err) => {
+    upload.fields([
+      { name: 'image', maxCount: 1 },
+      { name: 'contacts_file', maxCount: 1 },
+    ])(req, res, (err) => {
       if (err) {
         req.session.flash = { type: 'error', message: err.message };
         return res.redirect('/admin/campaigns/new');
@@ -270,7 +274,6 @@ router.post(
   },
   (req, res) => {
     try {
-      const name = String(req.body.name || '').trim() || 'Untitled campaign';
       const body_text = String(req.body.body_text || '').trim();
       if (!body_text) {
         req.session.flash = { type: 'error', message: 'Message text required.' };
@@ -279,80 +282,153 @@ router.post(
 
       const content_type =
         req.body.content_type === 'image_text' ? 'image_text' : 'text';
-      if (content_type === 'image_text' && !req.file) {
+      const imageFile = req.files?.image?.[0] || null;
+      if (content_type === 'image_text' && !imageFile) {
         req.session.flash = {
           type: 'error',
-          message: 'Image required for Image + Text campaigns.',
+          message: 'Image required for Text with Image campaigns.',
         };
         return res.redirect('/admin/campaigns/new');
       }
 
-      const delayMinMin = Number(req.body.delay_min_minutes);
-      const delayMaxMin = Number(req.body.delay_max_minutes);
-      const delay_min_ms = Math.round(
-        (Number.isFinite(delayMinMin) ? delayMinMin : 1) * 60 * 1000
-      );
-      const delay_max_ms = Math.round(
-        (Number.isFinite(delayMaxMin) ? delayMaxMin : 5) * 60 * 1000
-      );
-      const batch_size = Number(req.body.batch_size) || 10;
-      const batch_window_min = Number(req.body.batch_window_minutes) || 5;
+      const {
+        pacingFromMsgsPerMinute,
+        hourlyCapFromLimit,
+      } = require('../services/campaignRunner');
 
-      let schedule_at = null;
-      const rawSched = String(req.body.schedule_at || '').trim();
-      if (rawSched) {
-        const d = new Date(rawSched);
-        if (!Number.isNaN(d.getTime())) {
-          schedule_at = d.toISOString().replace('T', ' ').slice(0, 19);
+      const mpm = Number(req.body.msgs_per_minute);
+      const hourly = Number(req.body.hourly_limit);
+      const pacing = pacingFromMsgsPerMinute(mpm);
+      const cap = hourlyCapFromLimit(hourly);
+
+      // Persist image from memory upload
+      let image_path = null;
+      let image_mimetype = null;
+      let image_filename = null;
+      if (imageFile?.buffer) {
+        if (!/^image\//i.test(String(imageFile.mimetype || ''))) {
+          req.session.flash = {
+            type: 'error',
+            message: 'Only image uploads allowed for Text with Image.',
+          };
+          return res.redirect('/admin/campaigns/new');
         }
+        const dir = ensureMediaDir();
+        const ext =
+          path.extname(imageFile.originalname || '') ||
+          (String(imageFile.mimetype || '').includes('png') ? '.png' : '.jpg');
+        image_filename = imageFile.originalname || `image${ext}`;
+        image_mimetype = imageFile.mimetype || 'image/jpeg';
+        image_path = path.join(dir, `camp-${Date.now()}${ext}`);
+        fs.writeFileSync(image_path, imageFile.buffer);
       }
 
+      // Import contacts from file + paste (upsert into library)
+      let importRows = [];
+      const contactsFile = req.files?.contacts_file?.[0] || null;
+      if (contactsFile?.buffer) {
+        const name = String(contactsFile.originalname || '').toLowerCase();
+        if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
+          importRows = importRows.concat(parseExcelBuffer(contactsFile.buffer));
+        } else {
+          importRows = importRows.concat(parseCsvBuffer(contactsFile.buffer));
+        }
+      }
+      const paste = String(req.body.paste_phones || '').trim();
+      if (paste) {
+        importRows = importRows.concat(parsePastedText(paste));
+      }
+
+      let importStats = { inserted: 0, updated: 0, skipped: 0 };
+      if (importRows.length) {
+        importStats = CampaignContacts.upsertMany(importRows, 'campaign');
+      }
+
+      // Recipients: if paste/file provided, use those phones; else all library contacts
+      let recipientSource;
+      if (importRows.length) {
+        const seen = new Set();
+        recipientSource = [];
+        for (const row of importRows) {
+          const phone = String(row.phone || '').replace(/\D/g, '');
+          if (!phone || phone.length < 8 || seen.has(phone)) continue;
+          seen.add(phone);
+          recipientSource.push({
+            id: CampaignContacts.findByPhone(phone)?.id || null,
+            name: row.name || null,
+            phone,
+          });
+        }
+      } else {
+        recipientSource = CampaignContacts.listAllPhones();
+      }
+
+      if (!recipientSource.length) {
+        req.session.flash = {
+          type: 'error',
+          message:
+            'No contacts found. Upload Excel/CSV, paste numbers, or add contacts first.',
+        };
+        return res.redirect('/admin/campaigns/new');
+      }
+
+      const wantStart = String(req.body.action || '') === 'start';
+      if (wantStart && !whatsapp.ready) {
+        req.session.flash = {
+          type: 'error',
+          message: 'WhatsApp must be connected before starting a campaign.',
+        };
+        return res.redirect('/admin/campaigns/new');
+      }
+
+      const stamp = new Date()
+        .toISOString()
+        .replace('T', ' ')
+        .slice(0, 16);
+      const autoName = `Campaign ${stamp}`;
+
       const camp = Campaigns.create({
-        name,
+        name: autoName,
         body_text,
         content_type,
-        image_path: req.file ? req.file.path : null,
-        image_mimetype: req.file ? req.file.mimetype : null,
-        image_filename: req.file ? req.file.originalname : null,
+        image_path,
+        image_mimetype,
+        image_filename,
         use_quick_replies: req.body.use_quick_replies === '1',
-        delay_min_ms: Math.min(delay_min_ms, delay_max_ms),
-        delay_max_ms: Math.max(delay_min_ms, delay_max_ms),
-        batch_size,
-        batch_window_ms: Math.round(batch_window_min * 60 * 1000),
-        schedule_at,
+        delay_min_ms: pacing.delay_min_ms,
+        delay_max_ms: pacing.delay_max_ms,
+        msgs_per_minute: pacing.msgs_per_minute,
+        hourly_limit: cap.hourly_limit,
+        batch_size: cap.batch_size,
+        batch_window_ms: cap.batch_window_ms,
         status: 'draft',
       });
 
-      const stepBodies = [].concat(req.body.step_body || []).filter((t) => String(t || '').trim());
-      const stepDelayMins = [].concat(req.body.step_delay_min || []);
-      const stepDelayMaxs = [].concat(req.body.step_delay_max || []);
-      if (stepBodies.length) {
-        CampaignSteps.replaceAll(
-          camp.id,
-          stepBodies.map((text, i) => {
-            const dMin = Number(stepDelayMins[i]);
-            const dMax = Number(stepDelayMaxs[i]);
-            const minMs = Math.round((Number.isFinite(dMin) ? dMin : 1) * 60 * 1000);
-            const maxMs = Math.round((Number.isFinite(dMax) ? dMax : 5) * 60 * 1000);
-            return {
-              step_order: i + 1,
-              body_text: String(text).trim(),
-              content_type: 'text',
-              delay_min_ms: Math.min(minMs, maxMs),
-              delay_max_ms: Math.max(minMs, maxMs),
-            };
-          })
-        );
+      const added = CampaignRecipients.addMany(camp.id, recipientSource);
+
+      if (wantStart) {
+        Campaigns.setStatus(camp.id, 'running', {
+          started_at: new Date().toISOString().replace('T', ' ').slice(0, 19),
+          next_send_at: null,
+          completed_at: null,
+        });
+        getCampaignRunner(whatsapp).emitStatus(camp.id);
+        // Nudge the background worker immediately
+        setImmediate(() => {
+          try {
+            getCampaignRunner(whatsapp).tick().catch(() => {});
+          } catch (_) {}
+        });
       }
 
-      const contacts = CampaignContacts.listAllPhones();
-      const added = CampaignRecipients.addMany(camp.id, contacts);
+      const importNote = importRows.length
+        ? ` Import: ${importStats.inserted} new, ${importStats.updated} updated.`
+        : '';
       req.session.flash = {
         type: 'success',
-        message:
-          `Campaign created with ${added} recipients` +
-          (stepBodies.length ? ` + ${stepBodies.length} follow-up step(s)` : '') +
-          '.',
+        message: wantStart
+          ? `Campaign started with ${added} recipients (~${pacing.msgs_per_minute}/min, max ${cap.hourly_limit}/hr). Runs in background even if you close this page.${importNote}`
+          : `Draft saved with ${added} recipients.${importNote}`,
       };
       res.redirect(`/admin/campaigns/${camp.id}`);
     } catch (err) {
@@ -401,9 +477,15 @@ router.post('/admin/campaigns/:id/start', requireAdmin, (req, res) => {
     completed_at: null,
   });
   getCampaignRunner(whatsapp).emitStatus(id);
+  setImmediate(() => {
+    try {
+      getCampaignRunner(whatsapp).tick().catch(() => {});
+    } catch (_) {}
+  });
   req.session.flash = {
     type: 'success',
-    message: 'Campaign running in background (survives browser close).',
+    message:
+      'Campaign running in background (survives browser close / PM2 restart keeps queue).',
   };
   res.redirect(`/admin/campaigns/${id}`);
 });
