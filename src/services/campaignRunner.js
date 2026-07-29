@@ -1,6 +1,6 @@
 /**
  * Background campaign queue runner — PM2-persistent, DB-backed.
- * Smart randomized delays derived from msgs_per_minute (never fixed intervals).
+ * Smart randomized delays + interactive Buttons/List (text fallback).
  */
 const fs = require('fs');
 const { MessageMedia } = require('whatsapp-web.js');
@@ -10,48 +10,11 @@ const {
   CampaignSteps,
   Settings,
 } = require('../models');
-
-const QUICK_REPLY_FOOTER = `
-
-———
-Reply with:
-*Interested* or *Not Interested*`;
-
-function buildQuickReplyFooter(labels) {
-  let list = [];
-  if (Array.isArray(labels)) {
-    list = labels.map((l) => String(l || '').trim()).filter(Boolean);
-  } else if (typeof labels === 'string' && labels.trim()) {
-    try {
-      const parsed = JSON.parse(labels);
-      if (Array.isArray(parsed)) {
-        list = parsed.map((l) => String(l || '').trim()).filter(Boolean);
-      }
-    } catch (_) {
-      list = String(labels)
-        .split(/[,|]/)
-        .map((l) => l.trim())
-        .filter(Boolean);
-    }
-  }
-  if (list.length < 2) {
-    return QUICK_REPLY_FOOTER;
-  }
-  const parts = list.map((l) => `*${l}*`).join(' or ');
-  return `
-
-———
-Reply with:
-${parts}`;
-}
-
-function buildBody(text, useQuickReplies, isLastStep, quickReplyButtons) {
-  let out = String(text || '').trim();
-  if (useQuickReplies && isLastStep) {
-    out = `${out}${buildQuickReplyFooter(quickReplyButtons)}`;
-  }
-  return out;
-}
+const {
+  buildQuickReplyFooter,
+  parseButtonLabels,
+  classifyButtonReply,
+} = require('./waInteractive');
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -63,16 +26,9 @@ function randomBetween(min, max) {
   return a + Math.floor(Math.random() * (b - a + 1));
 }
 
-/**
- * Convert admin rate into a humanized random delay window.
- * @param {number} msgsPerWindow  how many messages in the window
- * @param {number} windowMinutes  window length in minutes (default 1)
- */
 function pacingFromMsgsPerMinute(msgsPerWindow, windowMinutes = 1) {
   const count = Math.max(1, Math.min(60, Number(msgsPerWindow) || 5));
   const mins = Math.max(0.25, Math.min(60, Number(windowMinutes) || 1));
-  // If caller already passed effective msgs/minute as a float < 60 with window=1 default,
-  // treat values like 5 as "5 per 1 minute".
   const rate = count / mins;
   const clamped = Math.max(0.1, Math.min(30, rate));
   const avgMs = Math.round(60_000 / clamped);
@@ -97,9 +53,6 @@ function hourlyCapFromLimit(hourlyLimit) {
   };
 }
 
-/**
- * Fresh random delay for the next send — mimics human pacing.
- */
 function nextRandomDelayMs(camp) {
   const mpm = Number(camp.msgs_per_minute);
   if (Number.isFinite(mpm) && mpm > 0) {
@@ -128,6 +81,20 @@ function nextRandomDelayMs(camp) {
   );
 }
 
+function buildBody(
+  text,
+  useQuickReplies,
+  isLastStep,
+  quickReplyButtons,
+  { forInteractive = false } = {}
+) {
+  let out = String(text || '').trim();
+  if (useQuickReplies && isLastStep && !forInteractive) {
+    out = `${out}${buildQuickReplyFooter(quickReplyButtons)}`;
+  }
+  return out;
+}
+
 class CampaignRunner {
   constructor(whatsapp) {
     this.wa = whatsapp;
@@ -139,7 +106,9 @@ class CampaignRunner {
   start() {
     if (this._timer) return;
     const intervalMs = Number(Settings.get('campaign_tick_ms')) || 3000;
-    console.log(`[CampaignRunner] started (tick=${intervalMs}ms, PM2-persistent)`);
+    console.log(
+      `[CampaignRunner] started (tick=${intervalMs}ms, PM2-persistent)`
+    );
     this._timer = setInterval(() => {
       this.tick().catch((err) => {
         console.error('[CampaignRunner] tick error:', err.message);
@@ -160,7 +129,6 @@ class CampaignRunner {
 
   async tick() {
     if (this._tickBusy || this._runningSend) return;
-    // Never compete with auto-chat / media forwarding
     if (this.wa?.coreBusy) return;
     this._tickBusy = true;
     try {
@@ -178,7 +146,6 @@ class CampaignRunner {
   resolveSteps(camp) {
     const extra = CampaignSteps.listByCampaign(camp.id);
     const pacing = pacingFromMsgsPerMinute(camp.msgs_per_minute);
-    // Step 0 = campaign primary message; extras are follow-ups
     const steps = [
       {
         step_order: 0,
@@ -213,7 +180,6 @@ class CampaignRunner {
       if (Number.isFinite(nextLocal) && Date.now() < nextLocal) return;
     }
 
-    // Hourly cap (or legacy batch window)
     const hourly =
       Number(camp.hourly_limit) > 0
         ? Number(camp.hourly_limit)
@@ -228,7 +194,6 @@ class CampaignRunner {
       windowMs
     );
     if (sentInWindow >= hourly) {
-      // Soft pause with random cool-down — not a rigid hour boundary
       const waitMs = randomBetween(90_000, 280_000);
       const nextAt = new Date(Date.now() + waitMs)
         .toISOString()
@@ -251,7 +216,6 @@ class CampaignRunner {
       this._runningSend = false;
     }
 
-    // Crucial: fresh randomized delay from msgs/min — never fixed spacing
     const delayMs = nextRandomDelayMs(camp);
     const nextAt = new Date(Date.now() + delayMs)
       .toISOString()
@@ -269,28 +233,57 @@ class CampaignRunner {
     const stepIdx = Math.max(0, Number(recipient.current_step) || 0);
     const step = steps[stepIdx] || steps[0];
     const isLast = stepIdx >= steps.length - 1;
-    const body = buildBody(
-      step.body_text,
-      camp.use_quick_replies,
-      isLast,
-      camp.quick_reply_buttons
-    );
     const phone = recipient.phone;
     const contentType = step.content_type || 'text';
     const imagePath = step.image_path || null;
+    const wantInteractive =
+      !!camp.use_quick_replies &&
+      isLast &&
+      parseButtonLabels(camp.quick_reply_buttons).length > 0;
+
+    const plainBody = buildBody(
+      step.body_text,
+      camp.use_quick_replies,
+      isLast,
+      camp.quick_reply_buttons,
+      { forInteractive: wantInteractive }
+    );
 
     try {
-      if (contentType === 'image_text' && imagePath && fs.existsSync(imagePath)) {
+      if (wantInteractive) {
+        let media = null;
+        if (
+          contentType === 'image_text' &&
+          imagePath &&
+          fs.existsSync(imagePath)
+        ) {
+          media = MessageMedia.fromFilePath(imagePath);
+        }
+        await this.wa.sendInteractive(phone, {
+          body: plainBody || step.body_text || ' ',
+          buttons: camp.quick_reply_buttons,
+          media,
+          skipPacing: true,
+          skipLimiter: false,
+          lane: 'bulk',
+          priority: 'low',
+          footer: 'Tap a button to reply',
+        });
+      } else if (
+        contentType === 'image_text' &&
+        imagePath &&
+        fs.existsSync(imagePath)
+      ) {
         const media = MessageMedia.fromFilePath(imagePath);
         await this.wa.sendMedia(phone, media, {
-          caption: body,
+          caption: plainBody,
           skipPacing: true,
           lane: 'bulk',
           priority: 'low',
           once: true,
         });
       } else {
-        await this.wa.sendMessage(phone, body, {
+        await this.wa.sendMessage(phone, plainBody, {
           skipPacing: true,
           lane: 'bulk',
           priority: 'low',
@@ -326,26 +319,28 @@ class CampaignRunner {
   handleInboundReply(phone, body) {
     const text = String(body || '')
       .replace(/[\u200B-\u200D\uFEFF]/g, '')
-      .trim()
-      .toLowerCase();
+      .trim();
     if (!text) return false;
-
-    let status = null;
-    if (
-      /^(interested|yes|1|i am interested|i'm interested)\b/.test(text) ||
-      text === 'interested'
-    ) {
-      status = 'replied_interested';
-    } else if (
-      /^(not interested|no|2|not_interested)\b/.test(text) ||
-      text === 'not interested'
-    ) {
-      status = 'replied_not_interested';
-    }
-    if (!status) return false;
 
     const row = CampaignRecipients.findLatestSentByPhone(phone);
     if (!row) return false;
+
+    let status = classifyButtonReply(text, row.quick_reply_buttons);
+    if (!status) {
+      const norm = text.toLowerCase();
+      if (
+        /^(interested|yes|1|i am interested|i'm interested)\b/.test(norm) ||
+        norm === 'interested'
+      ) {
+        status = 'replied_interested';
+      } else if (
+        /^(not interested|no|2|not_interested)\b/.test(norm) ||
+        norm === 'not interested'
+      ) {
+        status = 'replied_not_interested';
+      }
+    }
+    if (!status) return false;
 
     CampaignRecipients.markReply(row.id, status, body);
     this.emitStatus(row.campaign_id);
@@ -354,9 +349,22 @@ class CampaignRunner {
         phone: String(phone).replace(/\D/g, ''),
         direction: 'in',
         body: String(body || ''),
-        meta: { campaign_reply: status, campaign_id: row.campaign_id },
+        meta: {
+          campaign_reply: status,
+          campaign_id: row.campaign_id,
+          interactive: true,
+        },
+      });
+      this.wa?.emit?.('campaign:button', {
+        phone: String(phone).replace(/\D/g, ''),
+        label: text,
+        status,
+        campaign_id: row.campaign_id,
       });
     } catch (_) {}
+    console.log(
+      `[CampaignRunner] Button/reply from ${phone}: "${text}" → ${status}`
+    );
     return true;
   }
 }
@@ -371,7 +379,7 @@ function getCampaignRunner(whatsapp) {
 module.exports = {
   CampaignRunner,
   getCampaignRunner,
-  QUICK_REPLY_FOOTER,
+  QUICK_REPLY_FOOTER: buildQuickReplyFooter(['Interested', 'Not Interested']),
   pacingFromMsgsPerMinute,
   hourlyCapFromLimit,
   nextRandomDelayMs,

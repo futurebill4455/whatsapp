@@ -81,20 +81,27 @@
 
         <section class="panel p-5 space-y-4">
           <div class="flex items-center justify-between gap-2">
-            <h2 class="font-display font-semibold dark:text-white">3. Quick-reply buttons</h2>
+            <h2 class="font-display font-semibold dark:text-white">3. Interactive buttons</h2>
             <label class="flex items-center gap-2 text-sm dark:text-slate-300">
               <input type="checkbox" name="use_quick_replies" value="1" id="qrEnabled" checked class="accent-sea" />
               Enable
             </label>
           </div>
           <p class="text-xs text-ink/50 dark:text-slate-500">
-            Appended as text prompts (personal WhatsApp Web does not support native buttons).
+            Sent as WhatsApp Buttons (up to 3) or a List menu (4+). If the account rejects interactive messages, the bot falls back to text prompts automatically. Clicks are logged like normal chat replies.
           </p>
           <div id="qrList" class="space-y-2">
-            <input class="field" name="qr_label" value="Interested" placeholder="Button label" />
-            <input class="field" name="qr_label" value="Not Interested" placeholder="Button label" />
+            <div class="flex gap-2 items-center">
+              <span class="text-xs text-ink/40 w-6">1</span>
+              <input class="field" name="qr_label" value="Interested" placeholder="Button label" />
+            </div>
+            <div class="flex gap-2 items-center">
+              <span class="text-xs text-ink/40 w-6">2</span>
+              <input class="field" name="qr_label" value="Not Interested" placeholder="Button label" />
+            </div>
           </div>
           <button type="button" id="addQrBtn" class="btn-ghost text-xs">+ Add custom button</button>
+          <p class="text-[11px] text-ink/40 dark:text-slate-500">Examples: More Details, Call me, Interested…</p>
         </section>
 
         <section class="panel p-5 space-y-4">
@@ -363,11 +370,18 @@
 
       // Quick replies
       document.getElementById('addQrBtn').addEventListener('click', function () {
-        var input = document.createElement('input');
-        input.className = 'field';
-        input.name = 'qr_label';
-        input.placeholder = 'Custom button label';
-        document.getElementById('qrList').appendChild(input);
+        var list = document.getElementById('qrList');
+        var n = list.querySelectorAll('input[name="qr_label"]').length + 1;
+        var wrap = document.createElement('div');
+        wrap.className = 'flex gap-2 items-center';
+        wrap.innerHTML =
+          '<span class="text-xs text-ink/40 w-6">' + n + '</span>' +
+          '<input class="field" name="qr_label" placeholder="Custom button label" />' +
+          '<button type="button" class="btn-ghost text-xs qr-remove" title="Remove">✕</button>';
+        list.appendChild(wrap);
+        wrap.querySelector('.qr-remove').addEventListener('click', function () {
+          wrap.remove();
+        });
       });
       document.getElementById('qrEnabled').addEventListener('change', function () {
         document.getElementById('qrList').classList.toggle('opacity-50', !this.checked);

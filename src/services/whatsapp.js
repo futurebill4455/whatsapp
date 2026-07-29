@@ -1676,6 +1676,21 @@ class WhatsAppService {
     if (!message) return;
     this.normalizeIncomingMessageIds(message);
 
+    // Normalize interactive button / list taps into plain text body
+    try {
+      const {
+        extractInteractiveReply,
+      } = require('./waInteractive');
+      const tap = extractInteractiveReply(message);
+      if (tap?.label) {
+        message.body = tap.label;
+        message._interactiveReply = tap;
+        logger.info(
+          `[WhatsApp] Interactive ${tap.source} → "${tap.label}" id=${tap.id}`
+        );
+      }
+    } catch (_) {}
+
     const msgId =
       message.id?._serialized || message.id?.id || `${message.from}:${message.timestamp}`;
     if (msgId && this._seenIds.has(msgId)) return;
@@ -2085,6 +2100,142 @@ class WhatsAppService {
     }, 'out-log');
 
     return result;
+    } finally {
+      if (lane === 'core') corePipeline.outbound.markCoreEnd();
+    }
+  }
+
+  /**
+   * Send interactive Buttons (≤3) or List (>3). Falls back to plain text+footer
+   * when WhatsApp Web rejects native interactive payloads (common on personal accounts).
+   */
+  async sendInteractive(phoneOrChat, options = {}) {
+    if (!this.client || !this.ready) {
+      throw new Error('WhatsApp client not ready');
+    }
+
+    const {
+      buildInteractivePayload,
+      buildQuickReplyFooter,
+      parseButtonLabels,
+    } = require('./waInteractive');
+    const { MessageMedia } = require('whatsapp-web.js');
+
+    const bodyText = String(options.body || options.text || '').trim();
+    const labels = options.buttons || options.labels || [];
+    const parsed = parseButtonLabels(labels);
+    if (!parsed.length) {
+      return this.sendMessage(phoneOrChat, bodyText, options);
+    }
+
+    let media = options.media || null;
+    if (media && !(media instanceof MessageMedia) && media.data) {
+      media = new MessageMedia(
+        media.mimetype || 'image/jpeg',
+        media.data,
+        media.filename || undefined
+      );
+    }
+
+    const interactiveBody = media || bodyText;
+    if (!interactiveBody) {
+      throw new Error('Interactive message requires body or media');
+    }
+
+    const lane = this.resolveSendLane({ ...options, lane: options.lane || 'bulk' });
+    const digits = this.formatPhone(
+      String(phoneOrChat || '').includes('@')
+        ? String(phoneOrChat).replace(/@.+$/, '')
+        : phoneOrChat
+    );
+
+    let chatId =
+      options.chatId ||
+      (await this.resolveOutboundChatId(phoneOrChat).catch(() => null));
+    if (!chatId) throw new Error('No chat id for interactive send');
+
+    if (lane === 'core') corePipeline.outbound.markCoreStart();
+    try {
+      if (!options.skipLimiter) {
+        await corePipeline.outbound.waitTurn(lane, {
+          minGapMs:
+            lane === 'bulk'
+              ? Number(process.env.WA_BULK_GAP_MS) || 4500
+              : Number(process.env.WA_CORE_GAP_MS) || 800,
+        });
+      } else {
+        await sleep(antiBan.randInt(80, 220));
+      }
+
+      if (!options.skipTyping) {
+        try {
+          await this.sendTypingPresence(chatId);
+        } catch (_) {}
+      }
+
+      this.markBotOutbound(chatId, 25000);
+
+      const built = buildInteractivePayload(interactiveBody, parsed, {
+        title: options.title || '',
+        footer: options.footer || 'Tap a button to reply',
+        listButtonText: options.listButtonText || 'Choose option',
+      });
+
+      let result;
+      try {
+        result = await corePipeline.outbound.withSocket(() =>
+          this.client.sendMessage(chatId, built.payload)
+        );
+        logger.info(
+          `[WhatsApp] Interactive ${built.mode} sent → ${chatId} buttons=${parsed.map((b) => b.label).join('|')}`
+        );
+      } catch (err) {
+        logger.warn(
+          `[WhatsApp] Interactive ${built.mode} failed (${err.message}) — text fallback`
+        );
+        // Fallback: media (if any) then text with reply prompts
+        if (media) {
+          await this.sendMedia(phoneOrChat, media, {
+            ...options,
+            caption: bodyText + buildQuickReplyFooter(parsed),
+            skipPacing: true,
+            once: true,
+            lane,
+          });
+          return { _fallback: 'text_media', _outboundChatId: chatId };
+        }
+        return this.sendMessage(
+          phoneOrChat,
+          bodyText + buildQuickReplyFooter(parsed),
+          {
+            ...options,
+            skipPacing: true,
+            lane,
+            chatId,
+          }
+        );
+      }
+
+      corePipeline.background.schedule(() => {
+        try {
+          MessageLog.add({
+            direction: 'out',
+            phone: digits || chatId,
+            body: bodyText || `[interactive:${built.mode}]`,
+            meta: {
+              chatId,
+              interactive: built.mode,
+              buttons: parsed.map((b) => b.label),
+              id: result?.id?._serialized,
+              lane,
+            },
+          });
+        } catch (_) {}
+      }, 'interactive-out-log');
+
+      if (result) result._outboundChatId = chatId;
+      this._lastOutboundChatId = chatId;
+      return result;
     } finally {
       if (lane === 'core') corePipeline.outbound.markCoreEnd();
     }

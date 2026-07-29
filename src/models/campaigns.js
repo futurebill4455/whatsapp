@@ -506,7 +506,8 @@ const CampaignRecipients = {
     if (!p) return null;
     return db
       .prepare(
-        `SELECT r.*, c.name AS campaign_name, c.use_quick_replies
+        `SELECT r.*, c.name AS campaign_name, c.use_quick_replies,
+                c.quick_reply_buttons
          FROM campaign_recipients r
          JOIN campaigns c ON c.id = r.campaign_id
          WHERE r.phone = ?
