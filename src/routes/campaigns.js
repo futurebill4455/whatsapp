@@ -35,6 +35,7 @@ function layoutLocals(req, extra = {}) {
     admin: req.session.adminUsername || null,
     flash,
     reqPath: req.originalUrl ? String(req.originalUrl).split('?')[0] : req.path || '',
+    cssVersion: req.app?.locals?.cssVersion || '2',
     ...extra,
   };
 }

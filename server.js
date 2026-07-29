@@ -1,5 +1,6 @@
 require('dotenv').config();
 const path = require('path');
+const fs = require('fs');
 const http = require('http');
 const express = require('express');
 const session = require('express-session');
@@ -21,6 +22,13 @@ const io = new Server(server);
 
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
+// Bust browser CSS cache after each deploy / Tailwind rebuild
+try {
+  const cssPath = path.join(__dirname, 'public', 'css', 'tailwind.css');
+  app.locals.cssVersion = String(fs.statSync(cssPath).mtimeMs | 0);
+} catch (_) {
+  app.locals.cssVersion = String(Date.now());
+}
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
