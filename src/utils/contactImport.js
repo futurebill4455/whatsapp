@@ -7,6 +7,29 @@ function digits(phone) {
   return String(phone || '').replace(/\D/g, '');
 }
 
+/**
+ * Prefix country code (e.g. 91) onto local numbers that lack it.
+ * Leaves numbers that already start with the code unchanged.
+ */
+function applyCountryCode(phone, countryCode) {
+  const dig = digits(phone);
+  const code = digits(countryCode);
+  if (!dig) return '';
+  if (!code) return dig;
+  if (dig.startsWith(code)) return dig;
+  // Strip leading 0 from local trunk (0XXXXXXXXXX)
+  const local = dig.replace(/^0+/, '');
+  if (local.startsWith(code)) return local;
+  return code + local;
+}
+
+function applyCountryCodeToRows(rows, countryCode) {
+  return (rows || []).map((r) => ({
+    ...r,
+    phone: applyCountryCode(r.phone, countryCode),
+  })).filter((r) => r.phone && r.phone.length >= 8);
+}
+
 function rowFromObject(obj) {
   const keys = Object.keys(obj || {});
   const lower = {};
@@ -108,4 +131,7 @@ module.exports = {
   parseExcelBuffer,
   contactsToCsv,
   rowFromObject,
+  digits,
+  applyCountryCode,
+  applyCountryCodeToRows,
 };

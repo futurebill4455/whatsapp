@@ -17,6 +17,42 @@ const QUICK_REPLY_FOOTER = `
 Reply with:
 *Interested* or *Not Interested*`;
 
+function buildQuickReplyFooter(labels) {
+  let list = [];
+  if (Array.isArray(labels)) {
+    list = labels.map((l) => String(l || '').trim()).filter(Boolean);
+  } else if (typeof labels === 'string' && labels.trim()) {
+    try {
+      const parsed = JSON.parse(labels);
+      if (Array.isArray(parsed)) {
+        list = parsed.map((l) => String(l || '').trim()).filter(Boolean);
+      }
+    } catch (_) {
+      list = String(labels)
+        .split(/[,|]/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+    }
+  }
+  if (list.length < 2) {
+    return QUICK_REPLY_FOOTER;
+  }
+  const parts = list.map((l) => `*${l}*`).join(' or ');
+  return `
+
+———
+Reply with:
+${parts}`;
+}
+
+function buildBody(text, useQuickReplies, isLastStep, quickReplyButtons) {
+  let out = String(text || '').trim();
+  if (useQuickReplies && isLastStep) {
+    out = `${out}${buildQuickReplyFooter(quickReplyButtons)}`;
+  }
+  return out;
+}
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -28,15 +64,28 @@ function randomBetween(min, max) {
 }
 
 /**
- * Convert admin "messages per minute" into a humanized random delay window.
- * Never uses a fixed interval — each send rolls a fresh random gap.
+ * Convert admin rate into a humanized random delay window.
+ * @param {number} msgsPerWindow  how many messages in the window
+ * @param {number} windowMinutes  window length in minutes (default 1)
  */
-function pacingFromMsgsPerMinute(msgsPerMinute) {
-  const rate = Math.max(1, Math.min(30, Number(msgsPerMinute) || 5));
-  const avgMs = Math.round(60_000 / rate);
+function pacingFromMsgsPerMinute(msgsPerWindow, windowMinutes = 1) {
+  const count = Math.max(1, Math.min(60, Number(msgsPerWindow) || 5));
+  const mins = Math.max(0.25, Math.min(60, Number(windowMinutes) || 1));
+  // If caller already passed effective msgs/minute as a float < 60 with window=1 default,
+  // treat values like 5 as "5 per 1 minute".
+  const rate = count / mins;
+  const clamped = Math.max(0.1, Math.min(30, rate));
+  const avgMs = Math.round(60_000 / clamped);
   const delay_min_ms = Math.max(2_000, Math.floor(avgMs * 0.4));
   const delay_max_ms = Math.max(delay_min_ms + 500, Math.ceil(avgMs * 1.65));
-  return { msgs_per_minute: rate, delay_min_ms, delay_max_ms, avgMs };
+  return {
+    msgs_per_minute: Math.round(clamped * 100) / 100,
+    msgs_per_window: count,
+    window_minutes: mins,
+    delay_min_ms,
+    delay_max_ms,
+    avgMs,
+  };
 }
 
 function hourlyCapFromLimit(hourlyLimit) {
@@ -50,13 +99,14 @@ function hourlyCapFromLimit(hourlyLimit) {
 
 /**
  * Fresh random delay for the next send — mimics human pacing.
- * Prefer msgs_per_minute; fall back to stored min/max window.
  */
 function nextRandomDelayMs(camp) {
   const mpm = Number(camp.msgs_per_minute);
   if (Number.isFinite(mpm) && mpm > 0) {
-    const { delay_min_ms, delay_max_ms, avgMs } = pacingFromMsgsPerMinute(mpm);
-    // Weighted mix so gaps cluster near average but still vary
+    const { delay_min_ms, delay_max_ms, avgMs } = pacingFromMsgsPerMinute(
+      mpm,
+      1
+    );
     const roll = Math.random();
     let delay;
     if (roll < 0.2) {
@@ -69,7 +119,6 @@ function nextRandomDelayMs(camp) {
         Math.ceil(avgMs * 1.3)
       );
     }
-    // Tiny extra jitter so two campaigns never sync
     delay += randomBetween(0, 900);
     return Math.max(delay_min_ms, Math.min(delay_max_ms + 900, delay));
   }
@@ -77,14 +126,6 @@ function nextRandomDelayMs(camp) {
     camp.delay_min_ms || 60_000,
     camp.delay_max_ms || 300_000
   );
-}
-
-function buildBody(text, useQuickReplies, isLastStep) {
-  let out = String(text || '').trim();
-  if (useQuickReplies && isLastStep) {
-    out = `${out}${QUICK_REPLY_FOOTER}`;
-  }
-  return out;
 }
 
 class CampaignRunner {
@@ -228,7 +269,12 @@ class CampaignRunner {
     const stepIdx = Math.max(0, Number(recipient.current_step) || 0);
     const step = steps[stepIdx] || steps[0];
     const isLast = stepIdx >= steps.length - 1;
-    const body = buildBody(step.body_text, camp.use_quick_replies, isLast);
+    const body = buildBody(
+      step.body_text,
+      camp.use_quick_replies,
+      isLast,
+      camp.quick_reply_buttons
+    );
     const phone = recipient.phone;
     const contentType = step.content_type || 'text';
     const imagePath = step.image_path || null;
@@ -329,4 +375,6 @@ module.exports = {
   pacingFromMsgsPerMinute,
   hourlyCapFromLimit,
   nextRandomDelayMs,
+  buildQuickReplyFooter,
+  buildBody,
 };

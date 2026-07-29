@@ -192,8 +192,8 @@ const Campaigns = {
           image_path, image_mimetype, image_filename,
           use_quick_replies, delay_min_ms, delay_max_ms,
           batch_size, batch_window_ms, schedule_at,
-          msgs_per_minute, hourly_limit
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          msgs_per_minute, hourly_limit, quick_reply_buttons
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.name,
@@ -210,7 +210,12 @@ const Campaigns = {
         data.batch_window_ms != null ? data.batch_window_ms : 300000,
         data.schedule_at || null,
         data.msgs_per_minute != null ? data.msgs_per_minute : 5,
-        data.hourly_limit != null ? data.hourly_limit : 40
+        data.hourly_limit != null ? data.hourly_limit : 40,
+        data.quick_reply_buttons != null
+          ? typeof data.quick_reply_buttons === 'string'
+            ? data.quick_reply_buttons
+            : JSON.stringify(data.quick_reply_buttons)
+          : null
       );
     return this.get(result.lastInsertRowid);
   },
@@ -235,6 +240,7 @@ const Campaigns = {
         batch_window_ms = COALESCE(?, batch_window_ms),
         msgs_per_minute = COALESCE(?, msgs_per_minute),
         hourly_limit = COALESCE(?, hourly_limit),
+        quick_reply_buttons = COALESCE(?, quick_reply_buttons),
         next_send_at = CASE WHEN ? THEN ? ELSE next_send_at END,
         schedule_at = CASE WHEN ? THEN ? ELSE schedule_at END,
         started_at = COALESCE(?, started_at),
@@ -256,6 +262,11 @@ const Campaigns = {
       data.batch_window_ms ?? null,
       data.msgs_per_minute ?? null,
       data.hourly_limit ?? null,
+      data.quick_reply_buttons != null
+        ? typeof data.quick_reply_buttons === 'string'
+          ? data.quick_reply_buttons
+          : JSON.stringify(data.quick_reply_buttons)
+        : null,
       has('next_send_at') ? 1 : 0,
       has('next_send_at') ? data.next_send_at : null,
       has('schedule_at') ? 1 : 0,

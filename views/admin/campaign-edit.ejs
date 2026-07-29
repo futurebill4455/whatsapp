@@ -5,153 +5,414 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title><%= title %> · <%= businessName %></title>
   <%- include('../partials/styles') %>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <style>
+    .camp-shell { min-height: calc(100vh - 8rem); }
+    .camp-preview { max-height: min(58vh, 520px); overflow: auto; }
+    .type-card input:checked + span {
+      border-color: rgb(13 148 136);
+      background: rgba(13, 148, 136, 0.08);
+    }
+    html.dark .type-card input:checked + span {
+      background: rgba(13, 148, 136, 0.18);
+    }
+  </style>
 </head>
 <body class="font-sans text-ink page-bg min-h-screen antialiased">
   <%- include('../partials/nav') %>
 
-  <main class="max-w-3xl mx-auto px-4 py-8 space-y-6 animate-in">
-    <div>
-      <a href="/admin/campaigns" class="text-sm font-semibold text-sea hover:underline">← Campaigns</a>
-      <h1 class="font-display text-3xl font-bold mt-2 dark:text-white">New campaign</h1>
-      <p class="text-ink/55 dark:text-slate-400 text-sm mt-1">
-        Message + contacts + speed limits. Queue runs in the background (PM2) even if you close this tab.
-      </p>
+  <main class="max-w-7xl mx-auto px-4 py-6 animate-in">
+    <div class="flex flex-wrap items-end justify-between gap-3 mb-5">
+      <div>
+        <a href="/admin/campaigns" class="text-sm font-semibold text-sea hover:underline">← Campaigns</a>
+        <h1 class="font-display text-3xl font-bold mt-1 dark:text-white">New campaign</h1>
+        <p class="text-ink/55 dark:text-slate-400 text-sm mt-1">
+          Configure on the left · preview &amp; start on the right. Queue keeps running after you close this tab.
+        </p>
+      </div>
+      <span class="chip <%= waReady ? 'bg-sea/15 text-sea' : 'bg-coral/15 text-coral' %>">
+        WA <%= waReady ? 'Ready' : 'Offline' %>
+      </span>
     </div>
 
     <% if (typeof flash !== 'undefined' && flash) { %>
-      <div class="rounded-2xl px-4 py-3 text-sm font-medium border <%= flash.type === 'error' ? 'bg-coral/10 text-coral border-coral/20' : 'bg-sea/10 text-sea border-sea/20' %>">
+      <div class="rounded-2xl px-4 py-3 text-sm font-medium border mb-5 <%= flash.type === 'error' ? 'bg-coral/10 text-coral border-coral/20' : 'bg-sea/10 text-sea border-sea/20' %>">
         <%= flash.message %>
       </div>
     <% } %>
 
-    <div class="chip <%= waReady ? 'bg-sea/15 text-sea' : 'bg-coral/15 text-coral' %>">
-      WhatsApp <%= waReady ? 'connected — ready to start' : 'offline — connect QR before starting' %>
-    </div>
+    <form id="campaignForm" method="post" action="/admin/campaigns" enctype="multipart/form-data" class="camp-shell grid lg:grid-cols-2 gap-5 items-start">
+      <!-- ========== LEFT: Configuration ========== -->
+      <div class="space-y-4">
+        <section class="panel p-5 space-y-4">
+          <h2 class="font-display font-semibold dark:text-white">1. Message type</h2>
+          <div class="grid grid-cols-2 gap-3">
+            <label class="type-card cursor-pointer">
+              <input type="radio" name="content_type" value="text" class="sr-only" checked />
+              <span class="block rounded-xl border border-ink/15 dark:border-white/15 px-4 py-3 text-center text-sm font-semibold dark:text-slate-100 transition">
+                Text only
+              </span>
+            </label>
+            <label class="type-card cursor-pointer">
+              <input type="radio" name="content_type" value="image_text" class="sr-only" id="typeImage" />
+              <span class="block rounded-xl border border-ink/15 dark:border-white/15 px-4 py-3 text-center text-sm font-semibold dark:text-slate-100 transition">
+                Text with Image
+              </span>
+            </label>
+          </div>
+        </section>
 
-    <form method="post" action="/admin/campaigns" enctype="multipart/form-data" class="space-y-5">
-      <!-- 1. Message -->
-      <section class="panel p-5 md:p-6 space-y-4">
-        <h2 class="font-display font-semibold dark:text-white">Message</h2>
-
-        <div>
-          <label class="label">Content type</label>
-          <select class="field" name="content_type" id="contentType">
-            <option value="text">Text only</option>
-            <option value="image_text">Text with Image</option>
-          </select>
-        </div>
-
-        <div>
-          <label class="label">Message text</label>
-          <textarea
-            class="field min-h-[160px]"
-            name="body_text"
-            required
-            placeholder="Type your WhatsApp message here…"
-          ></textarea>
-        </div>
-
-        <div id="imageWrap" class="hidden">
-          <label class="label">Image upload</label>
-          <input class="field" type="file" name="image" accept="image/*" />
-          <p class="text-xs text-ink/45 dark:text-slate-500 mt-1.5">Sent as image with your text as caption.</p>
-        </div>
-
-        <label class="flex items-center gap-2 text-sm dark:text-slate-300">
-          <input type="checkbox" name="use_quick_replies" value="1" checked class="accent-sea" />
-          Append Interested / Not Interested reply prompts
-        </label>
-      </section>
-
-      <!-- 2. Speed & rate limits -->
-      <section class="panel p-5 md:p-6 space-y-4">
-        <h2 class="font-display font-semibold dark:text-white">Speed &amp; rate limits</h2>
-        <p class="text-sm text-ink/55 dark:text-slate-400">
-          Delays between messages are <strong class="dark:text-slate-200">randomized</strong> from your per-minute rate — never a fixed clock tick.
-        </p>
-        <div class="grid sm:grid-cols-2 gap-4">
+        <section class="panel p-5 space-y-4">
+          <h2 class="font-display font-semibold dark:text-white">2. Content</h2>
           <div>
-            <label class="label">Messages per minute</label>
-            <input
-              class="field"
-              type="number"
-              name="msgs_per_minute"
-              value="5"
-              min="1"
-              max="30"
-              step="1"
+            <label class="label">Message text</label>
+            <textarea
+              class="field min-h-[140px]"
+              name="body_text"
               required
-            />
-            <p class="text-xs text-ink/45 dark:text-slate-500 mt-1.5">e.g. 5 or 10 — sets the random pacing window</p>
+              placeholder="Type your WhatsApp campaign message…"
+            ></textarea>
+          </div>
+          <div id="imageWrap" class="hidden">
+            <label class="label">Upload image</label>
+            <input class="field" type="file" name="image" accept="image/*" />
+          </div>
+        </section>
+
+        <section class="panel p-5 space-y-4">
+          <div class="flex items-center justify-between gap-2">
+            <h2 class="font-display font-semibold dark:text-white">3. Quick-reply buttons</h2>
+            <label class="flex items-center gap-2 text-sm dark:text-slate-300">
+              <input type="checkbox" name="use_quick_replies" value="1" id="qrEnabled" checked class="accent-sea" />
+              Enable
+            </label>
+          </div>
+          <p class="text-xs text-ink/50 dark:text-slate-500">
+            Appended as text prompts (personal WhatsApp Web does not support native buttons).
+          </p>
+          <div id="qrList" class="space-y-2">
+            <input class="field" name="qr_label" value="Interested" placeholder="Button label" />
+            <input class="field" name="qr_label" value="Not Interested" placeholder="Button label" />
+          </div>
+          <button type="button" id="addQrBtn" class="btn-ghost text-xs">+ Add custom button</button>
+        </section>
+
+        <section class="panel p-5 space-y-4">
+          <h2 class="font-display font-semibold dark:text-white">4. Speed settings</h2>
+          <p class="text-sm text-ink/55 dark:text-slate-400">
+            Send <strong class="dark:text-slate-200">X messages</strong> across a
+            <strong class="dark:text-slate-200">Y-minute</strong> window — gaps are randomized, never fixed.
+          </p>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="label">Messages (count)</label>
+              <input class="field" type="number" name="msgs_per_window" id="msgsPerWindow" value="5" min="1" max="60" required />
+            </div>
+            <div>
+              <label class="label">Per minutes</label>
+              <input class="field" type="number" name="speed_window_minutes" id="speedWindow" value="1" min="1" max="60" step="1" required />
+            </div>
+          </div>
+          <p class="text-xs text-ink/45 dark:text-slate-500" id="speedHint">≈ 5 messages / minute · random human pacing</p>
+        </section>
+
+        <section class="panel p-5 space-y-4">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h2 class="font-display font-semibold dark:text-white">5. Contacts input</h2>
+            <a href="/admin/campaigns/contacts/export.csv" class="btn-ghost text-xs">Export CSV</a>
           </div>
           <div>
-            <label class="label">Hourly limit</label>
-            <input
-              class="field"
-              type="number"
-              name="hourly_limit"
-              value="40"
-              min="1"
-              max="500"
-              step="1"
-              required
-            />
-            <p class="text-xs text-ink/45 dark:text-slate-500 mt-1.5">Max sends in any rolling 60 minutes</p>
+            <label class="label">Excel / CSV file</label>
+            <input class="field" type="file" name="contacts_file" id="contactsFile" accept=".csv,.xlsx,.xls,text/csv" />
           </div>
-        </div>
-      </section>
+          <div>
+            <label class="label">Type or paste numbers</label>
+            <textarea
+              class="field min-h-[120px] font-mono text-sm"
+              name="paste_phones"
+              id="pastePhones"
+              placeholder="98765XXXXX&#10;Ravi,98765XXXXX"
+            ></textarea>
+          </div>
+          <p class="text-xs text-ink/45 dark:text-slate-500">
+            Preview updates live on the right. Library has <%= contactCount %> saved contacts
+            (used if this section is empty).
+          </p>
+        </section>
+      </div>
 
-      <!-- 3. Contacts -->
-      <section class="panel p-5 md:p-6 space-y-4">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <h2 class="font-display font-semibold dark:text-white">Contacts</h2>
-          <a href="/admin/campaigns/contacts/export.csv" class="btn-ghost text-xs">Export CSV</a>
-        </div>
-        <p class="text-sm text-ink/55 dark:text-slate-400">
-          Upload Excel/CSV and/or paste numbers below. Saved contacts (<%= contactCount %>) are included automatically if you leave paste empty.
-        </p>
+      <!-- ========== RIGHT: Preview & Start ========== -->
+      <div class="space-y-4 lg:sticky lg:top-20">
+        <section class="panel p-5 space-y-4">
+          <h2 class="font-display font-semibold dark:text-white">Country code</h2>
+          <div class="flex gap-2 items-end">
+            <div class="flex-1">
+              <label class="label">Prefix for local numbers</label>
+              <div class="flex gap-2">
+                <span class="inline-flex items-center px-3 rounded-xl border border-ink/15 dark:border-white/15 bg-mist/60 dark:bg-white/5 text-sm font-semibold">+</span>
+                <input
+                  class="field"
+                  type="text"
+                  name="country_code"
+                  id="countryCode"
+                  value="91"
+                  inputmode="numeric"
+                  placeholder="91"
+                />
+              </div>
+            </div>
+            <button type="button" id="applyCcBtn" class="btn-ghost shrink-0">Apply</button>
+          </div>
+          <p class="text-xs text-ink/45 dark:text-slate-500">
+            Numbers that already include this code are left unchanged.
+          </p>
+        </section>
 
-        <div>
-          <label class="label">Excel / CSV upload</label>
-          <input class="field" type="file" name="contacts_file" accept=".csv,.xlsx,.xls,text/csv" />
-          <p class="text-xs text-ink/45 dark:text-slate-500 mt-1.5">
-            Columns: <code class="bg-mist dark:bg-white/10 px-1 rounded">name</code>,
-            <code class="bg-mist dark:bg-white/10 px-1 rounded">phone</code>
+        <section class="panel overflow-hidden flex flex-col">
+          <div class="px-5 py-3 border-b border-ink/10 dark:border-white/10 flex items-center justify-between gap-2">
+            <h2 class="font-display font-semibold dark:text-white">Contact preview</h2>
+            <span class="chip bg-mist dark:bg-white/10" id="previewCount">0</span>
+          </div>
+          <div class="camp-preview">
+            <table class="data-table">
+              <thead class="sticky top-0 bg-white dark:bg-slate-900 z-10">
+                <tr>
+                  <th class="w-10">#</th>
+                  <th>Name</th>
+                  <th>Phone</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="previewBody">
+                <tr>
+                  <td colspan="4" class="text-center text-ink/45 dark:text-slate-500 py-10">
+                    Upload or paste contacts to preview…
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <input type="hidden" name="contacts_json" id="contactsJson" value="" />
+        <input type="hidden" name="hourly_limit" id="hourlyLimit" value="40" />
+
+        <div class="panel p-5 space-y-3">
+          <button
+            type="submit"
+            name="action"
+            value="start"
+            id="startBtn"
+            class="btn-primary w-full py-3 text-base"
+            <%= waReady ? '' : 'disabled' %>
+          >
+            Start Campaign
+          </button>
+          <button type="submit" name="action" value="draft" class="btn-ghost w-full">
+            Save as draft
+          </button>
+          <p class="text-xs text-center text-ink/45 dark:text-slate-500">
+            Starts the background queue with smart randomized delays from your speed settings.
           </p>
         </div>
-
-        <div>
-          <label class="label">Paste phone numbers</label>
-          <textarea
-            class="field min-h-[180px] font-mono text-sm"
-            name="paste_phones"
-            placeholder="9198XXXXXXXX&#10;Ravi,9198XXXXXXXX&#10;98765XXXXX"
-          ></textarea>
-          <p class="text-xs text-ink/45 dark:text-slate-500 mt-1.5">One phone per line, or Name,phone</p>
-        </div>
-      </section>
-
-      <div class="flex flex-wrap gap-2">
-        <button
-          type="submit"
-          name="action"
-          value="start"
-          class="btn-primary"
-          <%= waReady ? '' : 'disabled' %>
-        >
-          Start Campaign
-        </button>
-        <button type="submit" name="action" value="draft" class="btn-ghost">
-          Save as draft
-        </button>
-        <a href="/admin/campaigns/contacts" class="btn-ghost">Contact library</a>
       </div>
     </form>
   </main>
+
   <script>
-    document.getElementById('contentType').addEventListener('change', function () {
-      document.getElementById('imageWrap').classList.toggle('hidden', this.value !== 'image_text');
-    });
+    (function () {
+      var libraryContacts = <%- JSON.stringify((libraryContacts || []).map(function (c) {
+        return { name: c.name || null, phone: String(c.phone || '') };
+      })) %>;
+
+      var fileRows = [];
+      var previewRows = [];
+
+      function digits(v) {
+        return String(v || '').replace(/\D/g, '');
+      }
+
+      function applyCc(phone, cc) {
+        var dig = digits(phone);
+        var code = digits(cc);
+        if (!dig) return '';
+        if (!code) return dig;
+        if (dig.indexOf(code) === 0) return dig;
+        var local = dig.replace(/^0+/, '');
+        if (local.indexOf(code) === 0) return local;
+        return code + local;
+      }
+
+      function parsePaste(text) {
+        var rows = [];
+        String(text || '').split(/\r?\n/).forEach(function (line) {
+          line = line.trim();
+          if (!line || /^phone\b/i.test(line) || /^name\b/i.test(line)) return;
+          var name = null;
+          var phone = null;
+          if (line.indexOf(',') >= 0) {
+            var parts = line.split(',').map(function (p) { return p.trim(); });
+            if (digits(parts[0]).length >= 8 && digits(parts[1] || '').length < 8) {
+              phone = digits(parts[0]);
+              name = parts[1] || null;
+            } else {
+              name = parts[0] || null;
+              phone = digits(parts[1] || parts[0]);
+            }
+          } else if (/\s+/.test(line)) {
+            var bits = line.split(/\s+/);
+            var maybe = bits.find(function (p) { return digits(p).length >= 8; });
+            phone = digits(maybe || '');
+            name = bits.filter(function (p) { return p !== maybe; }).join(' ') || null;
+          } else {
+            phone = digits(line);
+          }
+          if (phone && phone.length >= 8) rows.push({ name: name, phone: phone });
+        });
+        return rows;
+      }
+
+      function rowFromObj(obj) {
+        var lower = {};
+        Object.keys(obj || {}).forEach(function (k) {
+          lower[String(k).trim().toLowerCase()] = obj[k];
+        });
+        var phone = digits(
+          lower.phone || lower.mobile || lower.number || lower.whatsapp ||
+          lower.contact || lower['phone number'] || lower['mobile number'] || ''
+        );
+        var name = lower.name || lower.customer || lower['full name'] || lower.customer_name || '';
+        return { phone: phone, name: name ? String(name).trim() : null };
+      }
+
+      function rebuildPreview() {
+        var cc = document.getElementById('countryCode').value;
+        var paste = parsePaste(document.getElementById('pastePhones').value);
+        var source = fileRows.length || paste.length
+          ? fileRows.concat(paste)
+          : libraryContacts.slice();
+
+        var seen = {};
+        previewRows = [];
+        source.forEach(function (r) {
+          var phone = applyCc(r.phone, cc);
+          if (!phone || phone.length < 8 || seen[phone]) return;
+          seen[phone] = true;
+          previewRows.push({
+            name: r.name || '—',
+            phone: phone,
+            status: 'Ready',
+          });
+        });
+
+        var tbody = document.getElementById('previewBody');
+        document.getElementById('previewCount').textContent = String(previewRows.length);
+        if (!previewRows.length) {
+          tbody.innerHTML = '<tr><td colspan="4" class="text-center text-ink/45 dark:text-slate-500 py-10">Upload or paste contacts to preview…</td></tr>';
+        } else {
+          tbody.innerHTML = previewRows.map(function (r, i) {
+            return '<tr>' +
+              '<td class="text-xs text-ink/40">' + (i + 1) + '</td>' +
+              '<td>' + escapeHtml(r.name) + '</td>' +
+              '<td class="font-mono text-xs">' + escapeHtml(r.phone) + '</td>' +
+              '<td><span class="chip bg-sea/15 text-sea">' + r.status + '</span></td>' +
+              '</tr>';
+          }).join('');
+        }
+
+        document.getElementById('contactsJson').value = JSON.stringify(
+          previewRows.map(function (r) {
+            return { name: r.name === '—' ? null : r.name, phone: r.phone };
+          })
+        );
+
+        updateSpeedHint();
+        var startBtn = document.getElementById('startBtn');
+        if (startBtn && !startBtn.disabled) {
+          startBtn.classList.toggle('opacity-60', previewRows.length === 0);
+        }
+      }
+
+      function escapeHtml(s) {
+        return String(s || '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+
+      function updateSpeedHint() {
+        var count = Number(document.getElementById('msgsPerWindow').value) || 5;
+        var mins = Number(document.getElementById('speedWindow').value) || 1;
+        var rate = Math.round((count / mins) * 100) / 100;
+        document.getElementById('speedHint').textContent =
+          '≈ ' + rate + ' messages / minute · random human pacing';
+        var hourly = Math.min(500, Math.max(1, Math.ceil(rate * 60)));
+        document.getElementById('hourlyLimit').value = String(hourly);
+      }
+
+      // Message type toggle
+      document.querySelectorAll('input[name="content_type"]').forEach(function (el) {
+        el.addEventListener('change', function () {
+          document.getElementById('imageWrap').classList.toggle(
+            'hidden',
+            document.querySelector('input[name="content_type"]:checked').value !== 'image_text'
+          );
+        });
+      });
+
+      // Quick replies
+      document.getElementById('addQrBtn').addEventListener('click', function () {
+        var input = document.createElement('input');
+        input.className = 'field';
+        input.name = 'qr_label';
+        input.placeholder = 'Custom button label';
+        document.getElementById('qrList').appendChild(input);
+      });
+      document.getElementById('qrEnabled').addEventListener('change', function () {
+        document.getElementById('qrList').classList.toggle('opacity-50', !this.checked);
+      });
+
+      // File preview
+      document.getElementById('contactsFile').addEventListener('change', function (e) {
+        var file = e.target.files && e.target.files[0];
+        fileRows = [];
+        if (!file) { rebuildPreview(); return; }
+        var reader = new FileReader();
+        reader.onload = function (ev) {
+          try {
+            if (typeof XLSX === 'undefined') {
+              alert('Spreadsheet parser failed to load. Paste numbers instead, or submit the file directly.');
+              return;
+            }
+            var data = new Uint8Array(ev.target.result);
+            var wb = XLSX.read(data, { type: 'array' });
+            var sheet = wb.Sheets[wb.SheetNames[0]];
+            var json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+            fileRows = json.map(rowFromObj).filter(function (r) {
+              return r.phone && r.phone.length >= 8;
+            });
+          } catch (err) {
+            alert('Could not read file: ' + (err.message || err));
+            fileRows = [];
+          }
+          rebuildPreview();
+        };
+        reader.readAsArrayBuffer(file);
+      });
+
+      document.getElementById('pastePhones').addEventListener('input', rebuildPreview);
+      document.getElementById('countryCode').addEventListener('input', rebuildPreview);
+      document.getElementById('applyCcBtn').addEventListener('click', rebuildPreview);
+      document.getElementById('msgsPerWindow').addEventListener('input', updateSpeedHint);
+      document.getElementById('speedWindow').addEventListener('input', updateSpeedHint);
+
+      document.getElementById('campaignForm').addEventListener('submit', function () {
+        rebuildPreview();
+      });
+
+      rebuildPreview();
+    })();
   </script>
 </body>
 </html>

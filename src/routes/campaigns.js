@@ -20,6 +20,7 @@ const {
   parseCsvBuffer,
   parseExcelBuffer,
   contactsToCsv,
+  applyCountryCodeToRows,
 } = require('../utils/contactImport');
 const whatsapp = require('../services/whatsapp');
 const { getCampaignRunner } = require('../services/campaignRunner');
@@ -229,6 +230,7 @@ router.get('/admin/campaigns/new', requireAdmin, (req, res) => {
       title: 'New Campaign',
       campaign: null,
       contactCount: CampaignContacts.count(),
+      libraryContacts: CampaignContacts.list({ limit: 2000 }),
       waReady: !!(whatsapp.ready && whatsapp.client),
     })
   );
@@ -296,10 +298,20 @@ router.post(
         hourlyCapFromLimit,
       } = require('../services/campaignRunner');
 
-      const mpm = Number(req.body.msgs_per_minute);
-      const hourly = Number(req.body.hourly_limit);
-      const pacing = pacingFromMsgsPerMinute(mpm);
-      const cap = hourlyCapFromLimit(hourly);
+      const msgsPerWindow = Number(req.body.msgs_per_window || req.body.msgs_per_minute);
+      const windowMinutes = Number(req.body.speed_window_minutes) || 1;
+      const pacing = pacingFromMsgsPerMinute(msgsPerWindow, windowMinutes);
+      const hourlyRaw =
+        Number(req.body.hourly_limit) ||
+        Math.ceil(pacing.msgs_per_minute * 60);
+      const cap = hourlyCapFromLimit(hourlyRaw);
+
+      const qrLabels = []
+        .concat(req.body.qr_label || [])
+        .map((l) => String(l || '').trim())
+        .filter(Boolean);
+      const useQuickReplies = req.body.use_quick_replies === '1';
+      const countryCode = String(req.body.country_code || '91').trim();
 
       // Persist image from memory upload
       let image_path = null;
@@ -323,20 +335,38 @@ router.post(
         fs.writeFileSync(image_path, imageFile.buffer);
       }
 
-      // Import contacts from file + paste (upsert into library)
+      // Prefer live preview JSON (already country-coded); else file + paste
       let importRows = [];
-      const contactsFile = req.files?.contacts_file?.[0] || null;
-      if (contactsFile?.buffer) {
-        const name = String(contactsFile.originalname || '').toLowerCase();
-        if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
-          importRows = importRows.concat(parseExcelBuffer(contactsFile.buffer));
-        } else {
-          importRows = importRows.concat(parseCsvBuffer(contactsFile.buffer));
-        }
+      const contactsJson = String(req.body.contacts_json || '').trim();
+      if (contactsJson) {
+        try {
+          const parsed = JSON.parse(contactsJson);
+          if (Array.isArray(parsed)) {
+            importRows = parsed
+              .map((r) => ({
+                name: r.name || null,
+                phone: String(r.phone || '').replace(/\D/g, ''),
+              }))
+              .filter((r) => r.phone && r.phone.length >= 8);
+          }
+        } catch (_) {}
       }
-      const paste = String(req.body.paste_phones || '').trim();
-      if (paste) {
-        importRows = importRows.concat(parsePastedText(paste));
+
+      if (!importRows.length) {
+        const contactsFile = req.files?.contacts_file?.[0] || null;
+        if (contactsFile?.buffer) {
+          const name = String(contactsFile.originalname || '').toLowerCase();
+          if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
+            importRows = importRows.concat(parseExcelBuffer(contactsFile.buffer));
+          } else {
+            importRows = importRows.concat(parseCsvBuffer(contactsFile.buffer));
+          }
+        }
+        const paste = String(req.body.paste_phones || '').trim();
+        if (paste) {
+          importRows = importRows.concat(parsePastedText(paste));
+        }
+        importRows = applyCountryCodeToRows(importRows, countryCode);
       }
 
       let importStats = { inserted: 0, updated: 0, skipped: 0 };
@@ -344,7 +374,7 @@ router.post(
         importStats = CampaignContacts.upsertMany(importRows, 'campaign');
       }
 
-      // Recipients: if paste/file provided, use those phones; else all library contacts
+      // Recipients: preview/import rows, else all library contacts with country code
       let recipientSource;
       if (importRows.length) {
         const seen = new Set();
@@ -360,7 +390,14 @@ router.post(
           });
         }
       } else {
-        recipientSource = CampaignContacts.listAllPhones();
+        recipientSource = applyCountryCodeToRows(
+          CampaignContacts.listAllPhones(),
+          countryCode
+        ).map((c) => ({
+          id: CampaignContacts.findByPhone(c.phone)?.id || c.id || null,
+          name: c.name || null,
+          phone: c.phone,
+        }));
       }
 
       if (!recipientSource.length) {
@@ -394,7 +431,12 @@ router.post(
         image_path,
         image_mimetype,
         image_filename,
-        use_quick_replies: req.body.use_quick_replies === '1',
+        use_quick_replies: useQuickReplies,
+        quick_reply_buttons: useQuickReplies
+          ? JSON.stringify(
+              qrLabels.length ? qrLabels : ['Interested', 'Not Interested']
+            )
+          : null,
         delay_min_ms: pacing.delay_min_ms,
         delay_max_ms: pacing.delay_max_ms,
         msgs_per_minute: pacing.msgs_per_minute,
@@ -413,7 +455,6 @@ router.post(
           completed_at: null,
         });
         getCampaignRunner(whatsapp).emitStatus(camp.id);
-        // Nudge the background worker immediately
         setImmediate(() => {
           try {
             getCampaignRunner(whatsapp).tick().catch(() => {});
@@ -427,7 +468,7 @@ router.post(
       req.session.flash = {
         type: 'success',
         message: wantStart
-          ? `Campaign started with ${added} recipients (~${pacing.msgs_per_minute}/min, max ${cap.hourly_limit}/hr). Runs in background even if you close this page.${importNote}`
+          ? `Campaign started with ${added} recipients (~${pacing.msgs_per_minute}/min). Runs in background even if you close this page.${importNote}`
           : `Draft saved with ${added} recipients.${importNote}`,
       };
       res.redirect(`/admin/campaigns/${camp.id}`);

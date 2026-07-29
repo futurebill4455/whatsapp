@@ -186,6 +186,7 @@ db.exec(`
     batch_window_ms INTEGER NOT NULL DEFAULT 300000,
     msgs_per_minute INTEGER NOT NULL DEFAULT 5,
     hourly_limit INTEGER NOT NULL DEFAULT 40,
+    quick_reply_buttons TEXT,
     next_send_at TEXT,
     schedule_at TEXT,
     created_at TEXT DEFAULT (datetime('now')),
@@ -238,6 +239,7 @@ const migrations = [
   'ALTER TABLE campaign_recipients ADD COLUMN current_step INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE campaigns ADD COLUMN msgs_per_minute INTEGER NOT NULL DEFAULT 5',
   'ALTER TABLE campaigns ADD COLUMN hourly_limit INTEGER NOT NULL DEFAULT 40',
+  'ALTER TABLE campaigns ADD COLUMN quick_reply_buttons TEXT',
 ];
 for (const sql of migrations) {
   try {
