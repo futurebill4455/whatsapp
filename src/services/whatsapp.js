@@ -1235,7 +1235,14 @@ class WhatsAppService {
    * Exact common access code always proceeds (never aborted as "manual reply")
    * so every phone/LID can unlock universally.
    */
-  scheduleSmartAccessDelay({ message, peerKey, body, chatId, msgId }) {
+  scheduleSmartAccessDelay({
+    message,
+    peerKey,
+    body,
+    chatId,
+    msgId,
+    forceGemini = false,
+  }) {
     const key = String(chatId || peerKey || '').trim();
     if (!key) {
       console.warn('[WhatsApp] Smart delay skipped — no chat key');
@@ -1258,6 +1265,7 @@ class WhatsAppService {
     console.log(
       `[WhatsApp] Smart delay ${delayMs}ms for ${key}` +
         (isAccessCode ? ' [access-code — will not abort for manual-reply false positives]' : '') +
+        (forceGemini ? ' [gemini-session]' : '') +
         ' — typing presence during wait'
     );
 
@@ -1269,12 +1277,34 @@ class WhatsAppService {
       inboundAt,
       msgId,
       forceAccessCode: isAccessCode,
+      forceGemini: !!forceGemini,
     };
 
-    // Show live typing for the full human window (cancel clears timer only)
-    this.showTypingFor(key, delayMs).catch((err) => {
-      console.warn('[WhatsApp] Smart-delay typing failed:', err.message);
-    });
+    // Voice AI turns show recording; everything else typing
+    const gemini = (() => {
+      try {
+        return require('./geminiResponder');
+      } catch (_) {
+        return null;
+      }
+    })();
+    const useRecording =
+      forceGemini &&
+      gemini &&
+      (gemini.isTrigger(body) ||
+        String(message?.type || '').toLowerCase() === 'ptt' ||
+        String(message?.type || '').toLowerCase() === 'audio' ||
+        gemini.hasSession(peerKey || key));
+
+    if (useRecording && this.pm?.showRecordingFor) {
+      this.pm.showRecordingFor(key, delayMs).catch((err) => {
+        console.warn('[WhatsApp] Smart-delay recording failed:', err.message);
+      });
+    } else {
+      this.showTypingFor(key, delayMs).catch((err) => {
+        console.warn('[WhatsApp] Smart-delay typing failed:', err.message);
+      });
+    }
 
     if (delayMs <= 0) {
       this.runAccessWorkflowAfterDelay(payload).catch((err) => {
@@ -1330,6 +1360,7 @@ class WhatsAppService {
     chatId,
     inboundAt,
     forceAccessCode = false,
+    forceGemini = false,
   }) {
     const key = String(chatId || peerKey || '').trim();
     console.log(`[WhatsApp] Smart delay elapsed for ${key} — checking manual replies…`);
@@ -1361,6 +1392,43 @@ class WhatsAppService {
       console.log(
         `[WhatsApp] Access code confirmed for ${key} — running unlock for any peer (no phone whitelist)`
       );
+    }
+
+    // Trigger-based Gemini session turn (PLAN / plan Q&A / voice) — before form workflow
+    if (forceGemini || (!isAccessCode && body)) {
+      try {
+        const gemini = require('./geminiResponder');
+        if (
+          forceGemini ||
+          gemini.ownsInbound({
+            body,
+            message,
+            phone: peerKey,
+            chatId: key,
+          })
+        ) {
+          const ok = await gemini.handleSessionTurn(this, {
+            phone: peerKey,
+            chatId: key || message.from,
+            body,
+            message,
+          });
+          if (ok) {
+            return {
+              handled: true,
+              reason: 'gemini_session',
+              silent: false,
+              via: 'gemini',
+            };
+          }
+        }
+      } catch (gemErr) {
+        logger.warn('[Gemini] session turn error:', gemErr.message);
+      }
+    }
+
+    if (forceGemini) {
+      return { handled: true, reason: 'gemini_session_noop', silent: true };
     }
 
     console.log(
@@ -1785,6 +1853,10 @@ class WhatsAppService {
     } catch (_) {}
 
     if (isAccessCode) {
+      // Form unlock wins — drop any AI plan session for this peer
+      try {
+        require('./geminiResponder').endSession(peerKey || chatId);
+      } catch (_) {}
       logger.info(`[WhatsApp] Access code unlock peer=${peerKey}`);
       this.scheduleSmartAccessDelay({
         message,
@@ -1805,13 +1877,6 @@ class WhatsAppService {
         body
       );
       if (bridged) return;
-
-      if (mediaLike) {
-        console.error(
-          `[ChatBridge] MEDIA DROPPED — no active bridge session type=${message.type || '?'} from=${message.from} phone=${phone || peerKey} chatId=${chatId || '—'}`
-        );
-        // Keep id seen to avoid spam, but log clearly — media cannot relay without a session
-      }
     } catch (err) {
       console.error('[ChatBridge] handler error:', err.message);
       console.error(err.stack);
@@ -1836,7 +1901,58 @@ class WhatsAppService {
       );
     }
 
-    // 3) Non-code chatter → smart delay then silent ignore (unless waiter resumes)
+    // 3) Trigger-based Gemini AI session (PLAN / CLS / active turns + voice)
+    try {
+      const gemini = require('./geminiResponder');
+      const destChat = chatId || message.from;
+
+      // CLS during AI session — close immediately, skip long human delay
+      if (
+        gemini.enabled() &&
+        gemini.hasSession(peerKey || destChat) &&
+        gemini.isCloseCommand(body)
+      ) {
+        await gemini.closeAndAck(this, {
+          phone: peerKey,
+          chatId: destChat,
+          message,
+        });
+        return;
+      }
+
+      if (
+        gemini.ownsInbound({
+          body,
+          message,
+          phone: peerKey,
+          chatId: destChat,
+        })
+      ) {
+        logger.info(
+          `[Gemini] owning inbound peer=${peerKey} type=${message.type || 'chat'}`
+        );
+        this.scheduleSmartAccessDelay({
+          message,
+          peerKey,
+          body,
+          chatId: destChat,
+          msgId,
+          forceGemini: true,
+        });
+        return;
+      }
+    } catch (gemErr) {
+      logger.warn('[Gemini] inbound gate error:', gemErr.message);
+    }
+
+    if (mediaLike) {
+      console.error(
+        `[ChatBridge] MEDIA DROPPED — no active bridge/AI session type=${message.type || '?'} from=${message.from} phone=${phone || peerKey} chatId=${chatId || '—'}`
+      );
+      return;
+    }
+
+    // 4) Non-code chatter → smart delay, then workflow (often silent)
     this.scheduleSmartAccessDelay({
       message,
       peerKey,

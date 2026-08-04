@@ -81,6 +81,64 @@
         </label>
       </section>
 
+      <section class="panel p-5 md:p-6 space-y-4">
+        <div class="flex items-center gap-2">
+          <span class="chip bg-sea/15 text-sea">AI</span>
+          <h2 class="font-display text-lg font-semibold dark:text-white">Google Gemini plan assistant</h2>
+        </div>
+        <p class="text-sm text-ink/55 dark:text-slate-400">
+          Trigger-only sessions: send the trigger code (default <strong>PLAN</strong>) to start,
+          ask plan details by text or voice note, get a Malayalam voice-note reply,
+          then send <strong>CLS</strong> (or close) to end. Does not run on every message,
+          and never interrupts live desk bridge, access-code unlock, or campaigns.
+        </p>
+        <label class="flex items-center gap-2 text-sm font-semibold dark:text-slate-300">
+          <input type="checkbox" name="gemini_enabled" value="1"
+            <%= String(settings.gemini_enabled || '1') !== '0' ? 'checked' : '' %> class="accent-sea" />
+          Enable Gemini plan assistant
+        </label>
+        <div class="grid sm:grid-cols-2 gap-3">
+          <div class="sm:col-span-2">
+            <label class="label">API key (optional if set in .env)</label>
+            <input class="field font-mono text-sm" type="password" name="gemini_api_key"
+                   value="<%= settings.gemini_api_key || '' %>"
+                   placeholder="AIza…" autocomplete="off" />
+          </div>
+          <div>
+            <label class="label">Trigger code</label>
+            <input class="field font-mono uppercase" name="gemini_trigger_code"
+                   value="<%= settings.gemini_trigger_code || 'PLAN' %>"
+                   placeholder="PLAN" />
+          </div>
+          <div>
+            <label class="label">Chat model</label>
+            <input class="field" name="gemini_model"
+                   value="<%= settings.gemini_model || 'gemini-2.0-flash' %>" />
+          </div>
+          <div>
+            <label class="label">TTS model</label>
+            <input class="field" name="gemini_tts_model"
+                   value="<%= settings.gemini_tts_model || 'gemini-2.5-flash-preview-tts' %>" />
+          </div>
+          <div>
+            <label class="label">TTS voice</label>
+            <input class="field" name="gemini_tts_voice"
+                   value="<%= settings.gemini_tts_voice || 'Kore' %>"
+                   placeholder="Kore" />
+          </div>
+          <div>
+            <label class="label">Min gap between AI replies (ms)</label>
+            <input class="field" type="number" name="gemini_min_gap_ms" min="500" max="60000"
+                   value="<%= settings.gemini_min_gap_ms || 2500 %>" />
+          </div>
+        </div>
+        <div>
+          <label class="label">Custom system prompt (optional)</label>
+          <textarea class="field min-h-[100px]" name="gemini_system_prompt"
+                    placeholder="Leave blank for default Malayalam plan-advisor voice prompt. Use {{business_name}}."><%= settings.gemini_system_prompt || '' %></textarea>
+        </div>
+      </section>
+
       <button type="submit" class="btn-primary px-8 py-3">Save settings</button>
     </form>
   </main>

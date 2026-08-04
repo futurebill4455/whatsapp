@@ -490,6 +490,23 @@ router.post('/admin/settings', requireAdmin, (req, res) => {
       clamp(Number(req.body.anti_ban_hours_end) || 21, 0, 23)
     ),
     anti_ban_timezone: String(req.body.anti_ban_timezone || 'Asia/Kolkata').trim(),
+    gemini_enabled: req.body.gemini_enabled ? '1' : '0',
+    gemini_api_key: String(req.body.gemini_api_key || '').trim(),
+    gemini_model:
+      String(req.body.gemini_model || '').trim() || 'gemini-2.0-flash',
+    gemini_trigger_code:
+      String(req.body.gemini_trigger_code || 'PLAN')
+        .trim()
+        .toUpperCase() || 'PLAN',
+    gemini_tts_model:
+      String(req.body.gemini_tts_model || '').trim() ||
+      'gemini-2.5-flash-preview-tts',
+    gemini_tts_voice:
+      String(req.body.gemini_tts_voice || '').trim() || 'Kore',
+    gemini_min_gap_ms: String(
+      clamp(Number(req.body.gemini_min_gap_ms) || 2500, 500, 60000)
+    ),
+    gemini_system_prompt: String(req.body.gemini_system_prompt || '').trim(),
   });
 
   req.session.flash = { type: 'success', message: 'Settings saved.' };

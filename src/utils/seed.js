@@ -57,6 +57,14 @@ function seed() {
     fallback_ack_enabled: '1',
     fallback_ack_message:
       'Thanks for your message! Our team will get back to you shortly. Reply *close* anytime to end the chat.',
+    gemini_enabled: '1',
+    gemini_api_key: '',
+    gemini_model: 'gemini-2.0-flash',
+    gemini_trigger_code: 'PLAN',
+    gemini_tts_model: 'gemini-2.5-flash-preview-tts',
+    gemini_tts_voice: 'Kore',
+    gemini_min_gap_ms: '2500',
+    gemini_system_prompt: '',
   };
 
   for (const [key, value] of Object.entries(defaults)) {
