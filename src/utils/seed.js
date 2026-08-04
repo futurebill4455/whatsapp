@@ -60,6 +60,8 @@ function seed() {
     gemini_enabled: '1',
     gemini_api_key: '',
     gemini_model: 'gemini-2.0-flash',
+    gemini_plan_model: 'gemini-2.5-flash',
+    gemini_plan_timeout_ms: '60000',
     gemini_trigger_code: 'PLAN',
     gemini_tts_model: 'gemini-2.5-flash-preview-tts',
     gemini_tts_voice: 'Kore',

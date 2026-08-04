@@ -494,6 +494,11 @@ router.post('/admin/settings', requireAdmin, (req, res) => {
     gemini_api_key: String(req.body.gemini_api_key || '').trim(),
     gemini_model:
       String(req.body.gemini_model || '').trim() || 'gemini-2.0-flash',
+    gemini_plan_model:
+      String(req.body.gemini_plan_model || '').trim() || 'gemini-2.5-flash',
+    gemini_plan_timeout_ms: String(
+      clamp(Number(req.body.gemini_plan_timeout_ms) || 60000, 30000, 120000)
+    ),
     gemini_trigger_code:
       String(req.body.gemini_trigger_code || 'PLAN')
         .trim()

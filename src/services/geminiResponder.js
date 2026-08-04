@@ -67,6 +67,27 @@ function getModelName() {
   );
 }
 
+/** Heavier model for plan-detail explanations (default: gemini-2.5-flash). */
+function getPlanModelName() {
+  return (
+    String(process.env.GEMINI_PLAN_MODEL || '').trim() ||
+    String(Settings.get('gemini_plan_model') || '').trim() ||
+    'gemini-2.5-flash'
+  );
+}
+
+/** Plan-detail API wait budget (ms). Default 60s; clamp 30s–120s. */
+function getPlanTimeoutMs() {
+  const fromEnv = Number(process.env.GEMINI_PLAN_TIMEOUT_MS);
+  const fromSettings = Number(Settings.get('gemini_plan_timeout_ms'));
+  const n = Number.isFinite(fromEnv) && fromEnv > 0
+    ? fromEnv
+    : Number.isFinite(fromSettings) && fromSettings > 0
+      ? fromSettings
+      : 60000;
+  return Math.max(30000, Math.min(120000, n));
+}
+
 function getTtsModel() {
   return (
     String(process.env.GEMINI_TTS_MODEL || '').trim() ||
@@ -265,32 +286,48 @@ function classifyGeminiFailure(err) {
 
 /**
  * Run an async Gemini call with timeout + exponential backoff retries.
+ * For long plan-detail calls, pass a higher timeoutMs (e.g. 60000+).
  * @returns {{ ok: true, value } | { ok: false, error, reason }}
  */
-async function withGeminiRetry(fn, { label = 'gemini', attempts = 3, timeoutMs = 28000 } = {}) {
+async function withGeminiRetry(
+  fn,
+  { label = 'gemini', attempts = 3, timeoutMs = 28000 } = {}
+) {
   let lastErr = null;
   for (let i = 0; i < attempts; i++) {
+    const started = Date.now();
+    let timer = null;
     try {
       const value = await Promise.race([
-        fn(i),
-        new Promise((_, reject) =>
-          setTimeout(
+        Promise.resolve().then(() => fn(i, { timeoutMs })),
+        new Promise((_, reject) => {
+          timer = setTimeout(
             () => reject(new Error(`${label}_timeout`)),
             timeoutMs
-          )
-        ),
+          );
+        }),
       ]);
+      if (timer) clearTimeout(timer);
+      logger.info(
+        `[Gemini] ${label} OK in ${Date.now() - started}ms (attempt ${i + 1})`
+      );
       return { ok: true, value };
     } catch (err) {
+      if (timer) clearTimeout(timer);
       lastErr = err;
       const reason = classifyGeminiFailure(err);
       const retryable = isRetryableGeminiError(err);
       logger.warn(
-        `[Gemini] ${label} attempt ${i + 1}/${attempts} failed (${reason}): ${err.message}`
+        `[Gemini] ${label} attempt ${i + 1}/${attempts} failed after ${Date.now() - started}ms (${reason}): ${err.message}`
       );
       if (!retryable || i >= attempts - 1) break;
-      // Exponential backoff: 1.2s, 2.4s, 4.8s (+ small jitter), longer on 429
-      const base = reason === 'rate_limit' ? 2500 : 1200;
+
+      const base =
+        reason === 'rate_limit'
+          ? 3000
+          : reason === 'timeout'
+            ? 1500
+            : 1200;
       const backoff = Math.round(base * Math.pow(2, i) + Math.random() * 400);
       logger.info(`[Gemini] ${label} retry in ${backoff}ms`);
       await sleep(backoff);
@@ -504,6 +541,9 @@ async function generatePlanReply({ key, userText, businessName }) {
     Settings.get('business_name', 'SecureLife Insurance') ||
     'SecureLife Insurance';
 
+  const planModel = getPlanModelName();
+  const planTimeoutMs = getPlanTimeoutMs();
+
   const history = getHistory(key);
   const contents = [];
   for (const turn of history) {
@@ -514,29 +554,43 @@ async function generatePlanReply({ key, userText, businessName }) {
   }
   contents.push({ role: 'user', parts: [{ text: userText }] });
 
+  logger.info(
+    `[Gemini] plan-detail request model=${planModel} timeoutMs=${planTimeoutMs} peer=${key} text="${String(userText).slice(0, 60)}"`
+  );
+
+  // Heavy plan-detail generation: longer timeout, wait for full response.
+  // 2 attempts max so a 60s+60s path cannot stall the chat forever.
   const ran = await withGeminiRetry(
-    async () => {
+    async (_attempt, { timeoutMs } = {}) => {
       const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({
-        model: getModelName(),
-        systemInstruction: getPlanSystemPrompt(brand),
-        generationConfig: {
-          temperature: 0.75,
-          topP: 0.95,
-          maxOutputTokens: 900,
+      const model = genAI.getGenerativeModel(
+        {
+          model: planModel,
+          systemInstruction: getPlanSystemPrompt(brand),
+          generationConfig: {
+            temperature: 0.7,
+            topP: 0.95,
+            maxOutputTokens: 1400,
+          },
         },
-      });
+        // SDK-level HTTP timeout so Puppeteer/chat can await completion
+        { timeout: Math.max(timeoutMs || planTimeoutMs, planTimeoutMs) }
+      );
       const result = await model.generateContent({ contents });
       const reply = String(result?.response?.text?.() || '')
         .replace(/\r\n/g, '\n')
         .replace(/^```[\s\S]*?```$/gm, '')
         .replace(/\n{3,}/g, '\n\n')
         .trim()
-        .slice(0, 2500);
+        .slice(0, 2800);
       if (!reply) throw new Error('empty_reply');
       return reply;
     },
-    { label: 'plan-reply', attempts: 3, timeoutMs: 28000 }
+    {
+      label: 'plan-reply',
+      attempts: 2,
+      timeoutMs: planTimeoutMs,
+    }
   );
 
   if (!ran.ok) {
@@ -571,7 +625,7 @@ function fallbackTextForReason(reason) {
     return 'സെർവർ ഇപ്പോൾ തിരക്കിലാണ് (rate limit). ഒരു നിമിഷം കഴിഞ്ഞ് വീണ്ടും അയക്കൂ — സെഷൻ തുറന്നിരിക്കും.';
   }
   if (reason === 'timeout') {
-    return 'മറുപടി തയ്യാറാക്കാൻ കൂടുതൽ സമയമെടുത്തു. ദയവായി ചോദ്യം ചുരുക്കി വീണ്ടും അയക്കൂ.';
+    return 'പ്ലാൻ വിവരം തയ്യാറാക്കാൻ കൂടുതൽ സമയമെടുക്കുന്നു. ദയവായി ഒരു നിമിഷം കഴിഞ്ഞ് വീണ്ടും ചോദ്യം അയക്കൂ — സെഷൻ തുറന്നിരിക്കും.';
   }
   return 'ക്ഷമിക്കണം, ഇപ്പോൾ മറുപടി തയ്യാറാക്കാൻ പറ്റിയില്ല. അല്പസമയം കഴിഞ്ഞ് വീണ്ടും ശ്രമിക്കൂ. (CLS അയച്ചാൽ സെഷൻ അടയ്ക്കാം)';
 }
@@ -631,7 +685,7 @@ async function synthesizeSpeechRaw(text) {
           }),
         }),
         new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('tts_timeout')), 45000)
+          setTimeout(() => reject(new Error('tts_timeout')), 60000)
         ),
       ]);
 
@@ -875,7 +929,12 @@ async function handleSessionTurn(
   if (!userText) return false;
 
   try {
-    if (chatId && whatsapp.pm?.sendRecordingPresence) {
+    if (chatId && whatsapp.pm?.showRecordingFor) {
+      // Keep recording presence up while the heavy plan-detail call runs
+      whatsapp.pm
+        .showRecordingFor(chatId, Math.min(getPlanTimeoutMs(), 55000))
+        .catch(() => {});
+    } else if (chatId && whatsapp.pm?.sendRecordingPresence) {
       await whatsapp.pm.sendRecordingPresence(chatId);
     }
   } catch (_) {}
@@ -909,6 +968,8 @@ module.exports = {
   enabled,
   getApiKey,
   getModelName,
+  getPlanModelName,
+  getPlanTimeoutMs,
   getTriggerCode,
   hasSession,
   startSession,

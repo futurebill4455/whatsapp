@@ -111,9 +111,20 @@
                    placeholder="PLAN" />
           </div>
           <div>
-            <label class="label">Chat model</label>
+            <label class="label">Chat / STT model</label>
             <input class="field" name="gemini_model"
                    value="<%= settings.gemini_model || 'gemini-2.0-flash' %>" />
+          </div>
+          <div>
+            <label class="label">Plan-details model</label>
+            <input class="field" name="gemini_plan_model"
+                   value="<%= settings.gemini_plan_model || 'gemini-2.5-flash' %>" />
+          </div>
+          <div>
+            <label class="label">Plan-details timeout (ms)</label>
+            <input class="field" type="number" name="gemini_plan_timeout_ms"
+                   min="30000" max="120000" step="1000"
+                   value="<%= settings.gemini_plan_timeout_ms || 60000 %>" />
           </div>
           <div>
             <label class="label">TTS model</label>
