@@ -2422,9 +2422,30 @@ class WhatsAppService {
 
     const msgType = String(options.msgType || '').toLowerCase();
     const isVoice =
+      options.sendAudioAsVoice === true ||
       msgType === 'ptt' ||
       msgType === 'audio' ||
       /^audio\//i.test(String(payload.mimetype || ''));
+
+    // Normalize voice mime so WA Web accepts PTT (ogg/opus preferred)
+    if (options.sendAudioAsVoice || msgType === 'ptt') {
+      try {
+        const head = Buffer.from(String(payload.data).slice(0, 16), 'base64');
+        const isOgg = head.length >= 4 && head.toString('ascii', 0, 4) === 'OggS';
+        if (isOgg) {
+          payload.mimetype = 'audio/ogg; codecs=opus';
+          if (!payload.filename || !/\.ogg$/i.test(payload.filename)) {
+            payload.filename = 'voice.ogg';
+          }
+        } else {
+          console.warn(
+            `[Media] PTT payload is NOT OggS (mime=${payload.mimetype}) — send may fail; prefer ffmpeg conversion upstream`
+          );
+        }
+      } catch (err) {
+        console.warn('[Media] PTT mime sniff failed:', err.message);
+      }
+    }
 
     if (!options.skipTyping) {
       const timing = antiBan.planOutboundTiming(options.caption || '(media)');
@@ -2433,6 +2454,7 @@ class WhatsAppService {
         else await this.showTypingFor(chatId, timing.typingMs);
       } catch (err) {
         console.error('[Media] presence before send failed:', err.message);
+        console.error(err.stack);
       }
     } else {
       try {
@@ -2447,16 +2469,40 @@ class WhatsAppService {
     // `once: true` → only the first option (prevents image + image_as_document doubles)
     let optionSets;
     if (options.sendAsDocument || options.sendAudioAsVoice || options.sendMediaAsSticker) {
-      optionSets = [
-        {
-          caption: options.caption || undefined,
-          sendMediaAsDocument: !!options.sendAsDocument,
-          sendAudioAsVoice: !!options.sendAudioAsVoice,
-          sendMediaAsSticker: !!options.sendMediaAsSticker,
-          sendVideoAsGif: !!options.sendVideoAsGif,
-          _label: 'explicit',
-        },
-      ];
+      if (options.sendAudioAsVoice || msgType === 'ptt') {
+        // Ordered PTT attempts — WhatsApp is picky about upload path + mime
+        optionSets = [
+          {
+            sendAudioAsVoice: true,
+            caption: undefined,
+            _label: 'ptt_voice',
+            _preferFile: true,
+          },
+          {
+            sendAudioAsVoice: true,
+            caption: undefined,
+            _label: 'ptt_voice_b64',
+            _preferFile: false,
+          },
+          {
+            sendAudioAsVoice: false,
+            caption: options.caption || undefined,
+            _label: 'audio_file',
+            _preferFile: true,
+          },
+        ];
+      } else {
+        optionSets = [
+          {
+            caption: options.caption || undefined,
+            sendMediaAsDocument: !!options.sendAsDocument,
+            sendAudioAsVoice: !!options.sendAudioAsVoice,
+            sendMediaAsSticker: !!options.sendMediaAsSticker,
+            sendVideoAsGif: !!options.sendVideoAsGif,
+            _label: 'explicit',
+          },
+        ];
+      }
     } else {
       optionSets = buildMediaSendOptionSets(
         msgType || payload.mimetype,
@@ -2475,18 +2521,80 @@ class WhatsAppService {
       `[Media] sending → ${chatId} mime=${payload.mimetype} file=${payload.filename || '—'} b64=${String(payload.data).length} attempts=${optionSets.map((s) => s._label).join(',')}`
     );
 
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+
+    const writeTempMediaFile = (mediaPayload) => {
+      const ext =
+        (mediaPayload.filename && path.extname(mediaPayload.filename)) ||
+        (String(mediaPayload.mimetype).includes('pdf')
+          ? '.pdf'
+          : String(mediaPayload.mimetype).startsWith('image/')
+            ? '.jpg'
+            : /ogg/i.test(String(mediaPayload.mimetype))
+              ? '.ogg'
+              : /mpeg|mp3/i.test(String(mediaPayload.mimetype))
+                ? '.mp3'
+                : String(mediaPayload.mimetype).startsWith('audio/')
+                  ? '.ogg'
+                  : '.bin');
+      const tmp = path.join(
+        os.tmpdir(),
+        `wa-media-${process.pid}-${Date.now()}${ext}`
+      );
+      const buf = Buffer.from(String(mediaPayload.data), 'base64');
+      fs.writeFileSync(tmp, buf);
+      console.log(
+        `[Media] wrote temp file ${tmp} bytes=${buf.length} mime=${mediaPayload.mimetype}`
+      );
+      return tmp;
+    };
+
     const errors = [];
     for (const sendOpts of optionSets) {
       const label = sendOpts._label || 'attempt';
+      const preferFile =
+        sendOpts._preferFile === true ||
+        options.preferFilePath === true ||
+        (isVoice && String(payload.data).length > 8000);
       const opts = { ...sendOpts };
       delete opts._label;
+      delete opts._preferFile;
+      let tmpFile = null;
       try {
-        console.log(`[Media] attempt=${label} opts=${JSON.stringify(opts)}`);
+        console.log(
+          `[Media] attempt=${label} preferFile=${preferFile} opts=${JSON.stringify(opts)}`
+        );
         let result;
         let sentWithoutThrow = false;
+        let sendPayload = payload;
+
+        // Voice/PTT: send from disk via fromFilePath — more reliable than huge CDP base64
+        if (preferFile) {
+          try {
+            tmpFile = writeTempMediaFile(payload);
+            sendPayload = MessageMedia.fromFilePath(tmpFile);
+            if (options.sendAudioAsVoice || msgType === 'ptt') {
+              sendPayload.mimetype = 'audio/ogg; codecs=opus';
+              sendPayload.filename = sendPayload.filename || 'voice.ogg';
+            }
+            console.log(
+              `[Media] using fromFilePath mime=${sendPayload.mimetype} file=${tmpFile}`
+            );
+          } catch (errFilePrep) {
+            console.error(
+              '[Media] temp-file prepare failed:',
+              errFilePrep.message
+            );
+            console.error(errFilePrep.stack);
+            sendPayload = payload;
+          }
+        }
+
         try {
           result = await corePipeline.outbound.withSocket(() =>
-            this.client.sendMessage(chatId, payload, opts)
+            this.client.sendMessage(chatId, sendPayload, opts)
           );
           sentWithoutThrow = true;
         } catch (err) {
@@ -2496,50 +2604,43 @@ class WhatsAppService {
           );
           console.error(err.stack);
 
-          // Large base64 via CDP can fail — try temp-file path (still one send)
-          if (String(payload.data).length > 200000) {
-            try {
-              const fs = require('fs');
-              const os = require('os');
-              const path = require('path');
-              const ext =
-                (payload.filename && path.extname(payload.filename)) ||
-                (String(payload.mimetype).includes('pdf')
-                  ? '.pdf'
-                  : String(payload.mimetype).startsWith('image/')
-                    ? '.jpg'
-                    : String(payload.mimetype).startsWith('audio/')
-                      ? '.ogg'
-                      : '.bin');
-              const tmp = path.join(
-                os.tmpdir(),
-                `wa-media-${Date.now()}${ext}`
+          // Retry opposite transport (file ↔ base64) once for this option set
+          try {
+            if (tmpFile) {
+              console.log(`[Media] ${label} file failed — retrying in-memory base64`);
+              result = await corePipeline.outbound.withSocket(() =>
+                this.client.sendMessage(chatId, payload, opts)
               );
-              fs.writeFileSync(tmp, Buffer.from(payload.data, 'base64'));
-              console.log(
-                `[Media] wrote temp file ${tmp} bytes=${fs.statSync(tmp).size} — retrying fromFilePath`
-              );
-              const fromFile = MessageMedia.fromFilePath(tmp);
-              try {
-                result = await corePipeline.outbound.withSocket(() =>
-                  this.client.sendMessage(chatId, fromFile, opts)
-                );
-                sentWithoutThrow = true;
-              } finally {
-                try {
-                  fs.unlinkSync(tmp);
-                } catch (_) {}
+            } else {
+              tmpFile = writeTempMediaFile(payload);
+              const fromFile = MessageMedia.fromFilePath(tmpFile);
+              if (options.sendAudioAsVoice || msgType === 'ptt') {
+                fromFile.mimetype = 'audio/ogg; codecs=opus';
               }
-            } catch (errFile) {
-              console.error(
-                '[Media] temp-file send failed:',
-                errFile.message
+              console.log(
+                `[Media] ${label} b64 failed — retrying fromFilePath ${tmpFile}`
               );
-              console.error(errFile.stack);
-              throw err;
+              result = await corePipeline.outbound.withSocket(() =>
+                this.client.sendMessage(chatId, fromFile, opts)
+              );
             }
-          } else {
+            sentWithoutThrow = true;
+          } catch (errRetry) {
+            console.error(
+              `[Media] ${label} retry also failed:`,
+              errRetry.message
+            );
+            console.error(errRetry.stack);
             throw err;
+          }
+        } finally {
+          if (tmpFile) {
+            try {
+              fs.unlinkSync(tmpFile);
+            } catch (unlinkErr) {
+              console.warn('[Media] temp unlink:', unlinkErr.message);
+            }
+            tmpFile = null;
           }
         }
 
@@ -2568,6 +2669,7 @@ class WhatsAppService {
               filename: payload.filename,
               attempt: label,
               lane,
+              voice: !!(options.sendAudioAsVoice || msgType === 'ptt'),
             },
           });
         } catch (_) {}
@@ -2580,6 +2682,11 @@ class WhatsAppService {
         console.error(`[Media] attempt=${label} FAILED:`, err.message);
         console.error(err.stack);
         errors.push(`${label}:${err.message}`);
+        if (tmpFile) {
+          try {
+            fs.unlinkSync(tmpFile);
+          } catch (_) {}
+        }
         // With once=true, stop immediately after first failure
         if (options.once) break;
       }

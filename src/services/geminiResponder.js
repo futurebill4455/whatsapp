@@ -12,6 +12,7 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { MessageMedia } = require('whatsapp-web.js');
 const { Settings } = require('../models');
 const logger = require('../utils/logger');
+const { toWhatsAppVoiceMedia, pcmToWav } = require('./waVoiceMedia');
 
 const HISTORY_TURNS = 10;
 const HISTORY_TTL_MS = 60 * 60 * 1000;
@@ -249,31 +250,11 @@ function ownsInbound({ body, message, phone, chatId } = {}) {
   return false;
 }
 
-function pcmToWav(pcmBuf, sampleRate = 24000, numChannels = 1, bitDepth = 16) {
-  const pcm = Buffer.isBuffer(pcmBuf) ? pcmBuf : Buffer.from(pcmBuf);
-  const blockAlign = (numChannels * bitDepth) / 8;
-  const byteRate = sampleRate * blockAlign;
-  const header = Buffer.alloc(44);
-  header.write('RIFF', 0);
-  header.writeUInt32LE(36 + pcm.length, 4);
-  header.write('WAVE', 8);
-  header.write('fmt ', 12);
-  header.writeUInt32LE(16, 16);
-  header.writeUInt16LE(1, 20);
-  header.writeUInt16LE(numChannels, 22);
-  header.writeUInt32LE(sampleRate, 24);
-  header.writeUInt32LE(byteRate, 28);
-  header.writeUInt16LE(blockAlign, 32);
-  header.writeUInt16LE(bitDepth, 34);
-  header.write('data', 36);
-  header.writeUInt32LE(pcm.length, 40);
-  return Buffer.concat([header, pcm]);
-}
-
 /**
- * Gemini native TTS → WAV MessageMedia. Falls back to Google Translate TTS (mp3).
+ * Gemini / fallback TTS → raw audio buffer + mime (not yet WA-encoded).
+ * @returns {Promise<{ buffer: Buffer, mime: string }|null>}
  */
-async function synthesizeSpeech(text) {
+async function synthesizeSpeechRaw(text) {
   const clean = String(text || '')
     .replace(/\*+/g, '')
     .replace(/[_`#]+/g, '')
@@ -316,26 +297,15 @@ async function synthesizeSpeech(text) {
           json?.candidates?.[0]?.content?.parts?.find((p) => p.inlineData) ||
           json?.candidates?.[0]?.content?.parts?.[0];
         const b64 = part?.inlineData?.data;
-        const mime = String(part?.inlineData?.mimeType || '');
+        const mime = String(part?.inlineData?.mimeType || 'audio/L16;codec=pcm;rate=24000');
         if (b64) {
           const raw = Buffer.from(b64, 'base64');
-          // Gemini TTS returns raw PCM (s16le 24k) or occasionally wrapped audio
-          if (/wav/i.test(mime)) {
-            return new MessageMedia('audio/wav', b64, 'reply.wav');
-          }
-          if (/mpeg|mp3/i.test(mime)) {
-            return new MessageMedia('audio/mpeg', b64, 'reply.mp3');
-          }
-          if (/ogg|opus/i.test(mime)) {
-            return new MessageMedia('audio/ogg; codecs=opus', b64, 'reply.ogg');
-          }
-          const wav = pcmToWav(raw, 24000, 1, 16);
-          return new MessageMedia(
-            'audio/wav',
-            wav.toString('base64'),
-            'reply.wav'
+          logger.info(
+            `[Gemini] TTS raw mime=${mime} bytes=${raw.length}`
           );
+          return { buffer: raw, mime };
         }
+        logger.warn('[Gemini] TTS response missing inlineData');
       } else {
         const errText = await res.text().catch(() => '');
         logger.warn(
@@ -344,6 +314,7 @@ async function synthesizeSpeech(text) {
       }
     } catch (err) {
       logger.warn('[Gemini] TTS failed:', err.message);
+      console.error(err.stack);
     }
   }
 
@@ -369,10 +340,45 @@ async function synthesizeSpeech(text) {
     }
     if (!buffers.length) return null;
     const mp3 = Buffer.concat(buffers);
-    return new MessageMedia('audio/mpeg', mp3.toString('base64'), 'reply.mp3');
+    logger.info(`[Gemini] fallback TTS mp3 bytes=${mp3.length}`);
+    return { buffer: mp3, mime: 'audio/mpeg' };
   } catch (err) {
     logger.warn('[Gemini] fallback TTS failed:', err.message);
+    console.error(err.stack);
     return null;
+  }
+}
+
+/**
+ * Full pipeline: text → TTS → OGG/Opus MessageMedia for PTT.
+ */
+async function synthesizeSpeech(text) {
+  const raw = await synthesizeSpeechRaw(text);
+  if (!raw?.buffer) return null;
+  try {
+    const converted = await toWhatsAppVoiceMedia(raw.buffer, raw.mime);
+    // Attach cleanup so sendVoiceNote can remove temp files
+    converted.media._waVoiceCleanup = converted.cleanup;
+    converted.media._waVoiceFilePath = converted.filePath;
+    return converted.media;
+  } catch (err) {
+    logger.warn('[Gemini] OGG conversion failed:', err.message);
+    console.error(err.stack);
+    // Last resort: expose WAV so sendMedia can still attempt (usually fails as PTT)
+    try {
+      const wav = /wav|pcm|l16/i.test(raw.mime)
+        ? (/RIFF/.test(raw.buffer.slice(0, 4).toString('ascii'))
+            ? raw.buffer
+            : pcmToWav(raw.buffer, 24000, 1, 16))
+        : raw.buffer;
+      return new MessageMedia(
+        /mpeg|mp3/i.test(raw.mime) ? 'audio/mpeg' : 'audio/wav',
+        wav.toString('base64'),
+        /mpeg|mp3/i.test(raw.mime) ? 'reply.mp3' : 'reply.wav'
+      );
+    } catch (_) {
+      return null;
+    }
   }
 }
 
@@ -484,7 +490,7 @@ async function generatePlanReply({ key, userText, businessName }) {
 async function sendVoiceNote(whatsapp, { phone, chatId, text, message }) {
   const media = await synthesizeSpeech(text);
   if (!media) {
-    // Text fallback if TTS unavailable
+    logger.warn('[Gemini] no audio media — text fallback');
     await whatsapp.sendMessage(phone || chatId, text, {
       chatId: chatId || undefined,
       replyTo: message || undefined,
@@ -494,24 +500,42 @@ async function sendVoiceNote(whatsapp, { phone, chatId, text, message }) {
     return { voice: false, text: true };
   }
 
+  const cleanup = typeof media._waVoiceCleanup === 'function'
+    ? media._waVoiceCleanup
+    : null;
+  delete media._waVoiceCleanup;
+  delete media._waVoiceFilePath;
+
   try {
+    logger.info(
+      `[Gemini] sending PTT mime=${media.mimetype} file=${media.filename || '—'} b64=${String(media.data || '').length}`
+    );
     await whatsapp.sendMedia(phone || chatId, media, {
       chatId: chatId || undefined,
       sendAudioAsVoice: true,
       msgType: 'ptt',
       lane: 'core',
-      once: true,
+      // allow sendMedia voice fallbacks (file-path / alternate mime) before giving up
+      once: false,
+      preferFilePath: true,
       caption: undefined,
     });
     return { voice: true, text: false };
   } catch (err) {
     logger.warn('[Gemini] voice send failed, text fallback:', err.message);
+    console.error(err.stack);
     await whatsapp.sendMessage(phone || chatId, text, {
       chatId: chatId || undefined,
       replyTo: message || undefined,
       lane: 'core',
     });
     return { voice: false, text: true };
+  } finally {
+    try {
+      cleanup?.();
+    } catch (err) {
+      console.warn('[Gemini] voice temp cleanup:', err.message);
+    }
   }
 }
 
