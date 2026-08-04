@@ -135,6 +135,24 @@ function sessionSpacingMs() {
   return Math.min(4000, nextVariableDelayMs());
 }
 
+/**
+ * Shorter human delay for active Gemini plan-assistant turns so API
+ * timeouts are not compounded by a full 1–45s anti-ban wait.
+ * Window: 1.2s–8s (still feels natural, much more responsive).
+ */
+function geminiSessionDelayMs() {
+  const lo = Math.max(DELAY_MIN_MS, 1200);
+  const hi = Math.min(8000, DELAY_MAX_MS);
+  let delay = randInt(lo, hi);
+  const last = _recentDelays[_recentDelays.length - 1];
+  if (last != null && Math.abs(delay - last) < 400) {
+    delay = randInt(lo, hi);
+  }
+  _recentDelays.push(delay);
+  if (_recentDelays.length > RECENT_DELAY_WINDOW) _recentDelays.shift();
+  return delay;
+}
+
 function isWithinWorkingHours(_now = new Date()) {
   return true;
 }
@@ -271,6 +289,7 @@ module.exports = {
   randInt,
   jitterBounds,
   nextVariableDelayMs,
+  geminiSessionDelayMs,
   humanJitterMs: nextVariableDelayMs,
   planOutboundTiming,
   readingDelayMs,

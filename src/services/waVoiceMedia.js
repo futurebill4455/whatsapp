@@ -221,9 +221,136 @@ async function toWhatsAppVoiceMedia(inputBuf, mimeHint = '') {
   }
 }
 
+/**
+ * Strip data-URL prefix / whitespace from MessageMedia.data.
+ */
+function normalizeBase64Audio(data) {
+  let raw = String(data || '').trim();
+  const dataUrl = raw.match(/^data:[^;]+;base64,(.+)$/i);
+  if (dataUrl) raw = dataUrl[1];
+  // Remove whitespace/newlines sometimes injected by WA downloads
+  raw = raw.replace(/\s+/g, '');
+  return raw;
+}
+
+/**
+ * Convert inbound WhatsApp PTT (usually OGG/Opus) into a Gemini-friendly
+ * WAV or MP3 payload. Returns { buffer, mime, base64 }.
+ */
+async function convertAudioForStt(inputBufOrB64, mimeHint = '', format = 'wav') {
+  let buf;
+  if (Buffer.isBuffer(inputBufOrB64)) {
+    buf = inputBufOrB64;
+  } else {
+    buf = Buffer.from(normalizeBase64Audio(inputBufOrB64), 'base64');
+  }
+  if (!buf || buf.length < 32) throw new Error('stt_input_empty');
+
+  const kind = sniffAudioKind(buf, mimeHint);
+  const inExt =
+    kind === 'ogg'
+      ? '.ogg'
+      : kind === 'mp3'
+        ? '.mp3'
+        : kind === 'wav'
+          ? '.wav'
+          : '.bin';
+  const outExt = format === 'mp3' ? '.mp3' : '.wav';
+  const outMime = format === 'mp3' ? 'audio/mp3' : 'audio/wav';
+
+  // Already WAV and target is wav — pass through
+  if (kind === 'wav' && format === 'wav') {
+    return { buffer: buf, mime: 'audio/wav', base64: buf.toString('base64') };
+  }
+  if (kind === 'mp3' && format === 'mp3') {
+    return { buffer: buf, mime: 'audio/mp3', base64: buf.toString('base64') };
+  }
+
+  const inPath = tmpPath(inExt === '.bin' ? '.ogg' : inExt);
+  const outPath = tmpPath(outExt);
+
+  try {
+    // If magic says ogg but we wrote .bin, force .ogg for demuxer
+    const writePath =
+      kind === 'ogg' || (buf.toString('ascii', 0, 4) === 'OggS')
+        ? tmpPath('.ogg')
+        : inPath;
+    fs.writeFileSync(writePath, buf);
+    logger.info(
+      `[VoiceMedia] STT convert in kind=${kind} bytes=${buf.length} → ${format} mimeHint=${mimeHint || '—'}`
+    );
+
+    const args =
+      format === 'mp3'
+        ? [
+            '-y',
+            '-i',
+            writePath,
+            '-vn',
+            '-ac',
+            '1',
+            '-ar',
+            '16000',
+            '-b:a',
+            '64k',
+            '-map_metadata',
+            '-1',
+            outPath,
+          ]
+        : [
+            '-y',
+            '-i',
+            writePath,
+            '-vn',
+            '-ac',
+            '1',
+            '-ar',
+            '16000',
+            '-c:a',
+            'pcm_s16le',
+            '-map_metadata',
+            '-1',
+            outPath,
+          ];
+
+    await runFfmpeg(args, { label: `stt-${format}` });
+
+    if (!fs.existsSync(outPath)) throw new Error('stt_out_missing');
+    const outBuf = fs.readFileSync(outPath);
+    if (outBuf.length < 44) throw new Error('stt_out_too_small');
+
+    logger.info(
+      `[VoiceMedia] STT convert OK → ${outMime} bytes=${outBuf.length}`
+    );
+
+    for (const p of [writePath, outPath, inPath]) {
+      try {
+        if (p && fs.existsSync(p)) fs.unlinkSync(p);
+      } catch (_) {}
+    }
+
+    return {
+      buffer: outBuf,
+      mime: outMime,
+      base64: outBuf.toString('base64'),
+    };
+  } catch (err) {
+    for (const p of [inPath, outPath]) {
+      try {
+        if (p && fs.existsSync(p)) fs.unlinkSync(p);
+      } catch (_) {}
+    }
+    console.error('[VoiceMedia] STT convert FAILED:', err.message);
+    console.error(err.stack);
+    throw err;
+  }
+}
+
 module.exports = {
   resolveFfmpegPath,
   pcmToWav,
   toWhatsAppVoiceMedia,
+  convertAudioForStt,
+  normalizeBase64Audio,
   sniffAudioKind,
 };

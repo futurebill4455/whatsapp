@@ -1255,8 +1255,11 @@ class WhatsAppService {
       isAccessCode = !!AccessGate.tryUnlock(peerKey || key, body).ok;
     } catch (_) {}
 
-    // Always use unique 1–45s human delay (never instant)
-    const delayMs = antiBan.nextVariableDelayMs();
+    // Always use unique human delay (Gemini sessions: shorter window so API
+    // retries aren't drowned by a full 1–45s anti-ban wait)
+    const delayMs = forceGemini
+      ? antiBan.geminiSessionDelayMs()
+      : antiBan.nextVariableDelayMs();
 
     const existing = this._pendingSmartDelay.get(key);
     if (existing?.timer) clearTimeout(existing.timer);

@@ -12,7 +12,8 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { MessageMedia } = require('whatsapp-web.js');
 const { Settings } = require('../models');
 const logger = require('../utils/logger');
-const { toWhatsAppVoiceMedia, pcmToWav } = require('./waVoiceMedia');
+const { toWhatsAppVoiceMedia, pcmToWav, convertAudioForStt, normalizeBase64Audio } = require('./waVoiceMedia');
+const antiBan = require('./antiBan');
 
 const HISTORY_TURNS = 10;
 const HISTORY_TTL_MS = 60 * 60 * 1000;
@@ -233,6 +234,349 @@ function isVoiceMessage(message) {
   return t === 'ptt' || t === 'audio';
 }
 
+function sleep(ms) {
+  return antiBan.sleep(Math.max(0, Number(ms) || 0));
+}
+
+function isRetryableGeminiError(err) {
+  const msg = String(err?.message || err || '');
+  const status = err?.status || err?.statusCode || err?.code;
+  if (status === 429 || status === 503 || status === 500 || status === 502) {
+    return true;
+  }
+  return /429|503|500|502|RESOURCE_EXHAUSTED|rate.?limit|quota|timeout|ETIMEDOUT|ECONNRESET|ENOTFOUND|fetch failed|gemini_timeout|stt_timeout|Too Many Requests|Unavailable|internal error|empty_reply/i.test(
+    msg
+  );
+}
+
+function classifyGeminiFailure(err) {
+  const msg = String(err?.message || err || '');
+  if (/429|RESOURCE_EXHAUSTED|rate.?limit|Too Many Requests|quota/i.test(msg)) {
+    return 'rate_limit';
+  }
+  if (/timeout|gemini_timeout|stt_timeout|ETIMEDOUT/i.test(msg)) {
+    return 'timeout';
+  }
+  if (/503|502|500|Unavailable|internal error|ECONNRESET|fetch failed/i.test(msg)) {
+    return 'transient';
+  }
+  return 'other';
+}
+
+/**
+ * Run an async Gemini call with timeout + exponential backoff retries.
+ * @returns {{ ok: true, value } | { ok: false, error, reason }}
+ */
+async function withGeminiRetry(fn, { label = 'gemini', attempts = 3, timeoutMs = 28000 } = {}) {
+  let lastErr = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const value = await Promise.race([
+        fn(i),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`${label}_timeout`)),
+            timeoutMs
+          )
+        ),
+      ]);
+      return { ok: true, value };
+    } catch (err) {
+      lastErr = err;
+      const reason = classifyGeminiFailure(err);
+      const retryable = isRetryableGeminiError(err);
+      logger.warn(
+        `[Gemini] ${label} attempt ${i + 1}/${attempts} failed (${reason}): ${err.message}`
+      );
+      if (!retryable || i >= attempts - 1) break;
+      // Exponential backoff: 1.2s, 2.4s, 4.8s (+ small jitter), longer on 429
+      const base = reason === 'rate_limit' ? 2500 : 1200;
+      const backoff = Math.round(base * Math.pow(2, i) + Math.random() * 400);
+      logger.info(`[Gemini] ${label} retry in ${backoff}ms`);
+      await sleep(backoff);
+    }
+  }
+  return {
+    ok: false,
+    error: lastErr,
+    reason: classifyGeminiFailure(lastErr),
+  };
+}
+
+function softNormalizeGeminiMime(mimeHint, buf) {
+  const raw = String(mimeHint || '').toLowerCase();
+  const magic = Buffer.isBuffer(buf) ? buf.slice(0, 4).toString('ascii') : '';
+  if (magic === 'OggS' || /ogg|opus/i.test(raw)) return 'audio/ogg';
+  if (magic === 'RIFF' || /wav/i.test(raw)) return 'audio/wav';
+  if (/mpeg|mp3/i.test(raw)) return 'audio/mp3';
+  if (/webm/i.test(raw)) return 'audio/webm';
+  if (/mp4|m4a/i.test(raw)) return 'audio/mp4';
+  // Default WhatsApp PTT
+  return 'audio/ogg';
+}
+
+function sanitizeTranscript(text) {
+  let t = String(text || '')
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .replace(/^\s*transcript\s*:\s*/i, '')
+    .trim();
+  // Model sometimes returns refusals / explanations instead of speech text
+  if (
+    !t ||
+    /^(i('m| am) (sorry|unable)|cannot (transcribe|hear)|no (speech|audio)|empty audio)/i.test(
+      t
+    ) ||
+    t.length < 2
+  ) {
+    return null;
+  }
+  return t.slice(0, 2000);
+}
+
+async function downloadInboundAudio(whatsapp, message) {
+  let media = null;
+  const errors = [];
+  try {
+    media = await whatsapp.downloadMediaWithRetry?.(message, 8);
+  } catch (err) {
+    errors.push(`retry:${err.message}`);
+    console.error('[Gemini] STT downloadMediaWithRetry:', err.message);
+  }
+  if (!media?.data) {
+    try {
+      media = await message.downloadMedia?.();
+    } catch (err) {
+      errors.push(`direct:${err.message}`);
+      console.error('[Gemini] STT downloadMedia:', err.message);
+    }
+  }
+  if (!media?.data) {
+    try {
+      media = await whatsapp.pm?.downloadMediaFromMessageMeta?.(message);
+    } catch (err) {
+      errors.push(`meta:${err.message}`);
+    }
+  }
+  if (!media?.data) {
+    logger.warn(`[Gemini] voice download empty (${errors.join(' | ') || 'no data'})`);
+    return null;
+  }
+
+  const b64 = normalizeBase64Audio(media.data);
+  let buf;
+  try {
+    buf = Buffer.from(b64, 'base64');
+  } catch (err) {
+    logger.warn('[Gemini] voice base64 decode failed:', err.message);
+    return null;
+  }
+  if (!buf || buf.length < 64) {
+    logger.warn(`[Gemini] voice buffer too small bytes=${buf?.length || 0}`);
+    return null;
+  }
+
+  return {
+    buffer: buf,
+    base64: b64,
+    mime: softNormalizeGeminiMime(media.mimetype, buf),
+    rawMime: media.mimetype || '',
+  };
+}
+
+async function geminiTranscribeOnce(apiKey, base64, mime, prompt) {
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({ model: getModelName() });
+  const result = await model.generateContent([
+    {
+      inlineData: {
+        data: base64,
+        mimeType: mime,
+      },
+    },
+    { text: prompt },
+  ]);
+  return sanitizeTranscript(result?.response?.text?.());
+}
+
+/**
+ * Transcribe inbound WhatsApp PTT with Gemini:
+ *  1) original OGG (normalized mime)
+ *  2) ffmpeg → WAV 16k
+ *  3) ffmpeg → MP3
+ * Each step uses timeout + exponential backoff retries.
+ */
+async function transcribeInboundVoice(whatsapp, message) {
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    logger.warn('[Gemini] STT skipped — no API key');
+    return { text: null, reason: 'no_key' };
+  }
+
+  const downloaded = await downloadInboundAudio(whatsapp, message);
+  if (!downloaded) return { text: null, reason: 'download' };
+
+  logger.info(
+    `[Gemini] STT input mime=${downloaded.mime} raw=${downloaded.rawMime || '—'} bytes=${downloaded.buffer.length}`
+  );
+
+  const prompt =
+    'Transcribe this WhatsApp voice note. ' +
+    'Output ONLY the spoken words. Prefer Malayalam (മലയാളം) script when the speaker uses Malayalam; ' +
+    'keep English/Hinglish as spoken. No commentary, no quotes, no "transcript:" label.';
+
+  const attempts = [];
+
+  // 1) Native ogg/opus with clean mime
+  attempts.push({
+    label: 'ogg',
+    base64: downloaded.base64,
+    mime: downloaded.mime === 'audio/ogg' ? 'audio/ogg' : downloaded.mime,
+  });
+
+  // 2) WAV fallback (most reliable for Gemini)
+  try {
+    const wav = await convertAudioForStt(
+      downloaded.buffer,
+      downloaded.rawMime || downloaded.mime,
+      'wav'
+    );
+    attempts.push({ label: 'wav', base64: wav.base64, mime: wav.mime });
+  } catch (err) {
+    logger.warn('[Gemini] STT wav convert skipped:', err.message);
+  }
+
+  // 3) MP3 fallback
+  try {
+    const mp3 = await convertAudioForStt(
+      downloaded.buffer,
+      downloaded.rawMime || downloaded.mime,
+      'mp3'
+    );
+    attempts.push({ label: 'mp3', base64: mp3.base64, mime: mp3.mime });
+  } catch (err) {
+    logger.warn('[Gemini] STT mp3 convert skipped:', err.message);
+  }
+
+  let lastReason = 'other';
+  for (const att of attempts) {
+    const ran = await withGeminiRetry(
+      async () => {
+        const text = await geminiTranscribeOnce(
+          apiKey,
+          att.base64,
+          att.mime,
+          prompt
+        );
+        if (!text) throw new Error('empty_transcript');
+        return text;
+      },
+      {
+        label: `stt-${att.label}`,
+        attempts: 3,
+        timeoutMs: 32000,
+      }
+    );
+
+    if (ran.ok && ran.value) {
+      logger.info(
+        `[Gemini] STT OK via ${att.label} → "${String(ran.value).slice(0, 80)}"`
+      );
+      return { text: ran.value, reason: null };
+    }
+
+    lastReason = ran.reason || lastReason;
+    // empty_transcript is not retryable across formats if truly silent — still try next format
+    if (ran.error && !isRetryableGeminiError(ran.error) && /empty_transcript/i.test(ran.error.message)) {
+      continue;
+    }
+  }
+
+  logger.warn(`[Gemini] STT all formats failed reason=${lastReason}`);
+  return { text: null, reason: lastReason || 'other' };
+}
+
+async function generatePlanReply({ key, userText, businessName }) {
+  const apiKey = getApiKey();
+  if (!apiKey) return { text: null, reason: 'no_key' };
+
+  const brand =
+    businessName ||
+    Settings.get('business_name', 'SecureLife Insurance') ||
+    'SecureLife Insurance';
+
+  const history = getHistory(key);
+  const contents = [];
+  for (const turn of history) {
+    contents.push({
+      role: turn.role === 'model' ? 'model' : 'user',
+      parts: [{ text: turn.text }],
+    });
+  }
+  contents.push({ role: 'user', parts: [{ text: userText }] });
+
+  const ran = await withGeminiRetry(
+    async () => {
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({
+        model: getModelName(),
+        systemInstruction: getPlanSystemPrompt(brand),
+        generationConfig: {
+          temperature: 0.75,
+          topP: 0.95,
+          maxOutputTokens: 900,
+        },
+      });
+      const result = await model.generateContent({ contents });
+      const reply = String(result?.response?.text?.() || '')
+        .replace(/\r\n/g, '\n')
+        .replace(/^```[\s\S]*?```$/gm, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim()
+        .slice(0, 2500);
+      if (!reply) throw new Error('empty_reply');
+      return reply;
+    },
+    { label: 'plan-reply', attempts: 3, timeoutMs: 28000 }
+  );
+
+  if (!ran.ok) {
+    logger.warn(
+      `[Gemini] plan generate failed after retries (${ran.reason}): ${ran.error?.message}`
+    );
+    return { text: null, reason: ran.reason || 'other' };
+  }
+
+  pushHistory(key, 'user', userText);
+  pushHistory(key, 'model', ran.value);
+  _lastReplyAt.set(key, Date.now());
+  touchSession(key);
+  return { text: ran.value, reason: null };
+}
+
+function fallbackSttText(reason) {
+  if (reason === 'rate_limit') {
+    return 'വോയ്സ് ട്രാൻസ്ക്രൈബ് ചെയ്യാൻ സെർവർ തിരക്കിലാണ്. ഒരു നിമിഷം കഴിഞ്ഞ് വോയ്സ് വീണ്ടും അയക്കൂ, അല്ലെങ്കിൽ പ്ലാൻ പേര് ടൈപ്പ് ചെയ്യൂ.';
+  }
+  if (reason === 'timeout') {
+    return 'വോയ്സ് പ്രോസസ് ചെയ്യാൻ കൂടുതൽ സമയമെടുത്തു. ചുരുങ്ങിയ വോയ്സ് അയക്കൂ അല്ലെങ്കിൽ ടൈപ്പ് ചെയ്യൂ.';
+  }
+  if (reason === 'download') {
+    return 'വോയ്സ് നോട്ട് ഡൗൺലോഡ് ചെയ്യാൻ പറ്റിയില്ല. ഒന്നുകൂടി അയക്കൂ അല്ലെങ്കിൽ ടൈപ്പ് ചെയ്യൂ.';
+  }
+  return 'വോയ്സ് നോട്ട് വ്യക്തമായി മനസ്സിലായില്ല. ദയവായി ഒന്നുകൂടി പറയൂ, അല്ലെങ്കിൽ പ്ലാൻ പേര് ടൈപ്പ് ചെയ്ത് അയക്കൂ. (ഉദാ: Star Health Assure)';
+}
+
+function fallbackTextForReason(reason) {
+  if (reason === 'rate_limit') {
+    return 'സെർവർ ഇപ്പോൾ തിരക്കിലാണ് (rate limit). ഒരു നിമിഷം കഴിഞ്ഞ് വീണ്ടും അയക്കൂ — സെഷൻ തുറന്നിരിക്കും.';
+  }
+  if (reason === 'timeout') {
+    return 'മറുപടി തയ്യാറാക്കാൻ കൂടുതൽ സമയമെടുത്തു. ദയവായി ചോദ്യം ചുരുക്കി വീണ്ടും അയക്കൂ.';
+  }
+  return 'ക്ഷമിക്കണം, ഇപ്പോൾ മറുപടി തയ്യാറാക്കാൻ പറ്റിയില്ല. അല്പസമയം കഴിഞ്ഞ് വീണ്ടും ശ്രമിക്കൂ. (CLS അയച്ചാൽ സെഷൻ അടയ്ക്കാം)';
+}
+
+
 /**
  * Whether this inbound belongs to the AI session pipeline (trigger, active turn, or voice in session).
  */
@@ -382,111 +726,6 @@ async function synthesizeSpeech(text) {
   }
 }
 
-async function transcribeInboundVoice(whatsapp, message) {
-  try {
-    const media =
-      (await whatsapp.downloadMediaWithRetry?.(message, 6)) ||
-      (await message.downloadMedia?.());
-    if (!media?.data) {
-      logger.warn('[Gemini] voice download empty');
-      return null;
-    }
-    let mime = String(media.mimetype || 'audio/ogg').split(';')[0].trim();
-    if (mime === 'audio/ogg') mime = 'audio/ogg';
-    const apiKey = getApiKey();
-    if (!apiKey) return null;
-
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: getModelName() });
-    const result = await Promise.race([
-      model.generateContent([
-        {
-          inlineData: {
-            data: media.data,
-            mimeType: media.mimetype || mime,
-          },
-        },
-        {
-          text:
-            'Transcribe this WhatsApp voice note accurately. ' +
-            'If spoken in Malayalam, write Malayalam script. ' +
-            'If English/mixed, keep as spoken. Return ONLY the transcript text.',
-        },
-      ]),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('stt_timeout')), 40000)
-      ),
-    ]);
-    const text = String(result?.response?.text?.() || '')
-      .replace(/^["'\s]+|["'\s]+$/g, '')
-      .trim();
-    if (!text) return null;
-    logger.info(`[Gemini] STT → "${text.slice(0, 80)}"`);
-    return text.slice(0, 2000);
-  } catch (err) {
-    logger.warn('[Gemini] STT failed:', err.message);
-    return null;
-  }
-}
-
-async function generatePlanReply({ key, userText, businessName }) {
-  const apiKey = getApiKey();
-  if (!apiKey) return null;
-
-  const brand =
-    businessName ||
-    Settings.get('business_name', 'SecureLife Insurance') ||
-    'SecureLife Insurance';
-
-  try {
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({
-      model: getModelName(),
-      systemInstruction: getPlanSystemPrompt(brand),
-      generationConfig: {
-        temperature: 0.75,
-        topP: 0.95,
-        maxOutputTokens: 900,
-      },
-    });
-
-    const history = getHistory(key);
-    const contents = [];
-    for (const turn of history) {
-      contents.push({
-        role: turn.role === 'model' ? 'model' : 'user',
-        parts: [{ text: turn.text }],
-      });
-    }
-    contents.push({ role: 'user', parts: [{ text: userText }] });
-
-    const result = await Promise.race([
-      model.generateContent({ contents }),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('gemini_timeout')), 35000)
-      ),
-    ]);
-
-    const reply = String(result?.response?.text?.() || '')
-      .replace(/\r\n/g, '\n')
-      .replace(/^```[\s\S]*?```$/gm, '')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim()
-      .slice(0, 2500);
-
-    if (!reply) return null;
-
-    pushHistory(key, 'user', userText);
-    pushHistory(key, 'model', reply);
-    _lastReplyAt.set(key, Date.now());
-    touchSession(key);
-    return reply;
-  } catch (err) {
-    logger.warn('[Gemini] plan generate failed:', err.message);
-    return null;
-  }
-}
-
 async function sendVoiceNote(whatsapp, { phone, chatId, text, message }) {
   const media = await synthesizeSpeech(text);
   if (!media) {
@@ -600,23 +839,37 @@ async function handleSessionTurn(
   }
 
   if (!hasSession(key)) return false;
+
+  // Soft local pacing — wait briefly instead of dropping the turn silently
   if (rateLimited(key)) {
-    logger.debug(`[Gemini] rate-limited peer=${key}`);
-    return true; // still "ours" — stay silent briefly
+    const minGap = Number(Settings.get('gemini_min_gap_ms')) || 2500;
+    const wait = Math.max(
+      0,
+      minGap - (Date.now() - (_lastReplyAt.get(key) || 0))
+    );
+    logger.info(`[Gemini] peer pacing ${wait}ms before reply peer=${key}`);
+    if (wait > 0) await sleep(Math.min(wait, 4000));
   }
 
   let userText = text;
   if (isVoiceMessage(message) && !userText) {
-    userText = await transcribeInboundVoice(whatsapp, message);
+    const stt = await transcribeInboundVoice(whatsapp, message);
+    userText = stt?.text || null;
     if (!userText) {
-      await sendVoiceNote(whatsapp, {
-        phone,
-        chatId,
-        text: 'ക്ഷമിക്കണം, വോയ്സ് കൃത്യമായി കേൾക്കാൻ പറ്റിയില്ല. ഒന്നുകൂടി പറയാമോ, അല്ലെങ്കിൽ ടൈപ്പ് ചെയ്യാം.',
-        message,
-      });
+      // Text (not voice) — avoid another TTS/API call when STT already failed
+      await whatsapp.sendMessage(
+        phone || chatId,
+        fallbackSttText(stt?.reason),
+        {
+          chatId: chatId || undefined,
+          replyTo: message || undefined,
+          lane: 'core',
+          skipPacing: true,
+        }
+      );
       return true;
     }
+    logger.info(`[Gemini] voice→text peer=${key}: "${userText.slice(0, 100)}"`);
   }
 
   if (!userText) return false;
@@ -627,22 +880,28 @@ async function handleSessionTurn(
     }
   } catch (_) {}
 
-  const reply = await generatePlanReply({
+  const generated = await generatePlanReply({
     key,
     userText,
     businessName: Settings.get('business_name', 'SecureLife Insurance'),
   });
 
-  if (!reply) {
-    await whatsapp.sendMessage(
-      phone || chatId,
-      'ക്ഷമിക്കണം, ഇപ്പോൾ മറുപടി തയ്യാറാക്കാൻ പറ്റിയില്ല. അല്പസമയം കഴിഞ്ഞ് വീണ്ടും ശ്രമിക്കൂ.',
-      { chatId: chatId || undefined, lane: 'core', skipPacing: true }
-    );
+  if (!generated?.text) {
+    const msg = fallbackTextForReason(generated?.reason);
+    await whatsapp.sendMessage(phone || chatId, msg, {
+      chatId: chatId || undefined,
+      lane: 'core',
+      skipPacing: true,
+    });
     return true;
   }
 
-  await sendVoiceNote(whatsapp, { phone, chatId, text: reply, message });
+  await sendVoiceNote(whatsapp, {
+    phone,
+    chatId,
+    text: generated.text,
+    message,
+  });
   return true;
 }
 
