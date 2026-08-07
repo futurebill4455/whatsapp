@@ -38,7 +38,7 @@ const CLOSE_ACK_POOL = [
   'സെഷൻ അവസാനിപ്പിച്ചു. പിന്നീട് പ്ലാൻ വിവരം വേണമെങ്കിൽ *PLAN* അയക്കുക.',
 ];
 
-/** @type {Map<string, { active: boolean, startedAt: number, updatedAt: number }>} */
+/** @type {Map<string, { active: boolean, startedAt: number, updatedAt: number, destPhone?: string, destChatId?: string, lastQuery?: string }>} */
 const _sessions = new Map();
 /** @type {Map<string, { turns: {role:string,text:string}[], updatedAt: number }>} */
 const _history = new Map();
@@ -46,6 +46,13 @@ const _history = new Map();
 const _lastReplyAt = new Map();
 /** @type {Map<string, number>} */
 const _lastGreetingIdx = new Map();
+/** chat:/tel: alias → canonical session key */
+const _aliases = new Map();
+/** Per-session async queue — same staff serialized; different staff parallel */
+const _peerLocks = new Map();
+/** In-flight request metadata for debugging misroutes */
+const _inflight = new Map();
+let _reqSeq = 0;
 
 function enabled() {
   const flag = Settings.get('gemini_enabled');
@@ -139,6 +146,22 @@ function isTrigger(text) {
   return n === getTriggerCode();
 }
 
+/**
+ * Canonical session id — prefer WhatsApp chatId (unique per staff phone / LID).
+ * Falls back to MSISDN digits. Never shares state across different chats.
+ */
+function sessionKey(phone, chatId) {
+  const chat = String(chatId || '').trim();
+  if (chat.includes('@')) return `wa:${chat.toLowerCase()}`;
+  const digits = String(phone || chat || '')
+    .replace(/\D/g, '')
+    .slice(-15);
+  if (digits.length >= 8) return `tel:${digits}`;
+  const raw = String(phone || chatId || 'unknown').trim();
+  return `raw:${raw || 'unknown'}`;
+}
+
+/** Legacy helper — digit fingerprint only (avoid for session isolation). */
 function peerKey(phoneOrChat) {
   return (
     String(phoneOrChat || '')
@@ -147,12 +170,44 @@ function peerKey(phoneOrChat) {
   );
 }
 
+function bindAliases(canonical, phone, chatId) {
+  if (!canonical) return;
+  const chat = String(chatId || '').trim().toLowerCase();
+  if (chat.includes('@')) _aliases.set(`chat:${chat}`, canonical);
+  const digits = String(phone || '')
+    .replace(/\D/g, '')
+    .slice(-15);
+  if (digits.length >= 8) _aliases.set(`tel:${digits}`, canonical);
+}
+
+function clearAliasesFor(canonical) {
+  for (const [alias, key] of _aliases) {
+    if (key === canonical) _aliases.delete(alias);
+  }
+}
+
+function resolveSessionKey(phone, chatId) {
+  const chat = String(chatId || '').trim().toLowerCase();
+  if (chat && _aliases.has(`chat:${chat}`)) return _aliases.get(`chat:${chat}`);
+  if (chat.includes('@')) {
+    const direct = `wa:${chat}`;
+    if (_sessions.has(direct)) return direct;
+  }
+  const digits = String(phone || '')
+    .replace(/\D/g, '')
+    .slice(-15);
+  if (digits && _aliases.has(`tel:${digits}`)) return _aliases.get(`tel:${digits}`);
+  return sessionKey(phone, chatId);
+}
+
 function pruneMaps() {
   const now = Date.now();
   for (const [k, v] of _sessions) {
     if (!v?.active || now - (v.updatedAt || v.startedAt) > SESSION_TTL_MS) {
       _sessions.delete(k);
       _history.delete(k);
+      _inflight.delete(k);
+      clearAliasesFor(k);
     }
   }
   for (const [k, v] of _history) {
@@ -162,40 +217,130 @@ function pruneMaps() {
     const oldest = _sessions.keys().next().value;
     _sessions.delete(oldest);
     _history.delete(oldest);
+    _inflight.delete(oldest);
+    clearAliasesFor(oldest);
   }
 }
 
-function hasSession(phoneOrChat) {
-  pruneMaps();
-  const key = peerKey(phoneOrChat);
-  const row = _sessions.get(key);
-  return !!(row && row.active);
+/**
+ * Per-staff mutex: queue turns for the same sessionKey; other staff run in parallel.
+ */
+function withSessionLock(key, fn) {
+  const prev = _peerLocks.get(key) || Promise.resolve();
+  const run = prev.catch(() => {}).then(() => fn());
+  _peerLocks.set(
+    key,
+    run.then(
+      () => undefined,
+      () => undefined
+    )
+  );
+  return run;
 }
 
-function startSession(phoneOrChat) {
-  const key = peerKey(phoneOrChat);
+function shortQueryRef(text) {
+  return String(text || '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 48);
+}
+
+/**
+ * Tag text replies with «query» so concurrent staff can tell responses apart.
+ */
+function withQueryTag(text, queryRef, { spoken = false } = {}) {
+  const body = String(text || '').trim();
+  const ref = shortQueryRef(queryRef);
+  if (!body || !ref) return body;
+  if (isTrigger(ref) || isCloseCommand(ref)) return body;
+  if (spoken) {
+    // Natural spoken lead-in for voice notes
+    if (body.toLowerCase().includes(ref.toLowerCase().slice(0, 12))) return body;
+    return `${ref} സംബന്ധിച്ച വിവരം. ${body}`;
+  }
+  return `«${ref}»\n\n${body}`;
+}
+
+/**
+ * Freeze routing for one request — all replies for this turn MUST use these dests.
+ */
+function makeRequestContext({ phone, chatId, body, message }) {
+  const destChatId = String(
+    chatId || message?.from || message?.author || ''
+  ).trim();
+  const destPhone = String(phone || '').trim() || destChatId;
+  const key = resolveSessionKey(destPhone, destChatId);
+  _reqSeq = (_reqSeq + 1) % 1e9;
+  const requestId = `g${Date.now().toString(36)}-${_reqSeq.toString(36)}`;
+  const queryRaw = String(body || '').trim();
+  return Object.freeze({
+    requestId,
+    sessionKey: key,
+    destPhone,
+    destChatId,
+    queryRef: shortQueryRef(queryRaw),
+    queryRaw,
+    message: message || null,
+  });
+}
+
+function hasSession(phone, chatId) {
+  pruneMaps();
+  // Legacy: hasSession(canonicalKey)
+  if (
+    chatId === undefined &&
+    typeof phone === 'string' &&
+    /^(wa:|tel:|raw:)/.test(phone)
+  ) {
+    return !!(_sessions.get(phone)?.active);
+  }
+  const key = resolveSessionKey(phone, chatId);
+  return !!(_sessions.get(key)?.active);
+}
+
+function startSession(phone, chatId) {
+  const key = resolveSessionKey(phone, chatId);
   const now = Date.now();
-  _sessions.set(key, { active: true, startedAt: now, updatedAt: now });
+  const destChatId = String(chatId || '').trim();
+  const destPhone = String(phone || '').trim() || destChatId;
+  _sessions.set(key, {
+    active: true,
+    startedAt: now,
+    updatedAt: now,
+    destPhone,
+    destChatId,
+    lastQuery: '',
+  });
   _history.delete(key);
-  logger.info(`[Gemini] session START peer=${key}`);
+  bindAliases(key, destPhone, destChatId);
+  logger.info(
+    `[Gemini] session START key=${key} phone=${destPhone || '—'} chat=${destChatId || '—'}`
+  );
   return key;
 }
 
-function endSession(phoneOrChat) {
-  const key = peerKey(phoneOrChat);
+function endSession(phone, chatId) {
+  const key =
+    chatId === undefined &&
+    typeof phone === 'string' &&
+    /^(wa:|tel:|raw:)/.test(phone)
+      ? phone
+      : resolveSessionKey(phone, chatId);
   _sessions.delete(key);
   _history.delete(key);
   _lastReplyAt.delete(key);
-  logger.info(`[Gemini] session END peer=${key}`);
+  _inflight.delete(key);
+  clearAliasesFor(key);
+  logger.info(`[Gemini] session END key=${key}`);
   return key;
 }
 
-function touchSession(key) {
+function touchSession(key, extra = {}) {
   const row = _sessions.get(key);
-  if (row) {
-    row.updatedAt = Date.now();
-    _sessions.set(key, row);
-  }
+  if (!row) return;
+  Object.assign(row, extra, { updatedAt: Date.now() });
+  _sessions.set(key, row);
 }
 
 function getHistory(key) {
@@ -532,7 +677,7 @@ async function transcribeInboundVoice(whatsapp, message) {
   return { text: null, reason: lastReason || 'other' };
 }
 
-async function generatePlanReply({ key, userText, businessName }) {
+async function generatePlanReply({ key, userText, businessName, requestId }) {
   const apiKey = getApiKey();
   if (!apiKey) return { text: null, reason: 'no_key' };
 
@@ -544,6 +689,7 @@ async function generatePlanReply({ key, userText, businessName }) {
   const planModel = getPlanModelName();
   const planTimeoutMs = getPlanTimeoutMs();
 
+  // Snapshot history for THIS session key only (never mix across staff)
   const history = getHistory(key);
   const contents = [];
   for (const turn of history) {
@@ -555,7 +701,7 @@ async function generatePlanReply({ key, userText, businessName }) {
   contents.push({ role: 'user', parts: [{ text: userText }] });
 
   logger.info(
-    `[Gemini] plan-detail request model=${planModel} timeoutMs=${planTimeoutMs} peer=${key} text="${String(userText).slice(0, 60)}"`
+    `[Gemini] plan-detail req=${requestId || '—'} key=${key} model=${planModel} timeoutMs=${planTimeoutMs} text="${String(userText).slice(0, 60)}"`
   );
 
   // Heavy plan-detail generation: longer timeout, wait for full response.
@@ -587,7 +733,7 @@ async function generatePlanReply({ key, userText, businessName }) {
       return reply;
     },
     {
-      label: 'plan-reply',
+      label: `plan-reply:${requestId || key}`,
       attempts: 2,
       timeoutMs: planTimeoutMs,
     }
@@ -595,7 +741,7 @@ async function generatePlanReply({ key, userText, businessName }) {
 
   if (!ran.ok) {
     logger.warn(
-      `[Gemini] plan generate failed after retries (${ran.reason}): ${ran.error?.message}`
+      `[Gemini] plan generate failed req=${requestId || '—'} key=${key} (${ran.reason}): ${ran.error?.message}`
     );
     return { text: null, reason: ran.reason || 'other' };
   }
@@ -603,7 +749,7 @@ async function generatePlanReply({ key, userText, businessName }) {
   pushHistory(key, 'user', userText);
   pushHistory(key, 'model', ran.value);
   _lastReplyAt.set(key, Date.now());
-  touchSession(key);
+  touchSession(key, { lastQuery: shortQueryRef(userText) });
   return { text: ran.value, reason: null };
 }
 
@@ -636,11 +782,10 @@ function fallbackTextForReason(reason) {
  */
 function ownsInbound({ body, message, phone, chatId } = {}) {
   if (!enabled()) return false;
-  const key = peerKey(phone || chatId);
   const text = String(body || '').trim();
 
   if (isTrigger(text)) return true;
-  if (!hasSession(key)) return false;
+  if (!hasSession(phone, chatId)) return false;
 
   if (text && isCloseCommand(text)) return true;
   if (text) return true;
@@ -780,46 +925,60 @@ async function synthesizeSpeech(text) {
   }
 }
 
-async function sendVoiceNote(whatsapp, { phone, chatId, text, message }) {
-  const media = await synthesizeSpeech(text);
+/**
+ * Send reply ONLY to the frozen dest on the request context (no shared globals).
+ */
+async function sendVoiceNote(whatsapp, ctx, text, { spokenTag = true } = {}) {
+  const destPhone = ctx.destPhone;
+  const destChatId = ctx.destChatId;
+  const requestId = ctx.requestId;
+  const spoken = spokenTag
+    ? withQueryTag(text, ctx.queryRef, { spoken: true })
+    : String(text || '').trim();
+  const textTagged = withQueryTag(text, ctx.queryRef, { spoken: false });
+
+  const media = await synthesizeSpeech(spoken);
   if (!media) {
-    logger.warn('[Gemini] no audio media — text fallback');
-    await whatsapp.sendMessage(phone || chatId, text, {
-      chatId: chatId || undefined,
-      replyTo: message || undefined,
+    logger.warn(
+      `[Gemini] no audio media — text fallback req=${requestId} key=${ctx.sessionKey}`
+    );
+    await whatsapp.sendMessage(destPhone, textTagged, {
+      chatId: destChatId || undefined,
+      replyTo: ctx.message || undefined,
       lane: 'core',
       skipPacing: false,
     });
     return { voice: false, text: true };
   }
 
-  const cleanup = typeof media._waVoiceCleanup === 'function'
-    ? media._waVoiceCleanup
-    : null;
+  const cleanup =
+    typeof media._waVoiceCleanup === 'function' ? media._waVoiceCleanup : null;
   delete media._waVoiceCleanup;
   delete media._waVoiceFilePath;
 
   try {
     logger.info(
-      `[Gemini] sending PTT mime=${media.mimetype} file=${media.filename || '—'} b64=${String(media.data || '').length}`
+      `[Gemini] PTT → key=${ctx.sessionKey} req=${requestId} chat=${destChatId} mime=${media.mimetype} b64=${String(media.data || '').length}`
     );
-    await whatsapp.sendMedia(phone || chatId, media, {
-      chatId: chatId || undefined,
+    await whatsapp.sendMedia(destPhone, media, {
+      chatId: destChatId || undefined,
       sendAudioAsVoice: true,
       msgType: 'ptt',
       lane: 'core',
-      // allow sendMedia voice fallbacks (file-path / alternate mime) before giving up
       once: false,
       preferFilePath: true,
       caption: undefined,
     });
     return { voice: true, text: false };
   } catch (err) {
-    logger.warn('[Gemini] voice send failed, text fallback:', err.message);
+    logger.warn(
+      `[Gemini] voice send failed req=${requestId} key=${ctx.sessionKey}:`,
+      err.message
+    );
     console.error(err.stack);
-    await whatsapp.sendMessage(phone || chatId, text, {
-      chatId: chatId || undefined,
-      replyTo: message || undefined,
+    await whatsapp.sendMessage(destPhone, textTagged, {
+      chatId: destChatId || undefined,
+      replyTo: ctx.message || undefined,
       lane: 'core',
     });
     return { voice: false, text: true };
@@ -832,28 +991,192 @@ async function sendVoiceNote(whatsapp, { phone, chatId, text, message }) {
   }
 }
 
+async function sendTextToCtx(whatsapp, ctx, text, opts = {}) {
+  const tagged = withQueryTag(text, ctx.queryRef, { spoken: false });
+  await whatsapp.sendMessage(ctx.destPhone, tagged, {
+    chatId: ctx.destChatId || undefined,
+    replyTo: ctx.message || undefined,
+    lane: 'core',
+    skipPacing: opts.skipPacing !== false,
+  });
+}
+
 /**
  * Immediate CLS close for an active AI session.
  */
 async function closeAndAck(whatsapp, { phone, chatId, message }) {
-  const key = endSession(phone || chatId);
-  const ack = pickCloseAck();
+  const ctx = makeRequestContext({ phone, chatId, body: 'CLS', message });
+  return withSessionLock(ctx.sessionKey, async () => {
+    const key = endSession(phone, chatId);
+    const ack = pickCloseAck();
+    try {
+      await whatsapp.sendMessage(ctx.destPhone, ack, {
+        chatId: ctx.destChatId || undefined,
+        replyTo: message || undefined,
+        lane: 'core',
+        skipPacing: true,
+        skipTyping: false,
+      });
+    } catch (err) {
+      logger.warn(`[Gemini] close ack failed key=${key}:`, err.message);
+    }
+    return { handled: true, reason: 'gemini_cls', peer: key };
+  });
+}
+
+/**
+ * Inner turn logic — always called under withSessionLock for ctx.sessionKey.
+ */
+async function handleSessionTurnLocked(whatsapp, ctx) {
+  const key = ctx.sessionKey;
+  const text = ctx.queryRaw;
+
+  logger.info(
+    `[Gemini] turn START req=${ctx.requestId} key=${key} chat=${ctx.destChatId} phone=${ctx.destPhone} text="${text.slice(0, 60)}"`
+  );
+
+  _inflight.set(key, {
+    requestId: ctx.requestId,
+    queryRef: ctx.queryRef,
+    chatId: ctx.destChatId,
+    phone: ctx.destPhone,
+    startedAt: Date.now(),
+  });
+
   try {
-    await whatsapp.sendMessage(phone || chatId, ack, {
-      chatId: chatId || undefined,
-      replyTo: message || undefined,
-      lane: 'core',
-      skipPacing: true,
-      skipTyping: false,
+    // CLS
+    if (_sessions.get(key)?.active && isCloseCommand(text)) {
+      endSession(ctx.destPhone, ctx.destChatId);
+      const ack = pickCloseAck();
+      await whatsapp.sendMessage(ctx.destPhone, ack, {
+        chatId: ctx.destChatId || undefined,
+        replyTo: ctx.message || undefined,
+        lane: 'core',
+        skipPacing: true,
+      });
+      return true;
+    }
+
+    // Trigger → start + varied greeting (voice)
+    if (isTrigger(text)) {
+      startSession(ctx.destPhone, ctx.destChatId);
+      const greeting = pickGreeting(key);
+      pushHistory(key, 'model', greeting);
+      _lastReplyAt.set(key, Date.now());
+
+      try {
+        if (ctx.destChatId && whatsapp.pm?.sendRecordingPresence) {
+          await whatsapp.pm.sendRecordingPresence(ctx.destChatId);
+        }
+      } catch (_) {}
+
+      const greetCtx = Object.freeze({ ...ctx, queryRef: '' });
+      await sendVoiceNote(whatsapp, greetCtx, greeting, { spokenTag: false });
+      return true;
+    }
+
+    if (!_sessions.get(key)?.active) return false;
+
+    // Soft local pacing — wait briefly instead of dropping the turn silently
+    if (rateLimited(key)) {
+      const minGap = Number(Settings.get('gemini_min_gap_ms')) || 2500;
+      const wait = Math.max(
+        0,
+        minGap - (Date.now() - (_lastReplyAt.get(key) || 0))
+      );
+      logger.info(
+        `[Gemini] peer pacing ${wait}ms key=${key} req=${ctx.requestId}`
+      );
+      if (wait > 0) await sleep(Math.min(wait, 4000));
+    }
+
+    let userText = text;
+    if (isVoiceMessage(ctx.message) && !userText) {
+      const stt = await transcribeInboundVoice(whatsapp, ctx.message);
+      userText = stt?.text || null;
+      if (!userText) {
+        await sendTextToCtx(whatsapp, ctx, fallbackSttText(stt?.reason));
+        return true;
+      }
+      logger.info(
+        `[Gemini] voice→text req=${ctx.requestId} key=${key}: "${userText.slice(0, 100)}"`
+      );
+    }
+
+    if (!userText) return false;
+
+    const turnCtx = Object.freeze({
+      ...ctx,
+      queryRef: shortQueryRef(userText) || ctx.queryRef,
+      queryRaw: userText,
     });
-  } catch (err) {
-    logger.warn('[Gemini] close ack failed:', err.message);
+
+    touchSession(key, {
+      destPhone: turnCtx.destPhone,
+      destChatId: turnCtx.destChatId,
+      lastQuery: turnCtx.queryRef,
+    });
+    bindAliases(key, turnCtx.destPhone, turnCtx.destChatId);
+    _inflight.set(key, {
+      requestId: turnCtx.requestId,
+      queryRef: turnCtx.queryRef,
+      chatId: turnCtx.destChatId,
+      phone: turnCtx.destPhone,
+      startedAt: Date.now(),
+    });
+
+    try {
+      if (turnCtx.destChatId && whatsapp.pm?.showRecordingFor) {
+        whatsapp.pm
+          .showRecordingFor(
+            turnCtx.destChatId,
+            Math.min(getPlanTimeoutMs(), 55000)
+          )
+          .catch(() => {});
+      } else if (turnCtx.destChatId && whatsapp.pm?.sendRecordingPresence) {
+        await whatsapp.pm.sendRecordingPresence(turnCtx.destChatId);
+      }
+    } catch (_) {}
+
+    const generated = await generatePlanReply({
+      key,
+      userText,
+      businessName: Settings.get('business_name', 'SecureLife Insurance'),
+      requestId: turnCtx.requestId,
+    });
+
+    // Guard: drop if a newer turn for this same staff already took ownership
+    const inflight = _inflight.get(key);
+    if (inflight && inflight.requestId !== turnCtx.requestId) {
+      logger.warn(
+        `[Gemini] DROPPED stale reply req=${turnCtx.requestId} — newer req=${inflight.requestId} owns key=${key}`
+      );
+      return true;
+    }
+
+    if (!generated?.text) {
+      await sendTextToCtx(
+        whatsapp,
+        turnCtx,
+        fallbackTextForReason(generated?.reason)
+      );
+      return true;
+    }
+
+    await sendVoiceNote(whatsapp, turnCtx, generated.text, { spokenTag: true });
+    logger.info(
+      `[Gemini] turn DONE req=${turnCtx.requestId} key=${key} → ${turnCtx.destChatId}`
+    );
+    return true;
+  } finally {
+    const cur = _inflight.get(key);
+    if (cur?.requestId === ctx.requestId) _inflight.delete(key);
   }
-  return { handled: true, reason: 'gemini_cls', peer: key };
 }
 
 /**
  * Run one session turn after smart delay: trigger greeting OR plan voice reply.
+ * Isolated per WhatsApp chat / staff member via session locks.
  */
 async function handleSessionTurn(
   whatsapp,
@@ -861,107 +1184,15 @@ async function handleSessionTurn(
 ) {
   if (!whatsapp?.ready || !enabled()) return false;
 
-  const key = peerKey(phone || chatId);
-  const text = String(body || '').trim();
-
-  // CLS (also handled early, but keep as safety)
-  if (hasSession(key) && isCloseCommand(text)) {
-    await closeAndAck(whatsapp, { phone, chatId, message });
-    return true;
+  const ctx = makeRequestContext({ phone, chatId, body, message });
+  if (!ctx.destChatId && !ctx.destPhone) {
+    logger.warn('[Gemini] turn aborted — no dest phone/chatId');
+    return false;
   }
 
-  // Trigger → start + varied greeting (voice)
-  if (isTrigger(text)) {
-    startSession(key);
-    const greeting = pickGreeting(key);
-    pushHistory(key, 'model', greeting);
-    _lastReplyAt.set(key, Date.now());
-
-    try {
-      if (chatId && whatsapp.pm?.sendRecordingPresence) {
-        await whatsapp.pm.sendRecordingPresence(chatId);
-      }
-    } catch (_) {}
-
-    await sendVoiceNote(whatsapp, {
-      phone,
-      chatId,
-      text: greeting,
-      message,
-    });
-    return true;
-  }
-
-  if (!hasSession(key)) return false;
-
-  // Soft local pacing — wait briefly instead of dropping the turn silently
-  if (rateLimited(key)) {
-    const minGap = Number(Settings.get('gemini_min_gap_ms')) || 2500;
-    const wait = Math.max(
-      0,
-      minGap - (Date.now() - (_lastReplyAt.get(key) || 0))
-    );
-    logger.info(`[Gemini] peer pacing ${wait}ms before reply peer=${key}`);
-    if (wait > 0) await sleep(Math.min(wait, 4000));
-  }
-
-  let userText = text;
-  if (isVoiceMessage(message) && !userText) {
-    const stt = await transcribeInboundVoice(whatsapp, message);
-    userText = stt?.text || null;
-    if (!userText) {
-      // Text (not voice) — avoid another TTS/API call when STT already failed
-      await whatsapp.sendMessage(
-        phone || chatId,
-        fallbackSttText(stt?.reason),
-        {
-          chatId: chatId || undefined,
-          replyTo: message || undefined,
-          lane: 'core',
-          skipPacing: true,
-        }
-      );
-      return true;
-    }
-    logger.info(`[Gemini] voice→text peer=${key}: "${userText.slice(0, 100)}"`);
-  }
-
-  if (!userText) return false;
-
-  try {
-    if (chatId && whatsapp.pm?.showRecordingFor) {
-      // Keep recording presence up while the heavy plan-detail call runs
-      whatsapp.pm
-        .showRecordingFor(chatId, Math.min(getPlanTimeoutMs(), 55000))
-        .catch(() => {});
-    } else if (chatId && whatsapp.pm?.sendRecordingPresence) {
-      await whatsapp.pm.sendRecordingPresence(chatId);
-    }
-  } catch (_) {}
-
-  const generated = await generatePlanReply({
-    key,
-    userText,
-    businessName: Settings.get('business_name', 'SecureLife Insurance'),
-  });
-
-  if (!generated?.text) {
-    const msg = fallbackTextForReason(generated?.reason);
-    await whatsapp.sendMessage(phone || chatId, msg, {
-      chatId: chatId || undefined,
-      lane: 'core',
-      skipPacing: true,
-    });
-    return true;
-  }
-
-  await sendVoiceNote(whatsapp, {
-    phone,
-    chatId,
-    text: generated.text,
-    message,
-  });
-  return true;
+  return withSessionLock(ctx.sessionKey, () =>
+    handleSessionTurnLocked(whatsapp, ctx)
+  );
 }
 
 module.exports = {
@@ -974,15 +1205,19 @@ module.exports = {
   hasSession,
   startSession,
   endSession,
+  sessionKey,
+  resolveSessionKey,
   ownsInbound,
   isTrigger,
   isCloseCommand,
   closeAndAck,
   handleSessionTurn,
   sendVoiceNote,
+  withSessionLock,
   // legacy aliases (unused after refactor)
   shouldRespond: () => false,
   replyViaWhatsApp: async () => false,
   looksLikeGreeting: () => false,
   pushHistory,
+  peerKey,
 };

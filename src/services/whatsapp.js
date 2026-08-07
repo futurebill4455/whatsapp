@@ -1297,7 +1297,7 @@ class WhatsAppService {
       (gemini.isTrigger(body) ||
         String(message?.type || '').toLowerCase() === 'ptt' ||
         String(message?.type || '').toLowerCase() === 'audio' ||
-        gemini.hasSession(peerKey || key));
+        gemini.hasSession(peerKey, key));
 
     if (useRecording && this.pm?.showRecordingFor) {
       this.pm.showRecordingFor(key, delayMs).catch((err) => {
@@ -1858,7 +1858,7 @@ class WhatsAppService {
     if (isAccessCode) {
       // Form unlock wins — drop any AI plan session for this peer
       try {
-        require('./geminiResponder').endSession(peerKey || chatId);
+        require('./geminiResponder').endSession(peerKey, chatId || message.from);
       } catch (_) {}
       logger.info(`[WhatsApp] Access code unlock peer=${peerKey}`);
       this.scheduleSmartAccessDelay({
@@ -1912,7 +1912,7 @@ class WhatsAppService {
       // CLS during AI session — close immediately, skip long human delay
       if (
         gemini.enabled() &&
-        gemini.hasSession(peerKey || destChat) &&
+        gemini.hasSession(peerKey, destChat) &&
         gemini.isCloseCommand(body)
       ) {
         await gemini.closeAndAck(this, {
@@ -1932,7 +1932,7 @@ class WhatsAppService {
         })
       ) {
         logger.info(
-          `[Gemini] owning inbound peer=${peerKey} type=${message.type || 'chat'}`
+          `[Gemini] owning inbound phone=${peerKey || '—'} chat=${destChat} type=${message.type || 'chat'}`
         );
         this.scheduleSmartAccessDelay({
           message,

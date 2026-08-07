@@ -116,21 +116,24 @@ function seed() {
   // Human delay window: 1–45 seconds for typing / replies / media relay
   Settings.set('anti_ban_jitter_min_ms', '1000');
   Settings.set('anti_ban_jitter_max_ms', '45000');
-  // Keep forward template phone-free and cleanly aligned
+  // Keep forward template phone-free and on the clean emoji layout
   try {
     const { DEFAULT_FORWARD_TEMPLATE, stripPhoneFromLeadMessage } = require('./leadSummary');
     const cur = Settings.get('forward_template');
-    if (
-      !cur ||
-      /\{\{\s*phone\s*\}\}/i.test(String(cur)) ||
-      /^\s*•\s*Phone\s*:/im.test(String(cur)) ||
-      /• Phone:/i.test(String(cur))
-    ) {
+    const curStr = String(cur || '');
+    const needsLayoutUpgrade =
+      !curStr ||
+      /\{\{\s*phone\s*\}\}/i.test(curStr) ||
+      /^\s*•\s*Phone\s*:/im.test(curStr) ||
+      /• Phone:/i.test(curStr) ||
+      /•\s*Name\s+:/i.test(curStr) ||
+      !/👤\s*\*Name:\*/.test(curStr);
+    if (needsLayoutUpgrade) {
       Settings.set('forward_template', DEFAULT_FORWARD_TEMPLATE);
-      console.log('[Seed] Updated forward_template (removed phone, cleaned layout)');
+      console.log('[Seed] Updated forward_template (clean multiline lead layout)');
     } else {
-      const cleaned = stripPhoneFromLeadMessage(String(cur));
-      if (cleaned !== String(cur)) Settings.set('forward_template', cleaned);
+      const cleaned = stripPhoneFromLeadMessage(curStr);
+      if (cleaned !== curStr) Settings.set('forward_template', cleaned);
     }
   } catch (_) {}
   // Status dots only — no long chat open/close text to the desk

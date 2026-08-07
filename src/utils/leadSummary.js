@@ -37,8 +37,98 @@ function formatSubmittedAt(value) {
   });
 }
 
+function dash(value) {
+  const s = value == null ? '' : String(value).trim();
+  return s || '—';
+}
+
+/** Keys that must never appear in desk lead summaries. */
+const SENSITIVE_EXTRA_KEYS = new Set([
+  'phone',
+  'mobile',
+  'msisdn',
+  'whatsapp',
+  'wa',
+  'from',
+  'peer',
+  'peer_key',
+  'peerkey',
+  'sender',
+  'sender_phone',
+  'sender_mobile',
+  'staff_phone',
+  'staff_mobile',
+  'agent_phone',
+  'advisor_phone',
+  'customer_phone',
+  'customer_mobile',
+  'customer_chat_id',
+  'chat_id',
+  'chatid',
+  'wa_chat_id',
+  'lid',
+  'jid',
+  'user_id',
+  'userid',
+  'internal_id',
+  'wa_id',
+]);
+
+function isSensitiveKey(key) {
+  const k = String(key || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+  if (!k) return true;
+  if (SENSITIVE_EXTRA_KEYS.has(k)) return true;
+  return /phone|mobile|msisdn|whatsapp|chat[_\s-]?id|peer|sender|staff[_\s-]?phone|@c\.us|@lid|jid|wa_id|user[_\s-]?id/i.test(
+    k
+  );
+}
+
+/** Detect WhatsApp JIDs, LIDs, or bare phone-looking values. */
+function looksLikePhoneOrChatId(value) {
+  const s = String(value == null ? '' : value).trim();
+  if (!s) return false;
+  if (/@(c\.us|lid|g\.us|s\.whatsapp\.net)\b/i.test(s)) return true;
+  if (/^(wa:|tel:|raw:)/i.test(s)) return true;
+  // 8–15 digit phone (optionally with + / spaces / dashes)
+  const digits = s.replace(/[\s\-().+]/g, '');
+  if (/^\d{8,15}$/.test(digits) && digits.length >= 10) return true;
+  return false;
+}
+
+function scrubSensitiveObject(obj) {
+  const out = {};
+  for (const [key, value] of Object.entries(obj || {})) {
+    if (isSensitiveKey(key)) continue;
+    if (value == null || value === '') continue;
+    if (typeof value === 'object') continue;
+    if (looksLikePhoneOrChatId(value)) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 /**
- * Format insurance-specific extra fields into clean bullet lines.
+ * Bullet list of health members for the desk lead card.
+ */
+function formatMemberList(submission) {
+  const members = parseMembers(submission?.members_json);
+  if (!members.length) return '—';
+  return members
+    .map((m, i) => {
+      const name = dash(m.name);
+      const dob = dash(m.dob);
+      const gender = dash(m.gender);
+      return `• ${i + 1}. ${name}\n  DOB: ${dob}  ·  Gender: ${gender}`;
+    })
+    .join('\n');
+}
+
+/**
+ * Type-specific extras (vehicle / life / advisor / free-form).
+ * Avoid space-padded columns — WhatsApp collapses them and looks squashed.
  */
 function formatExtraDetails(submission, extra) {
   const lines = [];
@@ -47,88 +137,57 @@ function formatExtraDetails(submission, extra) {
   const memberCount = submission?.member_count || extra.member_count;
   const premium =
     submission?.premium_amount || extra.premium_amount || extra.coverage_amount;
-  const duration =
-    submission?.policy_duration || extra.policy_duration || extra.duration;
 
   const isHealth = type.includes('health') || members.length || memberCount;
   const isVehicle = type.includes('vehicle') || type.includes('motor');
   const isLife = type.includes('life');
 
-  // Health keeps sum insured / duration lines
-  if (isHealth && !isVehicle && !isLife) {
-    if (premium) lines.push(`• Sum insured / Premium : ${premium}`);
-    if (duration) lines.push(`• Duration             : ${duration}`);
-  }
-
-  if (isHealth) {
-    if (memberCount) lines.push(`• Members              : ${memberCount}`);
-    if (members.length) {
-      lines.push('• Member details');
-      members.forEach((m, i) => {
-        const name = m.name || '—';
-        const dob = m.dob || '—';
-        const gender = m.gender || '—';
-        lines.push(`   ${i + 1}. ${name}`);
-        lines.push(`      DOB: ${dob}  ·  Gender: ${gender}`);
-      });
-    }
-  }
-
   if (isVehicle) {
     if (extra.vehicle_number) {
-      lines.push(`• Vehicle number       : ${extra.vehicle_number}`);
+      lines.push(`• Vehicle number: ${extra.vehicle_number}`);
     }
     if (extra.vehicle_model) {
-      lines.push(`• Vehicle              : ${extra.vehicle_model}`);
+      lines.push(`• Vehicle: ${extra.vehicle_model}`);
     }
     if (extra.manufacturing_year) {
-      lines.push(`• Year                 : ${extra.manufacturing_year}`);
+      lines.push(`• Year: ${extra.manufacturing_year}`);
     }
     if (extra.vehicle_age != null && extra.vehicle_age !== '') {
-      lines.push(`• Vehicle age          : ${extra.vehicle_age} years`);
+      lines.push(`• Vehicle age: ${extra.vehicle_age} years`);
     }
     if (extra.policy_type) {
-      lines.push(`• Policy type          : ${extra.policy_type}`);
+      lines.push(`• Policy type: ${extra.policy_type}`);
     }
     if (extra.insurance_company_name) {
-      lines.push(
-        `• Insurance company    : ${extra.insurance_company_name}`
-      );
+      lines.push(`• Insurance company: ${extra.insurance_company_name}`);
     }
   }
 
   if (isLife) {
     if (extra.date_of_birth) {
-      lines.push(`• Date of birth        : ${extra.date_of_birth}`);
+      lines.push(`• Date of birth: ${extra.date_of_birth}`);
     }
     if (extra.plan_name) {
-      lines.push(`• Plan name            : ${extra.plan_name}`);
+      lines.push(`• Plan name: ${extra.plan_name}`);
     }
     const yearly =
       extra.yearly_premium_amount ||
       (premium && premium !== '—' ? premium : null);
-    if (yearly) {
-      lines.push(`• Yearly premium       : ${yearly}`);
-    }
-  }
-
-  // Generic premium/duration for unknown types
-  if (!isHealth && !isVehicle && !isLife) {
-    if (premium && premium !== '—') {
-      lines.push(`• Sum insured / Premium : ${premium}`);
-    }
-    if (duration && duration !== '—') {
-      lines.push(`• Duration             : ${duration}`);
+    if (yearly && !isHealth) {
+      lines.push(`• Yearly premium: ${yearly}`);
     }
   }
 
   if (submission?.advisor_name || extra.advisor_name) {
-    lines.push(
-      `• Advisor              : ${submission?.advisor_name || extra.advisor_name}`
-    );
+    const advisor = String(
+      submission?.advisor_name || extra.advisor_name || ''
+    ).trim();
+    // Never print advisor field if it's actually a phone / chat id
+    if (advisor && !looksLikePhoneOrChatId(advisor)) {
+      lines.push(`• Advisor: ${advisor}`);
+    }
   }
 
-  // Remaining free-form extras (skip ids / already rendered / phone)
   const skip = new Set([
     'member_count',
     'members',
@@ -148,16 +207,15 @@ function formatExtraDetails(submission, extra) {
     'yearly_premium_amount',
     'company_id',
     'insurance_type_id',
-    'phone',
-    'customer_phone',
-    'mobile',
   ]);
   for (const [key, value] of Object.entries(extra || {})) {
     if (skip.has(key) || value == null || value === '') continue;
     if (typeof value === 'object') continue;
-    if (/phone|mobile|msisdn/i.test(key)) continue;
+    if (isSensitiveKey(key) || looksLikePhoneOrChatId(value)) continue;
     const label = key.replace(/_/g, ' ');
-    lines.push(`• ${label.charAt(0).toUpperCase()}${label.slice(1)} : ${value}`);
+    lines.push(
+      `• ${label.charAt(0).toUpperCase()}${label.slice(1)}: ${value}`
+    );
   }
 
   return lines.join('\n');
@@ -167,28 +225,83 @@ function formatExtraDetails(submission, extra) {
  * Build template vars for confirmation / forward messages from a submission row.
  */
 function buildLeadVars(submission, overrides = {}) {
-  const extra = parseExtra(submission?.extra_json || submission?.extra_data);
+  const extraRaw = parseExtra(submission?.extra_json || submission?.extra_data);
+  const extra = scrubSensitiveObject(extraRaw);
+  const safeOverrides = scrubSensitiveObject(overrides || {});
   const insurance_type =
-    overrides.insurance_type || submission?.insurance_type || '';
-  const details = formatExtraDetails(submission, extra);
+    safeOverrides.insurance_type ||
+    overrides.insurance_type ||
+    submission?.insurance_type ||
+    '';
+  const premium = dash(
+    overrides.premium ??
+      overrides.premium_amount ??
+      submission?.premium_amount ??
+      extraRaw.premium_amount ??
+      extraRaw.coverage_amount
+  );
+  const duration = dash(
+    overrides.duration ??
+      overrides.policy_duration ??
+      submission?.policy_duration ??
+      extraRaw.policy_duration ??
+      extraRaw.duration
+  );
+  const members_count = dash(
+    overrides.members_count ??
+      overrides.member_count ??
+      submission?.member_count ??
+      extraRaw.member_count
+  );
+  const member_details = formatMemberList(submission);
+  const extra_details = formatExtraDetails(submission, extraRaw);
+
+  const advisorRaw = String(
+    overrides.advisor_name ||
+      submission?.advisor_name ||
+      extraRaw.advisor_name ||
+      ''
+  ).trim();
+  const advisor_name =
+    advisorRaw && !looksLikePhoneOrChatId(advisorRaw) ? advisorRaw : '';
 
   return {
-    name: overrides.name || submission?.customer_name || '—',
-    // phone kept for legacy templates but stripped from forward output
-    phone: '',
-    insurance_type: insurance_type || '—',
-    company: overrides.company || submission?.company || '—',
-    premium_amount: submission?.premium_amount || extra.premium_amount || '',
-    policy_duration: submission?.policy_duration || extra.policy_duration || '',
-    advisor_name: submission?.advisor_name || extra.advisor_name || '',
-    member_count: submission?.member_count || extra.member_count || '',
+    name: dash(overrides.name || submission?.customer_name),
+    insurance_type: dash(insurance_type),
+    company: dash(overrides.company || submission?.company),
+    premium,
+    premium_amount: premium,
+    duration,
+    policy_duration: duration,
+    members_count,
+    member_count: members_count,
+    member_details,
+    // legacy alias used by older templates
+    details: [extra_details].filter(Boolean).join('\n'),
+    extra_details,
+    advisor_name: dash(advisor_name),
     submitted_at: formatSubmittedAt(
       overrides.submitted_at || submission?.submitted_at
     ),
-    details,
+    // scrubbed extras only — never reintroduce phones / chat ids
     ...extra,
-    ...overrides,
-    phone: '', // never expose phone in desk lead summary
+    ...safeOverrides,
+    // hard-lock sensitive placeholders to empty (legacy templates)
+    phone: '',
+    mobile: '',
+    customer_phone: '',
+    customer_chat_id: '',
+    chat_id: '',
+    peer: '',
+    sender: '',
+    from: '',
+    staff_phone: '',
+    premium,
+    duration,
+    members_count,
+    member_details,
+    extra_details,
+    advisor_name: dash(advisor_name),
   };
 }
 
@@ -200,30 +313,48 @@ function renderTemplate(template, vars) {
     .replace(/\{\{(\w+)\}\}/g, (_, key) =>
       vars[key] != null ? String(vars[key]) : ''
     )
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
-/** Remove any phone / mobile lines from a lead message body. */
-function stripPhoneFromLeadMessage(text) {
-  return String(text || '')
-    .replace(/\{\{\s*phone\s*\}\}/gi, '')
-    .replace(/^.*\b(phone|mobile|whatsapp)\b\s*[:：].*$/gim, '')
+    .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
 /**
- * Clean, aligned desk lead summary — no customer phone number.
+ * Remove phone / mobile / chat-id / peer lines from a lead message body.
+ * Final safety net after template render.
+ */
+function stripPhoneFromLeadMessage(text) {
+  return String(text || '')
+    .replace(/\{\{\s*(phone|mobile|customer_phone|customer_chat_id|chat_id|peer|from|sender|staff_phone)\s*\}\}/gi, '')
+    .replace(
+      /^.*\b(phone|mobile|whatsapp|chat\s*id|peer|sender|staff\s*phone|customer\s*chat|wa\s*id|user\s*id|jid|lid)\b\s*[:：].*$/gim,
+      ''
+    )
+    // Bare WhatsApp JIDs / LIDs on their own line
+    .replace(/^.*\d{6,}@(?:c\.us|lid|g\.us|s\.whatsapp\.net).*$/gim, '')
+    // Lines that are mostly just a phone number
+    .replace(/^[\s•*_]*[+]?[\d\s\-().]{10,18}\s*$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
+ * Clean multiline desk lead summary — no space-padded columns, no customer phone.
+ * Renders cleanly across WhatsApp clients.
  */
 const DEFAULT_FORWARD_TEMPLATE = `📋 *New Insurance Lead*
+👤 *Name:* {{name}}
+🏥 *Insurance:* {{insurance_type}}
+🏢 *Company:* {{company}}
+💰 *Sum Insured / Premium:* {{premium}}
+⏳ *Duration:* {{duration}}
+👥 *Members:* {{members_count}}
 
-• Name         : {{name}}
-• Insurance    : {{insurance_type}}
-• Company      : {{company}}
-{{details}}
+📝 *Member Details:*
+{{member_details}}
 
-_Submitted: {{submitted_at}}_`;
+{{extra_details}}
+
+🕒 *Submitted:* {{submitted_at}}`;
 
 /**
  * Clean a form URL for WhatsApp: bare http(s)://… only.
@@ -259,11 +390,15 @@ module.exports = {
   parseExtra,
   parseMembers,
   formatExtraDetails,
+  formatMemberList,
   formatSubmittedAt,
   buildLeadVars,
   renderTemplate,
   stripPhoneFromLeadMessage,
   sanitizeFormLink,
   buildForwardMessage,
+  isSensitiveKey,
+  looksLikePhoneOrChatId,
+  scrubSensitiveObject,
   DEFAULT_FORWARD_TEMPLATE,
 };
