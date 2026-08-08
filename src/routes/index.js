@@ -62,6 +62,39 @@ function catalogPayload() {
   };
 }
 
+/**
+ * Resolve a public form link param — supports submission token (hex) or numeric id.
+ */
+function resolveFormSubmission(param) {
+  let raw = String(param || '').trim();
+  try {
+    raw = decodeURIComponent(raw);
+  } catch (_) {}
+  // Strip accidental quotes / trailing punctuation from copied WhatsApp links
+  raw = raw.replace(/^['"]+|['".,;)\]]+$/g, '').trim();
+  if (!raw) return null;
+
+  let submission = Submissions.getByToken(raw);
+  if (submission) return submission;
+
+  if (/^\d+$/.test(raw)) {
+    submission = Submissions.get(Number(raw));
+    if (submission) return submission;
+  }
+  return null;
+}
+
+function renderFormNotFound(req, res) {
+  return res.status(404).render(
+    'error',
+    layoutLocals(req, {
+      title: 'Form not found',
+      message:
+        'This form link is invalid or has expired. Please request a new link from WhatsApp.',
+    })
+  );
+}
+
 // ——— Public ———
 
 router.get('/', (req, res) => {
@@ -111,16 +144,33 @@ router.post('/api/whatsapp/reconnect', async (req, res) => {
   }
 });
 
+/** Health check for Nginx upstream probes */
+router.get('/health', (_req, res) => {
+  res.status(200).type('text').send('ok');
+});
+
+/**
+ * Public insurance form — WhatsApp links: /form/:token
+ * Also accepts numeric /form/:id for older/bookmarked links.
+ * No auth middleware — must stay publicly reachable behind Nginx.
+ */
 router.get('/form/:token', (req, res) => {
-  const submission = Submissions.getByToken(req.params.token);
+  const param = req.params.token;
+  const submission = resolveFormSubmission(param);
   if (!submission) {
-    return res.status(404).render(
-      'error',
-      layoutLocals(req, {
-        title: 'Form not found',
-        message: 'This form link is invalid or has expired.',
-      })
+    console.warn(
+      `[Form] GET 404 — no submission for param="${String(param).slice(0, 64)}"`
     );
+    return renderFormNotFound(req, res);
+  }
+
+  console.log(
+    `[Form] GET ok id=${submission.id} token=${String(submission.token).slice(0, 8)}… status=${submission.status}`
+  );
+
+  // Canonicalize numeric-id URLs to the stable token URL
+  if (/^\d+$/.test(String(param).trim()) && submission.token) {
+    return res.redirect(302, `/form/${encodeURIComponent(submission.token)}`);
   }
 
   if (['submitted', 'confirmed', 'forwarded'].includes(submission.status)) {
@@ -137,7 +187,7 @@ router.get('/form/:token', (req, res) => {
   }
 
   const catalog = catalogPayload();
-  res.render(
+  return res.render(
     'form',
     layoutLocals(req, {
       title: 'Insurance enquiry',
@@ -151,20 +201,18 @@ router.get('/form/:token', (req, res) => {
 });
 
 router.post('/form/:token', async (req, res) => {
-  const token = req.params.token;
-  const submission = Submissions.getByToken(token);
+  const tokenParam = req.params.token;
+  const submission = resolveFormSubmission(tokenParam);
   if (!submission) {
-    return res.status(404).render(
-      'error',
-      layoutLocals(req, {
-        title: 'Form not found',
-        message: 'This form link is invalid or has expired.',
-      })
+    console.warn(
+      `[Form] POST 404 — no submission for param="${String(tokenParam).slice(0, 64)}"`
     );
+    return renderFormNotFound(req, res);
   }
 
+  const token = submission.token;
   if (['submitted', 'confirmed', 'forwarded'].includes(submission.status)) {
-    return res.redirect(`/form/${token}`);
+    return res.redirect(`/form/${encodeURIComponent(token)}`);
   }
 
   const catalog = catalogPayload();

@@ -20,6 +20,8 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
+// Behind Nginx / Cloudflare — required for correct HTTPS / host / IPs
+app.set('trust proxy', 1);
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 // Bust browser CSS cache after each deploy / Tailwind rebuild
@@ -37,12 +39,41 @@ app.use(
     secret: process.env.SESSION_SECRET || 'dev-secret-change-me',
     resave: false,
     saveUninitialized: false,
-    cookie: { maxAge: 1000 * 60 * 60 * 12 },
+    cookie: {
+      maxAge: 1000 * 60 * 60 * 12,
+      // Secure cookies only when the public site is HTTPS (Nginx terminates TLS)
+      secure: process.env.COOKIE_SECURE === '1' || undefined,
+      sameSite: 'lax',
+    },
+    proxy: true,
   })
 );
 
+// Public + admin routes (includes GET/POST /form/:token)
 app.use(routes);
 app.use(campaignRoutes);
+
+// Friendly fallthrough (never blank Nginx-style pages from Express)
+app.use((req, res) => {
+  res.status(404).render('error', {
+    title: 'Page not found',
+    message: `No route for ${req.method} ${req.path}`,
+    businessName: (() => {
+      try {
+        return require('./src/models').Settings.get(
+          'business_name',
+          'SecureLife Insurance'
+        );
+      } catch (_) {
+        return 'SecureLife Insurance';
+      }
+    })(),
+    admin: null,
+    flash: null,
+    reqPath: req.path || '',
+    cssVersion: app.locals.cssVersion || '1',
+  });
+});
 
 whatsapp.attachSocket(io);
 whatsapp.init().catch((err) => {
@@ -67,9 +98,10 @@ server.listen(PORT, '0.0.0.0', () => {
   const publicBase = getBaseUrl();
   console.log(`Lead Intake System listening on 0.0.0.0:${PORT}`);
   console.log(`Public form base URL: ${publicBase}`);
+  console.log(`Form route: GET/POST ${publicBase}/form/:token`);
   if (/localhost|127\.0\.0\.1/i.test(publicBase)) {
     console.warn(
-      '[Config] Form links still use localhost — set BASE_URL or Chat Flow → Public base URL to your public IP/domain.'
+      '[Config] Form links still use localhost — set BASE_URL or Chat Flow → Public base URL to https://futureshield.online'
     );
   }
 });
